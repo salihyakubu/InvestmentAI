@@ -43,14 +43,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(log_level="INFO", json_output=False)
     logger.info("Starting InvestAI API...")
 
-    # Redis
-    redis_client = aioredis.from_url(
-        settings.redis_url, decode_responses=True
-    )
-    app.state.redis = redis_client
+    # Redis (optional -- degrades gracefully if unavailable)
+    redis_client = None
+    event_bus = None
+    try:
+        redis_client = aioredis.from_url(
+            settings.redis_url, decode_responses=True
+        )
+        await redis_client.ping()
+        event_bus = EventBus(redis_url=settings.redis_url)
+        logger.info("Redis connected")
+    except Exception as exc:
+        logger.warning("Redis unavailable, running without cache/events: %s", exc)
+        redis_client = None
 
-    # Event bus
-    event_bus = EventBus(redis_url=settings.redis_url)
+    app.state.redis = redis_client
     app.state.event_bus = event_bus
 
     # Database session factory
@@ -64,8 +71,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Shutdown
     logger.info("Shutting down InvestAI API...")
-    await event_bus.close()
-    await redis_client.aclose()
+    if event_bus is not None:
+        await event_bus.close()
+    if redis_client is not None:
+        await redis_client.aclose()
     logger.info("InvestAI API shutdown complete")
 
 

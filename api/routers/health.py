@@ -38,8 +38,11 @@ async def health_check(request: Request) -> HealthResponse:
     # Redis
     try:
         redis_client = request.app.state.redis
-        await redis_client.ping()
-        services["redis"] = "ok"
+        if redis_client is not None:
+            await redis_client.ping()
+            services["redis"] = "ok"
+        else:
+            services["redis"] = "not_configured"
     except Exception as exc:
         logger.warning("Redis health check failed: %s", exc)
         services["redis"] = "down"
