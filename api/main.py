@@ -121,6 +121,14 @@ app.include_router(ws_router, prefix=API_V1, tags=["websockets"])
 
 
 # ---------------------------------------------------------------------------
+# Simple root healthcheck (no dependencies, always returns 200)
+# ---------------------------------------------------------------------------
+@app.get("/healthz")
+async def healthz():
+    return {"status": "alive"}
+
+
+# ---------------------------------------------------------------------------
 # Prometheus metrics endpoint
 # ---------------------------------------------------------------------------
 @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
