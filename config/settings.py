@@ -10,6 +10,16 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://investai:investai@localhost:5432/investai"
     redis_url: str = "redis://localhost:6379/0"
 
+    @property
+    def async_database_url(self) -> str:
+        """Convert DATABASE_URL to asyncpg format (Railway uses postgresql://)."""
+        url = self.database_url
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        return url
+
     # Alpaca
     alpaca_api_key: SecretStr = SecretStr("")
     alpaca_secret_key: SecretStr = SecretStr("")

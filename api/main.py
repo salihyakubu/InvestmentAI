@@ -61,7 +61,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.event_bus = event_bus
 
     # Database session factory
-    app.state.db_session_factory = get_async_session_factory()
+    try:
+        app.state.db_session_factory = get_async_session_factory()
+        logger.info("Database configured")
+    except Exception as exc:
+        logger.warning("Database configuration failed: %s", exc)
+        app.state.db_session_factory = None
 
     # Settings
     app.state.settings = settings

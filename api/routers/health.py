@@ -26,11 +26,14 @@ async def health_check(request: Request) -> HealthResponse:
     # Database
     try:
         factory = request.app.state.db_session_factory
-        async with factory() as session:
-            await session.execute(
-                __import__("sqlalchemy").text("SELECT 1")
-            )
-        services["database"] = "ok"
+        if factory is not None:
+            async with factory() as session:
+                await session.execute(
+                    __import__("sqlalchemy").text("SELECT 1")
+                )
+            services["database"] = "ok"
+        else:
+            services["database"] = "not_configured"
     except Exception as exc:
         logger.warning("Database health check failed: %s", exc)
         services["database"] = "down"

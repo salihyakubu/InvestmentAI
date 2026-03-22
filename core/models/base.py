@@ -63,7 +63,7 @@ def _get_engine():
     global _engine
     if _engine is None:
         from config.settings import get_settings
-        database_url = get_settings().database_url
+        database_url = get_settings().async_database_url
         _engine = create_async_engine(database_url, echo=False)
     return _engine
 
