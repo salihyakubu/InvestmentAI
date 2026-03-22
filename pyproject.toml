@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["config", "core", "services", "api", "backtesting"]
+
+[project]
+name = "invest-ai"
+version = "0.1.0"
+description = "Institutional-grade AI investment platform"
+requires-python = ">=3.11"
+dependencies = [
+    # Web framework
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "websockets>=12.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.1.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.25",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "redis>=5.0.0",
+
+    # Data processing
+    "polars>=0.20.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+
+    # ML / Deep Learning
+    "torch>=2.2.0",
+    "scikit-learn>=1.4.0",
+    "xgboost>=2.0.0",
+    "lightgbm>=4.3.0",
+    "optuna>=3.5.0",
+
+    # Market data & brokers
+    "alpaca-py>=0.21.0",
+    "ccxt>=4.2.0",
+    "yfinance>=0.2.36",
+
+    # Technical analysis
+    "ta>=0.11.0",
+
+    # Auth & Security
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-multipart>=0.0.9",
+
+    # Monitoring
+    "prometheus-client>=0.20.0",
+
+    # Utilities
+    "httpx>=0.27.0",
+    "structlog>=24.1.0",
+    "tenacity>=8.2.0",
+    "python-dotenv>=1.0.0",
+    "orjson>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "factory-boy>=3.3.0",
+    "aiosqlite>=0.20.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
