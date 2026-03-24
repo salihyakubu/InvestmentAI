@@ -9,8 +9,6 @@ import numpy as np
 
 from services.prediction.models.base import BasePredictor, TrainResult
 from services.prediction.models.lightgbm_model import LightGBMPredictor
-from services.prediction.models.lstm_model import LSTMPredictor
-from services.prediction.models.transformer_model import TransformerPredictor
 from services.prediction.models.xgboost_model import XGBoostPredictor
 from services.prediction.training.data_loader import TrainingDataLoader
 from services.prediction.training.hyperopt import HyperOptimizer
@@ -18,12 +16,24 @@ from services.prediction.training.walk_forward import WalkForwardValidator
 
 logger = logging.getLogger(__name__)
 
-_MODEL_CLASSES: dict[str, type[BasePredictor]] = {
-    "xgboost": XGBoostPredictor,
-    "lightgbm": LightGBMPredictor,
-    "lstm": LSTMPredictor,
-    "transformer": TransformerPredictor,
-}
+
+def _get_model_classes() -> dict[str, type[BasePredictor]]:
+    """Lazily build model class map, skipping torch-based models if unavailable."""
+    classes: dict[str, type[BasePredictor]] = {
+        "xgboost": XGBoostPredictor,
+        "lightgbm": LightGBMPredictor,
+    }
+    try:
+        from services.prediction.models.lstm_model import LSTMPredictor
+        from services.prediction.models.transformer_model import TransformerPredictor
+        classes["lstm"] = LSTMPredictor
+        classes["transformer"] = TransformerPredictor
+    except ImportError:
+        logger.info("PyTorch not available, skipping LSTM and Transformer models")
+    return classes
+
+
+_MODEL_CLASSES: dict[str, type[BasePredictor]] = _get_model_classes()
 
 
 class ModelTrainer:
@@ -189,8 +199,6 @@ class ModelTrainer:
                 regressor_params=params,
                 feature_names=feature_names,
             )
-        elif model_type == "lstm":
-            return LSTMPredictor(**params)
-        elif model_type == "transformer":
-            return TransformerPredictor(**params)
+        elif model_type in _MODEL_CLASSES:
+            return _MODEL_CLASSES[model_type](**params)
         raise ValueError(f"Unsupported model_type: {model_type}")

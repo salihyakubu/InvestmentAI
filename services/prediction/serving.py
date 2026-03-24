@@ -43,7 +43,13 @@ class ModelServer:
         """
         loaded: dict[str, BasePredictor] = {}
 
-        for model_type in ("xgboost", "lightgbm", "lstm", "transformer"):
+        import os
+        worker_mode = os.environ.get("WORKER_MODE", "full")
+        model_types = ["xgboost", "lightgbm"]
+        if worker_mode == "full":
+            model_types.extend(["lstm", "transformer"])
+
+        for model_type in model_types:
             try:
                 model, meta = self.registry.get_active(model_type)
                 loaded[model_type] = model

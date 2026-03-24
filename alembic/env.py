@@ -35,7 +35,7 @@ target_metadata = AsyncBase.metadata
 
 # Override sqlalchemy.url from application settings when available.
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.async_database_url)
 
 
 def run_migrations_offline() -> None:
