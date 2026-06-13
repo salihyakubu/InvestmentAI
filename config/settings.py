@@ -1,6 +1,12 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import SecretStr
+import logging
 from decimal import Decimal
+
+from pydantic import SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_JWT_SECRET = "change-this-to-a-random-secret-key"
 
 
 class Settings(BaseSettings):
@@ -55,13 +61,43 @@ class Settings(BaseSettings):
     ensemble_min_agreement: int = 3
 
     # API
-    jwt_secret: SecretStr = SecretStr("change-this-to-a-random-secret-key")
+    jwt_secret: SecretStr = SecretStr(_DEFAULT_JWT_SECRET)
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440
     api_rate_limit: int = 100
+    # CORS: explicit allowlist instead of a wildcard. Override via
+    # CORS_ALLOW_ORIGINS (JSON list) per environment / deployed frontend origin.
+    cors_allow_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
+    ]
 
     # Monitoring
     prometheus_enabled: bool = True
+
+    @model_validator(mode="after")
+    def _validate_security(self) -> "Settings":
+        """Refuse the default JWT secret in live trading; warn otherwise.
+
+        With HS256 the default secret is published in source, so any token can
+        be forged. Fail closed before real money is at risk; surface a loud
+        warning in paper/backtest so it is fixed before going live.
+        """
+        secret = self.jwt_secret.get_secret_value()
+        is_default = secret == _DEFAULT_JWT_SECRET
+        if self.trading_mode == "live":
+            if is_default or len(secret) < 32:
+                raise ValueError(
+                    "JWT_SECRET must be a strong (>=32 char) non-default value "
+                    "when TRADING_MODE=live. Refusing to start."
+                )
+        elif is_default:
+            logger.warning(
+                "JWT_SECRET is the insecure published default; tokens are "
+                "forgeable. Set a strong JWT_SECRET before exposing the API."
+            )
+        return self
 
 
 _settings: Settings | None = None

@@ -27,7 +27,12 @@ class Event(BaseModel):
     source_service: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
 
-    model_config = {"frozen": False}
+    # extra="allow" is essential: the bus deserialises every message as the base
+    # Event (`Event.model_validate_json`), so without this, subclass fields
+    # (symbol, side, quantity, ...) would be silently dropped on the Redis path
+    # and only survive on the in-process bus. Allowing extras preserves them and
+    # keeps them accessible via attribute access and model_dump().
+    model_config = {"frozen": False, "extra": "allow"}
 
     def model_post_init(self, _context: Any) -> None:  # noqa: ANN401
         if not self.event_type:
@@ -44,6 +49,7 @@ class EventBus:
     def __init__(self, redis_url: str = "redis://localhost:6379") -> None:
         self._redis_url = redis_url
         self._redis: Any | None = None  # lazy import / connect
+        self._consumer_tasks: list[asyncio.Task[Any]] = []
 
     async def _get_redis(self) -> Any:
         if self._redis is None:
@@ -55,7 +61,12 @@ class EventBus:
         return self._redis
 
     async def close(self) -> None:
-        """Close the underlying Redis connection."""
+        """Cancel consumer loops and close the underlying Redis connection."""
+        for task in self._consumer_tasks:
+            task.cancel()
+        if self._consumer_tasks:
+            await asyncio.gather(*self._consumer_tasks, return_exceptions=True)
+        self._consumer_tasks.clear()
         if self._redis is not None:
             await self._redis.aclose()
             self._redis = None
@@ -108,11 +119,28 @@ class EventBus:
         batch_size: int = 10,
         block_ms: int = 2000,
     ) -> None:
-        """Run an infinite consumer loop reading from *stream*.
+        """Start a background consumer loop for *stream* and return.
 
-        Messages are dispatched to *handler* one at a time. After successful
-        processing the message is acknowledged so it won't be redelivered.
+        The loop runs as a tracked asyncio task (cancelled on ``close()``) so a
+        single ``start()`` can subscribe to several streams without blocking --
+        mirroring :class:`InProcessEventBus` semantics.
         """
+        task = asyncio.create_task(
+            self._consume_loop(stream, group, consumer, handler, batch_size, block_ms),
+            name=f"consume-{group}-{stream}",
+        )
+        self._consumer_tasks.append(task)
+
+    async def _consume_loop(
+        self,
+        stream: str,
+        group: str,
+        consumer: str,
+        handler: EventHandler,
+        batch_size: int,
+        block_ms: int,
+    ) -> None:
+        """Infinite consumer loop: read, dispatch one-at-a-time, then ack."""
         r = await self._get_redis()
         await self.create_consumer_group(stream, group)
 

@@ -92,20 +92,23 @@ async def create_order(
 ) -> OrderResponse:
     """Submit a new manual order.
 
-    The order will be validated against risk rules before execution.
+    The payload is validated for bounds and price consistency by
+    ``OrderCreate``. The order is persisted as PENDING; live execution and the
+    full pre-trade risk gate run in the worker process (see the execution
+    engine's buying-power check) -- manual API orders are paper-mode for now.
     """
-    # TODO: Integrate with execution service and risk checks
     now = datetime.now(timezone.utc)
+    asset_class = "crypto" if "/" in payload.symbol else "stock"
     order = Order(
         symbol=payload.symbol,
-        asset_class="stock",  # TODO: infer from symbol
+        asset_class=asset_class,
         side=payload.side.value,
         order_type=payload.order_type.value,
         quantity=payload.quantity,
         limit_price=payload.limit_price,
         stop_price=payload.stop_price,
         status=OrderStatus.PENDING.value,
-        trading_mode="paper",  # TODO: from settings
+        trading_mode="paper",  # manual API orders are paper-only until live wiring lands
         created_at=now,
         updated_at=now,
     )

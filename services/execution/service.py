@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import structlog
 
@@ -15,9 +15,9 @@ from core.events import (
     OrderCreatedEvent,
     OrderFilledEvent,
     OrderRejectedEvent,
-    RiskApprovedEvent,
 )
 from core.events.base import Event
+from core.events.streams import ORDERS, RISK_APPROVED
 from services.execution.brokers.base import BaseBroker, BrokerFill, BrokerOrder
 from services.execution.fill_tracker import FillTracker
 from services.execution.order_manager import OrderError, OrderManager
@@ -25,9 +25,9 @@ from services.execution.smart_router import SmartOrderRouter
 
 logger = structlog.get_logger(__name__)
 
-# Stream / group names for the event bus.
-_RISK_STREAM = "risk.approved"
-_ORDER_STREAM = "orders"
+# Stream / group names for the event bus (see core.events.streams).
+_RISK_STREAM = RISK_APPROVED
+_ORDER_STREAM = ORDERS
 _CONSUMER_GROUP = "execution-engine"
 
 # Polling interval for pending order monitoring (seconds).
@@ -59,6 +59,9 @@ class ExecutionEngineService:
         self._monitor_task: asyncio.Task | None = None
         # order_id -> (broker_name, external_id) for pending tracking.
         self._in_flight: dict[str, tuple[str, str]] = {}
+        # Correlation ids of RiskApprovedEvents already handled -- idempotency
+        # under at-least-once event delivery (a redelivered event is skipped).
+        self._processed_correlation_ids: set[str] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -90,37 +93,94 @@ class ExecutionEngineService:
     # ------------------------------------------------------------------
 
     async def _handle_risk_approved(self, event: Event) -> None:
-        """Handle a RiskApprovedEvent by submitting the order to a broker."""
-        order_id = event.payload.get("order_id") or getattr(event, "order_id", None)
-        if not order_id:
-            logger.warning("risk_approved_missing_order_id", event_id=event.event_id)
+        """Create and submit the order described by a RiskApprovedEvent.
+
+        The event carries the full, sized order intent, so the order is created
+        fresh in this engine's OrderManager (the risk service runs in a separate
+        process with its own state, so its order id is not resolvable here).
+        """
+        symbol = getattr(event, "symbol", "") or event.payload.get("symbol", "")
+        side = getattr(event, "side", "") or event.payload.get("side", "")
+        order_type = (
+            getattr(event, "order_type", "")
+            or event.payload.get("order_type", "")
+            or "market"
+        )
+        quantity_raw = getattr(event, "quantity", 0.0) or event.payload.get("quantity", 0.0)
+        correlation_id = getattr(event, "order_id", "") or event.payload.get("order_id", "")
+
+        if correlation_id and correlation_id in self._processed_correlation_ids:
+            logger.info("risk_approved_duplicate_skipped", correlation_id=correlation_id)
             return
 
-        order = self._order_manager.get_order(order_id)
-        if order is None:
+        if not symbol or not side:
             logger.warning(
-                "risk_approved_order_not_found",
-                order_id=order_id,
+                "risk_approved_missing_fields",
+                event_id=event.event_id,
+                symbol=symbol,
+                side=side,
             )
             return
 
         try:
+            quantity = Decimal(str(quantity_raw))
+        except (InvalidOperation, ValueError):
+            logger.warning("risk_approved_bad_quantity", quantity=quantity_raw)
+            return
+        if quantity <= 0:
+            logger.warning("risk_approved_nonpositive_quantity", quantity=str(quantity))
+            return
+
+        limit_price = self._coerce_decimal(getattr(event, "limit_price", None))
+        stop_price = self._coerce_decimal(getattr(event, "stop_price", None))
+        reference_price = self._coerce_decimal(getattr(event, "reference_price", None))
+
+        if correlation_id:
+            self._processed_correlation_ids.add(correlation_id)
+
+        try:
             await self.submit_order(
-                order_id=order.order_id,
-                symbol=order.symbol,
-                side=order.side,
-                order_type=order.order_type,
-                quantity=order.quantity,
-                limit_price=order.limit_price,
-                stop_price=order.stop_price,
+                order_id=None,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=limit_price,
+                stop_price=stop_price,
+                reference_price=reference_price,
+            )
+            logger.info(
+                "risk_approved_order_submitted",
+                correlation_id=correlation_id,
+                symbol=symbol,
+                side=side,
+                quantity=str(quantity),
             )
         except Exception as exc:
             logger.error(
                 "risk_approved_submit_failed",
-                order_id=order_id,
+                correlation_id=correlation_id,
                 error=str(exc),
             )
-            await self._publish_rejected(order_id, str(exc))
+
+    @staticmethod
+    def _coerce_decimal(value: object) -> Decimal | None:
+        """Best-effort convert an optional numeric value to Decimal."""
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+    async def _get_buying_power(self, broker: BaseBroker) -> Decimal | None:
+        """Return the broker's available buying power, or None if unavailable."""
+        try:
+            account = await broker.get_account()
+            return Decimal(str(account.get("buying_power", "0")))
+        except Exception as exc:
+            logger.warning("buying_power_check_failed", error=str(exc))
+            return None
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,6 +195,7 @@ class ExecutionEngineService:
         quantity: Decimal = Decimal("0"),
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
+        reference_price: Decimal | None = None,
     ):
         """Create (or reuse) an order, route it, and submit to the broker."""
         # Create order if no existing order_id supplied.
@@ -181,9 +242,23 @@ class ExecutionEngineService:
             await self._publish_rejected(order_id, reason)
             return order
 
-        # Build broker order.
+        # Pre-trade buying-power check for buys (defence on the money path).
+        est_price = order.limit_price if order.limit_price is not None else reference_price
+        if order.side == "buy" and est_price is not None and est_price > 0:
+            buying_power = await self._get_buying_power(broker)
+            required = order.quantity * est_price
+            if buying_power is not None and required > buying_power:
+                await self._publish_rejected(
+                    order_id,
+                    f"insufficient_buying_power required={required} available={buying_power}",
+                )
+                return order
+
+        # Build broker order. external_id doubles as the client order id, so a
+        # broker-side retry after a lost response is deduped rather than
+        # placing a second live order.
         broker_order = BrokerOrder(
-            external_id="",
+            external_id=order_id,
             symbol=order.symbol,
             side=order.side,
             order_type=order.order_type,
@@ -299,6 +374,8 @@ class ExecutionEngineService:
                                 _ORDER_STREAM,
                                 OrderFilledEvent(
                                     order_id=order_id,
+                                    symbol=symbol,
+                                    side=side,
                                     fill_price=float(filled_price),
                                     fill_quantity=float(filled_qty),
                                     source_service="execution-engine",

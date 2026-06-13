@@ -79,6 +79,10 @@ class CCXTBroker(BaseBroker):
 
         price = float(order.limit_price) if order.limit_price else None
 
+        # Idempotency: a stable client order id lets the venue dedupe retries.
+        if order.external_id:
+            params["newClientOrderId"] = order.external_id
+
         try:
             result = await exchange.create_order(
                 symbol=symbol,

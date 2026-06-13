@@ -91,11 +91,11 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS (permissive for development)
+# CORS (explicit allowlist; configure per environment via CORS_ALLOW_ORIGINS)
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_settings().cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

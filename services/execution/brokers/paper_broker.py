@@ -110,15 +110,31 @@ class PaperBroker(BaseBroker):
         return False
 
     async def get_order_status(self, external_id: str) -> dict:
-        """Return the current status of an order."""
+        """Return the current status of an order, including fill details.
+
+        ``filled_qty`` / ``filled_avg_price`` are what the execution engine's
+        monitor reads to record a fill, so they must be reported here.
+        """
         status = self._order_statuses.get(external_id, "unknown")
         order = self._orders.get(external_id)
+
+        order_fills = [f for f in self._fills if f.order_external_id == external_id]
+        filled_qty = sum((f.quantity for f in order_fills), Decimal("0"))
+        if filled_qty > 0:
+            filled_avg_price = (
+                sum((f.price * f.quantity for f in order_fills), Decimal("0")) / filled_qty
+            )
+        else:
+            filled_avg_price = Decimal("0")
+
         return {
             "external_id": external_id,
             "status": status,
             "symbol": order.symbol if order else None,
             "side": order.side if order else None,
             "quantity": str(order.quantity) if order else None,
+            "filled_qty": str(filled_qty),
+            "filled_avg_price": str(filled_avg_price),
         }
 
     async def get_positions(self) -> list[dict]:
@@ -184,6 +200,19 @@ class PaperBroker(BaseBroker):
             fill_price = base_price * (Decimal("1") - slippage_bps / Decimal("10000"))
 
         fill_price = fill_price.quantize(Decimal("0.01"))
+
+        # Buying-power backstop: a buy cannot spend more cash than is available.
+        if order.side == "buy":
+            cost = order.quantity * fill_price
+            if cost > self._cash:
+                self._order_statuses[order.external_id] = "rejected"
+                logger.warning(
+                    "paper_insufficient_cash",
+                    symbol=order.symbol,
+                    cost=str(cost),
+                    cash=str(self._cash),
+                )
+                return
 
         fill = BrokerFill(
             external_id=str(uuid.uuid4()),

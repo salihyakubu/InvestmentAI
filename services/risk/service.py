@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from config.settings import Settings, get_settings
+from core.enums import OrderSide
 from core.events.base import Event, EventBus
 from core.events.order_events import OrderFilledEvent
 from core.events.risk_events import (
@@ -18,6 +19,7 @@ from core.events.risk_events import (
     RiskApprovedEvent,
     RiskBreachedEvent,
 )
+from core.events.streams import ORDERS, REBALANCE, RISK_APPROVED, RISK_BREACHED
 from services.risk.circuit_breaker import CircuitBreaker, CircuitBreakerState
 from services.risk.correlation_monitor import CorrelationMonitor
 from services.risk.drawdown_monitor import DrawdownMonitor, DrawdownState
@@ -40,6 +42,9 @@ from services.risk.rules import (
 from services.risk.var_calculator import VaRCalculator
 
 logger = logging.getLogger(__name__)
+
+# Minimum trade size (USD) below which a rebalance weight delta is ignored.
+_MIN_TRADE_NOTIONAL = 1.0
 
 
 # ------------------------------------------------------------------
@@ -138,13 +143,13 @@ class RiskManagerService:
     async def start(self) -> None:
         """Subscribe to relevant event streams."""
         await self.event_bus.subscribe(
-            stream="rebalance",
+            stream=REBALANCE,
             group="risk_manager",
             consumer="risk-1",
             handler=self._on_rebalance_request,
         )
         await self.event_bus.subscribe(
-            stream="order_fills",
+            stream=ORDERS,
             group="risk_manager",
             consumer="risk-1",
             handler=self._on_order_filled,
@@ -156,34 +161,32 @@ class RiskManagerService:
     # ------------------------------------------------------------------
 
     async def _on_rebalance_request(self, event: Event) -> None:
-        """Handle an incoming rebalance request by running risk checks."""
+        """Risk-check each requested symbol, size approved weight deltas into
+        share quantities, and publish a RiskApprovedEvent per approved order."""
         rebalance = RebalanceRequestEvent.model_validate(event.model_dump())
         logger.info(
             "Received RebalanceRequestEvent for %d symbols.",
             len(rebalance.target_allocations),
         )
 
-        # Build a synthetic order request per symbol and check each
-        for symbol, target_weight in rebalance.target_allocations.items():
-            order_request = {
-                "symbol": symbol,
-                "target_weight": target_weight,
-                "order_id": f"rebal-{event.event_id}-{symbol}",
-            }
-            decision = self.pre_trade_check(order_request)
+        total_equity = float(self._equity)
+        if total_equity <= 0.0:
+            logger.warning(
+                "Rebalance skipped: non-positive equity (%.2f).", total_equity
+            )
+            return
 
-            if decision.approved:
-                await self.event_bus.publish(
-                    "risk_approved",
-                    RiskApprovedEvent(
-                        order_id=order_request["order_id"],
-                        source_service="risk_manager",
-                    ),
-                )
-            else:
+        prices = rebalance.reference_prices or {}
+
+        for symbol, target_weight in rebalance.target_allocations.items():
+            decision = self.pre_trade_check(
+                {"symbol": symbol, "target_weight": target_weight}
+            )
+
+            if not decision.approved:
                 for rejection in decision.rejections:
                     await self.event_bus.publish(
-                        "risk_breached",
+                        RISK_BREACHED,
                         RiskBreachedEvent(
                             rule_name=rejection,
                             current_value=0.0,
@@ -192,9 +195,49 @@ class RiskManagerService:
                             source_service="risk_manager",
                         ),
                     )
+                continue
+
+            # Size the weight delta into a share quantity. The risk manager has
+            # no price feed, so it relies on the reference price supplied by the
+            # producer (which has market data).
+            price = float(prices.get(symbol, 0.0))
+            if price <= 0.0:
+                logger.warning("No reference price for %s; skipping sizing.", symbol)
+                continue
+
+            target_dollar = target_weight * total_equity
+            current_dollar = self._positions.get(symbol, 0.0)
+            delta_dollar = target_dollar - current_dollar
+            notional = abs(delta_dollar)
+            if notional < _MIN_TRADE_NOTIONAL:
+                continue
+
+            side = OrderSide.BUY if delta_dollar > 0 else OrderSide.SELL
+            quantity = notional / price
+            if quantity <= 0.0:
+                continue
+
+            await self.event_bus.publish(
+                RISK_APPROVED,
+                RiskApprovedEvent(
+                    order_id=f"rebal-{event.event_id}-{symbol}",
+                    symbol=symbol,
+                    side=str(side),
+                    order_type="market",
+                    quantity=quantity,
+                    reference_price=price,
+                    source_service="risk_manager",
+                ),
+            )
 
     async def _on_order_filled(self, event: Event) -> None:
-        """Handle an order fill by updating portfolio risk state."""
+        """Handle an order fill by updating portfolio risk state.
+
+        The execution engine publishes several event types to the shared
+        ``orders`` stream; only fills update risk state.
+        """
+        if event.event_type != "OrderFilledEvent":
+            return
         fill = OrderFilledEvent.model_validate(event.model_dump())
         self.post_trade_update(fill)
 
@@ -251,6 +294,10 @@ class RiskManagerService:
         # Include proposed position
         weights[symbol] = target_weight
         concentration = self.correlation_monitor.portfolio_concentration(weights)
+        # Largest position as a fraction of *equity* (cash is the remainder, so
+        # the weights need not sum to 1). Do not use portfolio_concentration's
+        # renormalised max_weight here, or a single position always reads 100%.
+        max_weight_frac = max(weights.values()) if weights else 0.0
 
         # VaR
         portfolio_var_pct = self._compute_portfolio_var_pct()
@@ -266,7 +313,7 @@ class RiskManagerService:
             "max_pairwise_correlation": self.settings.max_pairwise_correlation,
             "correlation_violations": n_violations,
             # Concentration
-            "max_weight": concentration["max_weight"],
+            "max_weight": max_weight_frac,
             "effective_positions": concentration["effective_positions"],
             # VaR
             "portfolio_var_pct": portfolio_var_pct,
@@ -317,12 +364,17 @@ class RiskManagerService:
         fill:
             The fill event from the execution layer.
         """
-        # Extract symbol from payload if available; otherwise use order_id
-        symbol = fill.payload.get("symbol", fill.order_id)
+        # Prefer the explicit symbol/side fields; fall back to payload/order_id.
+        symbol = fill.symbol or fill.payload.get("symbol", fill.order_id)
+        side = (fill.side or fill.payload.get("side", "")).lower()
 
         fill_value = fill.fill_price * fill.fill_quantity
         current = self._positions.get(symbol, 0.0)
-        self._positions[symbol] = current + fill_value
+        # Buys increase dollar exposure; sells reduce it.
+        if side == "sell":
+            self._positions[symbol] = current - fill_value
+        else:
+            self._positions[symbol] = current + fill_value
 
         # Deduct commission from equity
         self._equity -= Decimal(str(fill.commission))
@@ -379,6 +431,7 @@ class RiskManagerService:
             if total_equity > 0:
                 weights[s] = v / total_equity
         concentration = self.correlation_monitor.portfolio_concentration(weights)
+        max_weight_frac = max(weights.values()) if weights else 0.0
 
         # VaR
         portfolio_var_pct = self._compute_portfolio_var_pct()
@@ -389,13 +442,13 @@ class RiskManagerService:
 
         # Run all rules for the report
         context: dict[str, Any] = {
-            "proposed_position_pct": concentration["max_weight"],
+            "proposed_position_pct": max_weight_frac,
             "max_position_pct": self.settings.max_position_pct,
             "current_drawdown_pct": dd_state.current_drawdown_pct,
             "max_total_drawdown_pct": self.settings.max_total_drawdown_pct,
             "max_pairwise_correlation": self.settings.max_pairwise_correlation,
             "correlation_violations": n_violations,
-            "max_weight": concentration["max_weight"],
+            "max_weight": max_weight_frac,
             "effective_positions": concentration["effective_positions"],
             "portfolio_var_pct": portfolio_var_pct,
             "max_portfolio_var_95": self.settings.max_portfolio_var_95,
@@ -412,7 +465,7 @@ class RiskManagerService:
             correlation_violations=n_violations,
             hhi=concentration["hhi"],
             effective_positions=concentration["effective_positions"],
-            max_weight=concentration["max_weight"],
+            max_weight=max_weight_frac,
             circuit_breaker_state=cb_decision.state.value,
             daily_pnl_pct=self._daily_pnl_pct,
             rule_results=rule_results,

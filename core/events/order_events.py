@@ -22,6 +22,8 @@ class OrderFilledEvent(Event):
     fill_price: float
     fill_quantity: float
     commission: float = 0.0
+    symbol: str = ""
+    side: str = ""  # OrderSide value
 
 
 class OrderRejectedEvent(Event):

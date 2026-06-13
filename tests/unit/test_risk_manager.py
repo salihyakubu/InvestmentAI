@@ -32,7 +32,7 @@ class TestPositionSizeLimit:
             {"symbol": "AAPL", "target_weight": 0.20}
         )
         assert not decision.approved
-        assert any("MaxPositionSizeRule" in r for r in decision.rejections)
+        assert any("MaxPositionSize" in r for r in decision.rejections)
 
 
 class TestDrawdownHalt:
@@ -45,16 +45,16 @@ class TestDrawdownHalt:
         configured limit."""
         svc = RiskManagerService(event_bus=event_bus, settings=mock_settings)
 
-        # Start at 10000, then drop to 8000 => 20% drawdown > 15% limit.
+        # Start at 10000 (peak), then drop to 8000 => 20% drawdown > 15% limit.
         svc.update_equity(Decimal("10000"))
         svc.drawdown_monitor.update(10000.0)
-        svc.drawdown_monitor.update(8000.0)
+        svc.update_equity(Decimal("8000"))
 
         decision = svc.pre_trade_check(
             {"symbol": "AAPL", "target_weight": 0.05}
         )
         assert not decision.approved
-        assert any("MaxDrawdownRule" in r for r in decision.rejections)
+        assert any("MaxDrawdown" in r for r in decision.rejections)
 
 
 class TestCircuitBreakerTrip:
