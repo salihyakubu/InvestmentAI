@@ -140,9 +140,29 @@ class PredictionService:
                 probabilities={"long": 0.0, "short": 0.0, "flat": 1.0},
             )
         else:
-            # Build flat feature vector (sorted keys for deterministic ordering)
-            sorted_keys = sorted(features.keys())
-            features_flat = np.array([features[k] for k in sorted_keys], dtype=np.float64)
+            # Build the flat feature vector in the SAME column order the models
+            # were trained on. Ordering by the persisted feature_names (not by
+            # alphabetical sorting) is essential -- otherwise each model column
+            # is fed a different feature at inference than during training.
+            feature_order = self._model_server.feature_names
+            if feature_order:
+                missing = [n for n in feature_order if n not in features]
+                if missing:
+                    logger.warning(
+                        "Missing %d feature(s) at inference for %s: %s",
+                        len(missing),
+                        symbol,
+                        missing,
+                    )
+                features_flat = np.array(
+                    [float(features.get(n, 0.0)) for n in feature_order],
+                    dtype=np.float64,
+                )
+            else:
+                # Fallback when no trained feature order is available.
+                features_flat = np.array(
+                    [features[k] for k in sorted(features.keys())], dtype=np.float64
+                )
 
             # For sequence models we would need buffered history; pass None for now
             output = self._model_server.predict(

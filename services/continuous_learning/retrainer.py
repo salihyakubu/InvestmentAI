@@ -103,7 +103,7 @@ class AutoRetrainer:
             feature_names=feature_names,
         )
 
-        new_metrics = result.metrics if hasattr(result, "metrics") else {}
+        new_metrics = result.to_metrics()
 
         # Validate against old model
         try:

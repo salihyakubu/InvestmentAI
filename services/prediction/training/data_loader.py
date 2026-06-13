@@ -65,7 +65,11 @@ class TrainingDataLoader:
         valid_len = len(labels)
         X = features[:valid_len]
 
-        X_norm, scaler = self._normalize(X)
+        # Do NOT scale the tabular features. The tree models that consume this
+        # path are invariant to monotonic feature scaling, and the live
+        # inference path feeds RAW features through a scaler that was never
+        # persisted or applied at serving -- that mismatch was the source of
+        # severe train/serve skew. Keeping X raw makes training and serving match.
 
         logger.info(
             "Prepared %d samples  class distribution: short=%d flat=%d long=%d",
@@ -76,10 +80,10 @@ class TrainingDataLoader:
         )
 
         return TrainingDataset(
-            X=X_norm,
+            X=X,
             y=labels,
             feature_names=feature_names or [f"f{i}" for i in range(X.shape[1])],
-            scaler=scaler,
+            scaler=None,
         )
 
     def load_sequence_data(

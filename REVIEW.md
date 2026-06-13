@@ -79,6 +79,12 @@ system — a well-built engine with no fuel line attached.
 - **LSTM/Transformer never contribute** at inference (sequence input hardcoded to `None`,
   `service.py:148`), so the live signal is only the (broken) tree models.
 
+> **Update (this commit):** the tree (direction) path is fixed — training no longer scales
+> features (train==serve) and inference orders features by the persisted `feature_names`; the
+> champion/challenger metrics bug is fixed. Verified by `tests/unit/test_prediction_serving.py`.
+> Still open: the regressor trains on fabricated ±1% returns (so `expected_return` magnitude is
+> a placeholder) and the sequence-model leakage — tracked separately.
+
 ### B — Backtest results cannot be trusted
 - **Look-ahead bias:** strategy sees bar *i* (close/high/low), decides, then is **filled at
   that same bar's close** (`backtesting/engine.py:208`, `backtesting/simulator.py:120`).
@@ -206,8 +212,10 @@ masked by running against whatever numpy resolves — pin it).
       base `Event` preserves subclass fields on the Redis path; paper broker reports fills;
       and `subscribe()` no longer blocks startup. Verified by
       `tests/integration/test_trading_pipeline.py`. _(Done — see Appendix.)_
-- [ ] **3. Fix ML serving** — persist+apply the scaler (or drop scaling for trees); order
-      inference features by persisted `feature_names`; fix the empty-metrics promotion bug.
+- [x] **3. Fix ML serving (direction path)** — trees no longer scale (train==serve); inference
+      orders features by persisted `feature_names`; empty-metrics promotion bug fixed via
+      `TrainResult.to_metrics()`. _(Deferred: regressor trains on fabricated ±1% returns so
+      `expected_return` magnitude is a placeholder; sequence-path leakage.)_
 - [~] **4. Connect risk to the order path** — **done:** buying-power check + client-order-id
       idempotency in execution; strict order-input validation; positions fed from fills (item 2).
       **Deferred:** synchronous manual-API → execution wiring (needs an async order-intent
@@ -272,6 +280,16 @@ and `tests/unit/test_order_schema.py`):
 - `services/execution/brokers/paper_broker.py`: a buy cannot spend more cash than available.
 - `api/schemas/orders.py`: strict `OrderCreate` validation (positive, bounded quantity; prices
   > 0; limit/stop price required by order type). `api/routers/orders.py`: infers asset class.
+
+ML serving skew (roadmap item 3, verified by `tests/unit/test_prediction_serving.py`):
+- `services/prediction/training/data_loader.py`: the tabular path no longer scales features
+  (trees are scale-invariant and serving feeds raw features; the unpersisted scaler was the skew).
+- `services/prediction/service.py` + `serving.py` + `models/base.py`: inference builds the
+  feature vector in the model's persisted `feature_names` order (was alphabetical), so each
+  column matches training; a missing feature defaults to 0 with a warning.
+- `services/continuous_learning/retrainer.py` + `models/base.py`: promotion uses
+  `TrainResult.to_metrics()` (the old code read a non-existent `.metrics`, always `{}`).
+  _(Runtime-unverified here: xgboost/lightgbm need OpenMP, absent in this environment.)_
 
 Still deferred: the manual-order **API → live execution** path (needs an async order-intent
 consumer in the worker) and feeding risk live equity/PnL. The backtest + productionisation
