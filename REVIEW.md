@@ -95,6 +95,13 @@ system — a well-built engine with no fuel line attached.
 - **Multi-symbol bars aligned by index, not timestamp** (`engine.py:210`); `min(len(...))`
   silently truncates to the shortest series.
 
+> **Update (this commit):** all four are fixed and verified by
+> `tests/unit/test_backtesting.py` — signals decided on bar *i* fill at bar *i+1*'s open;
+> short cash flows are correct under a consistent signed-equity model; buys are buying-power
+> capped (no negative cash); multi-symbol bars align on the union of timestamps
+> (forward-filled) and warn on length mismatch; Sharpe/Sortino/annual-return are
+> timeframe-aware (Sortino uses full-period downside deviation).
+
 ### C — Money-path safety gaps (bite the moment wiring is fixed)
 - **No buying-power/cash check** before sending a real order (`execution/service.py:129`);
   computed `buying_power` is never consumed.
@@ -220,8 +227,9 @@ masked by running against whatever numpy resolves — pin it).
       idempotency in execution; strict order-input validation; positions fed from fills (item 2).
       **Deferred:** synchronous manual-API → execution wiring (needs an async order-intent
       consumer) and the equity/PnL feed. See Appendix.
-- [ ] **5. Trustworthy backtest** — next-bar fills; correct short cash signs; buying-power
-      cap; timestamp alignment; timeframe-aware annualization.
+- [x] **5. Trustworthy backtest** — next-bar-open fills (no look-ahead); correct short cash
+      signs + signed-equity model; buying-power cap; timestamp alignment; timeframe-aware
+      Sharpe/Sortino/annual-return. Verified by `tests/unit/test_backtesting.py`.
 - [ ] **6. Productionize** — baseline Alembic migration + `Prediction` model (one schema
       source of truth); CI (ruff/mypy/pytest/docker build); non-root containers; real
       frontend build; auth/login flow; reconcile FE/BE API paths.
@@ -291,9 +299,19 @@ ML serving skew (roadmap item 3, verified by `tests/unit/test_prediction_serving
   `TrainResult.to_metrics()` (the old code read a non-existent `.metrics`, always `{}`).
   _(Runtime-unverified here: xgboost/lightgbm need OpenMP, absent in this environment.)_
 
+Backtest correctness (roadmap item 5, verified by `tests/unit/test_backtesting.py`):
+- `backtesting/engine.py` + `simulator.py`: signals decided on a bar execute on the NEXT bar
+  at its open (was filled at the same bar's close -> look-ahead).
+- `backtesting/engine.py`: short opens credit proceeds and covers debit (were inverted);
+  equity uses a consistent signed mark (cash + long*mark - short*mark); buys are rejected when
+  cost exceeds cash (no negative-cash leverage); multi-symbol bars align on the union of
+  timestamps (forward-filled), warning on length mismatch instead of silently truncating.
+- `backtesting/performance.py`: Sharpe/Sortino/annualised-return take periods_per_year from
+  the timeframe (was hard-coded 252); Sortino uses full-period downside deviation.
+
 Still deferred: the manual-order **API → live execution** path (needs an async order-intent
-consumer in the worker) and feeding risk live equity/PnL. The backtest + productionisation
-items (roadmap 5–6) were left for deliberate, separately reviewed changes.
+consumer in the worker) and feeding risk live equity/PnL. The productionisation items
+(roadmap 6) were left for deliberate, separately reviewed changes.
 
 > Note: `ruff check` still reports 9 pre-existing issues in these files (unused
 > imports/locals, import ordering) — unrelated to the above; fold into the lint-cleanup when

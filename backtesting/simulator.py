@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from core.enums import OrderSide, OrderType
@@ -21,6 +22,7 @@ class Bar:
     low: Decimal
     close: Decimal
     volume: Decimal
+    timestamp: datetime | None = None  # enables timestamp alignment across symbols
 
 
 @dataclass
@@ -114,15 +116,22 @@ class MarketSimulator:
         bar: Bar,
         slippage_bps: Decimal,
     ) -> SimulatedFill:
-        """Market orders fill at bar close +/- slippage."""
+        """Market orders fill at the bar's OPEN +/- slippage.
+
+        The engine queues a bar's signals and executes them against the *next*
+        bar, so filling at that bar's open models "decide on bar i's close,
+        execute at bar i+1's open" -- which avoids look-ahead bias (a decision
+        cannot be both made on and filled at the same bar's close).
+        """
         slip_factor = slippage_bps / Decimal("10000")
+        ref_price = bar.open
 
         if order.side == OrderSide.BUY:
-            fill_price = bar.close * (Decimal("1") + slip_factor)
+            fill_price = ref_price * (Decimal("1") + slip_factor)
         else:
-            fill_price = bar.close * (Decimal("1") - slip_factor)
+            fill_price = ref_price * (Decimal("1") - slip_factor)
 
-        slippage_amount = abs(fill_price - bar.close)
+        slippage_amount = abs(fill_price - ref_price)
         commission = self._commission_per_share * order.quantity
 
         return SimulatedFill(

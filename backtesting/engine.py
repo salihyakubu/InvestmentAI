@@ -19,6 +19,18 @@ from backtesting.simulator import Bar, MarketSimulator, SimulatedFill, Simulated
 
 logger = logging.getLogger(__name__)
 
+# Bars per year by timeframe (equity convention: 252 trading days, 6.5h
+# sessions) -- used to annualise risk metrics correctly for the timeframe.
+_PERIODS_PER_YEAR: dict[TimeFrame, float] = {
+    TimeFrame.M1: 252 * 6.5 * 60,
+    TimeFrame.M5: 252 * 6.5 * 12,
+    TimeFrame.M15: 252 * 6.5 * 4,
+    TimeFrame.H1: 252 * 6.5,
+    TimeFrame.H4: 252 * 6.5 / 4,
+    TimeFrame.D1: 252,
+    TimeFrame.W1: 52,
+}
+
 
 # ------------------------------------------------------------------
 # Data structures
@@ -197,47 +209,37 @@ class BacktestEngine:
                 symbols=self._symbols,
             )
 
-        n_bars = min(len(bars) for bars in self._bar_data.values())
+        steps = self._build_steps()
+        n_bars = len(steps)
         logger.info(
-            "Starting backtest: %d bars, %d symbols, capital=%s",
+            "Starting backtest: %d steps, %d symbols, capital=%s",
             n_bars,
             len(self._bar_data),
             self._initial_capital,
         )
 
-        for i in range(n_bars):
-            # Build current bar dict.
-            current_bars: dict[str, Bar] = {}
-            for symbol, bars_list in self._bar_data.items():
-                current_bars[symbol] = bars_list[i]
+        # Signals decided on one bar execute on the NEXT bar (at its open), so a
+        # strategy cannot trade on information from the bar it is deciding on.
+        # This is the fix for look-ahead bias.
+        pending_signals: list[Signal] = []
+        for idx, ts, current_bars in steps:
+            # 1. Execute signals queued on the previous step against this bar.
+            for signal in pending_signals:
+                self._process_signal(signal, current_bars, bar_idx=idx)
+            pending_signals = []
 
-            # Compute equity before strategy.
+            # 2. Mark-to-market AFTER fills, at this bar's close.
             equity = self._compute_equity(current_bars)
             self._equity_history.append(float(equity))
 
-            # Build portfolio state.
+            # 3. Ask the strategy for signals; they execute on the next step.
             state = PortfolioState(
                 cash=self._cash,
                 equity=equity,
                 positions=dict(self._positions),
+                timestamp=ts,
             )
-
-            # Ask strategy for signals.
-            signals = strategy_fn(current_bars, state)
-
-            # Process signals.
-            for signal in signals:
-                self._process_signal(signal, current_bars, bar_idx=i)
-
-        # Final equity snapshot using last bars.
-        if n_bars > 0:
-            last_bars = {
-                sym: bars_list[n_bars - 1]
-                for sym, bars_list in self._bar_data.items()
-            }
-            final_eq = self._compute_equity(last_bars)
-            if len(self._equity_history) > 0:
-                self._equity_history[-1] = float(final_eq)
+            pending_signals = strategy_fn(current_bars, state) or []
 
         equity_curve = np.array(self._equity_history, dtype=np.float64)
 
@@ -255,7 +257,11 @@ class BacktestEngine:
             for t in self._closed_trades
         ]
 
-        metrics = PerformanceAnalyzer.compute_metrics(equity_curve, trade_records)
+        metrics = PerformanceAnalyzer.compute_metrics(
+            equity_curve,
+            trade_records,
+            periods_per_year=_PERIODS_PER_YEAR.get(self._timeframe, 252),
+        )
 
         # Drawdown curve.
         running_max = np.maximum.accumulate(equity_curve)
@@ -281,17 +287,73 @@ class BacktestEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _build_steps(self) -> list[tuple[int, datetime | None, dict[str, Bar]]]:
+        """Ordered ``(idx, timestamp, {symbol: Bar})`` steps for the run loop.
+
+        If every loaded bar carries a timestamp, align symbols on the union of
+        timestamps (forward-filling each symbol's most recent bar) so a
+        multi-symbol backtest is date-aligned rather than index-aligned.
+        Otherwise fall back to positional alignment, warning if series lengths
+        differ (silent truncation would otherwise hide missing data).
+        """
+        if not self._bar_data:
+            return []
+
+        has_ts = all(
+            all(b.timestamp is not None for b in bars)
+            for bars in self._bar_data.values()
+        )
+
+        if has_ts:
+            all_ts = sorted(
+                {b.timestamp for bars in self._bar_data.values() for b in bars}
+            )
+            by_ts = {
+                sym: {b.timestamp: b for b in bars}
+                for sym, bars in self._bar_data.items()
+            }
+            steps: list[tuple[int, datetime | None, dict[str, Bar]]] = []
+            last_bar: dict[str, Bar] = {}
+            for idx, ts in enumerate(all_ts):
+                for sym in self._bar_data:
+                    bar = by_ts[sym].get(ts)
+                    if bar is not None:
+                        last_bar[sym] = bar
+                steps.append((idx, ts, dict(last_bar)))
+            return steps
+
+        lengths = {sym: len(bars) for sym, bars in self._bar_data.items()}
+        n = min(lengths.values())
+        if len(set(lengths.values())) > 1:
+            logger.warning(
+                "Symbol bar counts differ (%s); truncating to %d. Positional "
+                "alignment assumes bar i is the same date for every symbol -- "
+                "attach timestamps to bars for correct alignment.",
+                lengths,
+                n,
+            )
+        steps = []
+        for i in range(n):
+            snapshot = {sym: self._bar_data[sym][i] for sym in self._bar_data}
+            steps.append((i, None, snapshot))
+        return steps
+
     def _compute_equity(self, current_bars: dict[str, Bar]) -> Decimal:
-        """Cash + mark-to-market value of all open positions."""
+        """Cash plus the signed mark-to-market value of open positions.
+
+        Cash already reflects every trade cash flow (including short-sale
+        proceeds and buy-to-cover payments), so a long contributes +mark*qty and
+        a short contributes -mark*qty (the liability to repurchase the shares).
+        """
         equity = self._cash
         for pos in self._positions.values():
             bar = current_bars.get(pos.symbol)
             if bar is None:
                 continue
             if pos.side == OrderSide.BUY:
-                equity += (bar.close - pos.entry_price) * pos.quantity
+                equity += bar.close * pos.quantity
             else:
-                equity += (pos.entry_price - bar.close) * pos.quantity
+                equity -= bar.close * pos.quantity
         return equity
 
     def _process_signal(
@@ -327,20 +389,23 @@ class BacktestEngine:
         existing = self._find_opposing_position(fill.symbol, fill.side)
 
         if existing is not None:
-            # Close the position.
+            # Close (part of) the opposing position.
             close_qty = min(fill.quantity, existing.quantity)
             if existing.side == OrderSide.BUY:
+                # Closing a long: sell -> receive proceeds.
                 pnl = float(
                     (fill.price - existing.entry_price) * close_qty
                     - fill.commission
                 )
+                self._cash += fill.price * close_qty - fill.commission
             else:
+                # Closing a short: buy to cover -> pay.
                 pnl = float(
                     (existing.entry_price - fill.price) * close_qty
                     - fill.commission
                 )
+                self._cash -= fill.price * close_qty + fill.commission
 
-            self._cash += fill.price * close_qty - fill.commission
             remaining = existing.quantity - close_qty
 
             self._closed_trades.append(
@@ -363,8 +428,20 @@ class BacktestEngine:
                 existing.quantity = remaining
         else:
             # Open a new position.
-            cost = fill.price * fill.quantity + fill.commission
-            self._cash -= cost
+            if fill.side == OrderSide.BUY:
+                cost = fill.price * fill.quantity + fill.commission
+                if cost > self._cash:
+                    logger.warning(
+                        "Insufficient cash to buy %s: need %.2f, have %.2f -- rejected",
+                        fill.symbol,
+                        float(cost),
+                        float(self._cash),
+                    )
+                    return
+                self._cash -= cost
+            else:
+                # Short sale: receive proceeds net of commission.
+                self._cash += fill.price * fill.quantity - fill.commission
 
             pos_id = str(uuid.uuid4())
             self._positions[pos_id] = OpenPosition(
