@@ -14,10 +14,14 @@ from sqlalchemy.orm import noload
 
 from api.dependencies import get_db, get_settings
 from api.middleware.auth import JWTAuth, hash_password, verify_password
+from api.middleware.rate_limit import RateLimiter
 from config.settings import Settings
 from core.models.users import User
 
 router = APIRouter(prefix="/auth")
+
+# Tight rate limit on login to blunt password brute-forcing.
+_login_limiter = RateLimiter(max_requests=10, window_seconds=60, key_prefix="rl:login")
 
 # Precomputed hash used to keep timing uniform for unknown users (mitigates
 # user-enumeration via response timing).
@@ -47,6 +51,7 @@ async def login(
     payload: LoginRequest,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    _rate: None = Depends(_login_limiter),
 ) -> TokenResponse:
     """Verify credentials and return a signed JWT access token."""
     # noload(api_keys): login only needs the user's own columns, and skipping the

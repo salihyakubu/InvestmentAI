@@ -133,7 +133,9 @@ system — a well-built engine with no fuel line attached.
 - **CORS `allow_origins=["*"]` with `allow_credentials=True`** (`api/main.py`) — invalid and
   insecure. _(Replaced with a configurable allowlist in this commit.)_
 - **WebSockets have no auth** (`api/websockets/streams.py:35`) and no connection cap.
-- **Rate limiter implemented but wired to no route** (`api/middleware/rate_limit.py`).
+- **Rate limiter implemented but wired to no route** (`api/middleware/rate_limit.py`). _(Fixed:
+  applied to login (10/min) and order submission (`api_rate_limit`); limiter logic unit-tested
+  (`tests/unit/test_rate_limit.py`). Route-level 429s require a live Redis.)_
 
 ### E — Deploy / data integrity
 - **No migrations** (`alembic/versions/` empty) yet `railway.toml` runs `alembic upgrade

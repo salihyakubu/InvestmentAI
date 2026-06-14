@@ -10,11 +10,18 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, get_db
+from api.middleware.rate_limit import RateLimiter
 from api.schemas.orders import OrderCreate, OrderListResponse, OrderResponse
+from config.settings import get_settings
 from core.enums import OrderStatus
 from core.models.orders import Order
 
 router = APIRouter(prefix="/orders")
+
+# Rate-limit order submission per user/IP (wires up settings.api_rate_limit).
+_order_limiter = RateLimiter(
+    max_requests=get_settings().api_rate_limit, window_seconds=60, key_prefix="rl:orders"
+)
 
 
 @router.get(
@@ -89,6 +96,7 @@ async def create_order(
     payload: OrderCreate,
     db: AsyncSession = Depends(get_db),
     _user: dict = Depends(get_current_user),
+    _rate: None = Depends(_order_limiter),
 ) -> OrderResponse:
     """Submit a new manual order.
 
