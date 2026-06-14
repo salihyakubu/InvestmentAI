@@ -84,9 +84,11 @@ system — a well-built engine with no fuel line attached.
 > features (train==serve) and inference orders features by the persisted `feature_names`; the
 > champion/challenger metrics bug is fixed. Verified by `tests/unit/test_prediction_serving.py`.
 > The **tree regressor now trains on real forward returns** (the data loader exposes them and
-> the trainer threads them through), so `expected_return` carries real magnitude. Still open:
-> probability calibration / confidence-gating, and the sequence-model double-normalisation +
-> NN regressor (sequence models don't run at inference) — tracked separately.
+> the trainer threads them through), so `expected_return` carries real magnitude. A
+> **min-confidence gate** now abstains (flat) on low-confidence signals, wiring up
+> `settings.min_prediction_confidence`. Still open: probability *calibration* (Platt/isotonic),
+> and the sequence-model double-normalisation + NN regressor (sequence models don't run at
+> inference) — tracked separately.
 
 ### B — Backtest results cannot be trusted
 - **Look-ahead bias:** strategy sees bar *i* (close/high/low), decides, then is **filled at
@@ -173,7 +175,9 @@ system — a well-built engine with no fuel line attached.
   (`backtesting/performance.py`).
 - Provider retries only catch `ConnectionError`/`TimeoutError`, missing HTTP 429 / CCXT
   `RateLimitExceeded` → whole-symbol data loss.
-- Predictions never calibrated or confidence-gated; NN training has no random seed.
+- Predictions never calibrated or confidence-gated; NN training has no random seed. _(Fixed:
+  a min-confidence gate abstains (flat) on low-confidence signals — `settings.min_prediction_confidence`
+  was defined but unused. Probability calibration + NN seeding remain.)_
 - The "e2e" test asserts **both** branches of an if/else
   (`tests/e2e/test_full_trading_cycle.py:159`) — it can never fail. Zero DB-layer and zero
   API-layer tests. _(Fixed: tautology replaced with deterministic cases; DB + API tests added —
@@ -326,6 +330,9 @@ ML serving skew (roadmap item 3, verified by `tests/unit/test_prediction_serving
   now exposes the real forward returns and the trainer threads them into the regressor, so
   `expected_return` is a real magnitude instead of a fabricated ±1% step. Verified by
   `tests/unit/test_data_loader_returns.py`.
+- `services/prediction/service.py`: a confidence gate abstains (flat) on non-flat signals below
+  `settings.min_prediction_confidence` (which was defined but never used). Verified by
+  `tests/unit/test_prediction_confidence.py`.
 
 Backtest correctness (roadmap item 5, verified by `tests/unit/test_backtesting.py`):
 - `backtesting/engine.py` + `simulator.py`: signals decided on a bar execute on the NEXT bar

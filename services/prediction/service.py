@@ -57,6 +57,9 @@ class PredictionService:
         self._model_server = model_server
         self._prediction_history: list[Prediction] = []
         self._running = False
+        # Minimum confidence to emit a non-flat (tradeable) signal; below this the
+        # prediction abstains (flat). Wires up settings.min_prediction_confidence.
+        self._min_confidence = float(getattr(settings, "min_prediction_confidence", 0.6))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -177,9 +180,21 @@ class PredictionService:
             else "none"
         )
 
+        # Confidence gate: abstain (flat) on low-confidence non-flat signals so
+        # uncertain predictions don't drive trades.
+        direction = output.direction
+        if str(direction).lower() != "flat" and output.confidence < self._min_confidence:
+            logger.info(
+                "Prediction for %s gated: confidence %.3f < %.3f -> flat",
+                symbol,
+                output.confidence,
+                self._min_confidence,
+            )
+            direction = "flat"
+
         prediction = Prediction(
             symbol=symbol,
-            direction=output.direction,
+            direction=direction,
             confidence=output.confidence,
             expected_return=output.expected_return,
             probabilities=output.probabilities,
