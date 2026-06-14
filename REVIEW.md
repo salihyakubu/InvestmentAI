@@ -166,7 +166,8 @@ system — a well-built engine with no fuel line attached.
 - Predictions never calibrated or confidence-gated; NN training has no random seed.
 - The "e2e" test asserts **both** branches of an if/else
   (`tests/e2e/test_full_trading_cycle.py:159`) — it can never fail. Zero DB-layer and zero
-  API-layer tests.
+  API-layer tests. _(Fixed: tautology replaced with deterministic cases; DB + API tests added —
+  see roadmap item 7.)_
 - Prometheus scrapes a worker target serving no metrics; Grafana has no provisioning.
 
 ---
@@ -202,8 +203,8 @@ surface it). All five have since been **fixed in this commit — the suite is no
 
 Net: the passing tests are real and meaningful; the suite as committed was red, and fixing
 it surfaced (and corrected) a genuine risk-logic bug plus a dead-feature indicator bug.
-Still missing: DB-layer and API-layer coverage, and dependency pinning (the MACD bug was
-masked by running against whatever numpy resolves — pin it).
+Still missing: dependency pinning (the MACD bug was masked by running against whatever numpy
+resolves — pin it). _(DB-layer and API-layer coverage have since been added; see item 7.)_
 
 ## ✅ What's done well (build on this)
 - Clean, well-separated architecture; event-driven core; consistent typing/logging.
@@ -244,7 +245,9 @@ masked by running against whatever numpy resolves — pin it).
       lint cleanup; baseline Alembic migration + `Prediction` model + FK fix (schema coherent,
       `ruff check` green). **Pending:** non-root containers + real frontend build, auth/login
       flow, FE/BE API-path reconcile, `init.sql` retirement + Timescale hypertables.
-- [ ] **7. Money-path tests** — DB-backed + API-level tests; replace the tautological e2e.
+- [x] **7. Money-path tests** — DB-backed order/fill persistence tests (SQLite), API-level
+      auth-enforcement + order-validation tests (FastAPI TestClient), and the tautological e2e
+      replaced with deterministic cases. Suite: 71 passing.
 
 **Do not enable live trading until items 0–5 are done and verified.** Today a single flag
 flip could send unbounded, un-risk-checked orders to a real account.
@@ -338,6 +341,14 @@ Schema & migrations (roadmap item 6, verified by `tests/unit/test_models_metadat
 - `alembic.ini`: `prepend_sys_path = .` so alembic can import `core`/`config` (this would also
   have broken on Railway, not just locally). `alembic/env.py` + `core/models/__init__.py`
   register the new model.
+
+Money-path tests (roadmap item 7):
+- `tests/integration/test_db_persistence.py` (new): order + fill ORM round-trip on in-memory
+  SQLite — insert, query, the order→fills relationship, Decimal round-trip, status update.
+- `tests/integration/test_api_auth.py` (new): the order endpoints reject unauthenticated
+  requests (401) and reject invalid order bodies (422) via `OrderCreate` validation.
+- `tests/e2e/test_full_trading_cycle.py`: the tautological if/else assertion (asserted both
+  branches, so it could never fail) replaced with deterministic approve/reject cases.
 
 Still deferred: the manual-order **API → live execution** path (needs an async order-intent
 consumer in the worker) and feeding risk live equity/PnL; plus the rest of productionisation
