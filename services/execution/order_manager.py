@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -34,8 +34,8 @@ class Order:
     avg_fill_price: Decimal | None = None
     external_id: str | None = None
     broker_name: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -47,7 +47,7 @@ class Fill:
     price: Decimal
     quantity: Decimal
     commission: Decimal = Decimal("0")
-    filled_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    filled_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class OrderStateMachine:
@@ -93,7 +93,7 @@ class OrderStateMachine:
                 f"(order {order.order_id})"
             )
         order.status = new_status
-        order.updated_at = datetime.now(timezone.utc)
+        order.updated_at = datetime.now(UTC)
         logger.info(
             "order_status_transition",
             order_id=order.order_id,

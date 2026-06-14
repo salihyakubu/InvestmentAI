@@ -10,21 +10,19 @@ services (Redis, PostgreSQL, brokers) are required.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import numpy as np
 import pytest
 
 from config.settings import Settings
-from core.enums import OrderSide, OrderStatus, OrderType
 from core.events.base import Event, InProcessEventBus
 from core.events.market_events import BarCloseEvent
 from core.events.order_events import OrderFilledEvent
 from core.events.signal_events import FeaturesReadyEvent, PredictionReadyEvent
 from services.execution.brokers.base import BrokerOrder
 from services.execution.brokers.paper_broker import PaperBroker
-from services.execution.order_manager import OrderManager
 from services.feature_engineering.feature_store import FeatureStore
 from services.feature_engineering.service import FeatureEngineeringService
 from services.portfolio.optimizers.mean_variance import MeanVarianceOptimizer
@@ -88,7 +86,7 @@ async def test_full_cycle(
         close=last_bar["close"],
         volume=last_bar["volume"],
         vwap=last_bar["vwap"],
-        bar_time=datetime.now(timezone.utc),
+        bar_time=datetime.now(UTC),
         source_service="data_ingestion",
     )
     await fe_service.handle_bar_close(bar_event)

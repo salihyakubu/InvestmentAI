@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import uuid
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -38,15 +37,15 @@ class TimestampMixin:
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         server_default=func.now(),
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         server_default=func.now(),
-        onupdate=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
 

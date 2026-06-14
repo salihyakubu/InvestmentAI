@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-
-from config.logging_config import setup_logging
-from config.settings import get_settings
-from core.events.base import EventBus
-from core.models.base import get_async_session_factory
 
 from api.routers import (
     audit,
@@ -30,6 +25,10 @@ from api.routers import (
     risk,
 )
 from api.websockets.streams import router as ws_router
+from config.logging_config import setup_logging
+from config.settings import get_settings
+from core.events.base import EventBus
+from core.models.base import get_async_session_factory
 
 logger = logging.getLogger(__name__)
 

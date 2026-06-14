@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.enums import TimeFrame
-from core.models.market_data import OHLCVRecord
 from api.dependencies import get_db
 from api.schemas.market_data import BarSchema, LatestPriceResponse
+from core.enums import TimeFrame
+from core.models.market_data import OHLCVRecord
 
 router = APIRouter(prefix="/market-data")
 

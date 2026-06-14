@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -140,7 +140,7 @@ class CCXTDataProvider(BaseDataProvider):
             # CCXT candle format: [timestamp_ms, open, high, low, close, volume]
             raw_bars.append(
                 RawBar(
-                    time=datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc),
+                    time=datetime.fromtimestamp(c[0] / 1000, tz=UTC),
                     symbol=symbol,
                     open=float(c[1]),
                     high=float(c[2]),
@@ -200,7 +200,7 @@ class CCXTDataProvider(BaseDataProvider):
                         if prev_ts is None or prev_ts < ts:
                             raw = RawBar(
                                 time=datetime.fromtimestamp(
-                                    ts / 1000, tz=timezone.utc
+                                    ts / 1000, tz=UTC
                                 ),
                                 symbol=original_sym,
                                 open=float(closed[1]),

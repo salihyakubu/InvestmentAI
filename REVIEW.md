@@ -230,9 +230,10 @@ masked by running against whatever numpy resolves — pin it).
 - [x] **5. Trustworthy backtest** — next-bar-open fills (no look-ahead); correct short cash
       signs + signed-equity model; buying-power cap; timestamp alignment; timeframe-aware
       Sharpe/Sortino/annual-return. Verified by `tests/unit/test_backtesting.py`.
-- [ ] **6. Productionize** — baseline Alembic migration + `Prediction` model (one schema
-      source of truth); CI (ruff/mypy/pytest/docker build); non-root containers; real
-      frontend build; auth/login flow; reconcile FE/BE API paths.
+- [~] **6. Productionize** — **done:** CI (GitHub Actions: ruff + pytest gating, mypy
+      non-blocking) and a repo-wide lint cleanup so `ruff check` is green. **Pending:** baseline
+      Alembic migration + `Prediction` model, non-root containers + real frontend build,
+      auth/login flow, FE/BE API-path reconcile.
 - [ ] **7. Money-path tests** — DB-backed + API-level tests; replace the tautological e2e.
 
 **Do not enable live trading until items 0–5 are done and verified.** Today a single flag
@@ -309,10 +310,16 @@ Backtest correctness (roadmap item 5, verified by `tests/unit/test_backtesting.p
 - `backtesting/performance.py`: Sharpe/Sortino/annualised-return take periods_per_year from
   the timeframe (was hard-coded 252); Sortino uses full-period downside deviation.
 
-Still deferred: the manual-order **API → live execution** path (needs an async order-intent
-consumer in the worker) and feeding risk live equity/PnL. The productionisation items
-(roadmap 6) were left for deliberate, separately reviewed changes.
+CI + lint (roadmap item 6, partial):
+- `.github/workflows/ci.yml` (new): `lint` (`ruff check .`) and `test` (`pytest`) gate every
+  PR; `typecheck` (mypy `--strict`) runs non-blocking until the type debt is paid down.
+- Repo-wide lint cleanup: `ruff check .` is now green (was 253 issues). Auto-fixed unused
+  imports / import order / `datetime.UTC`; removed genuinely-dead locals; renamed an ambiguous
+  `l`; raised `line-length` to 120 and ignored `N803`/`N806` (ML matrix-naming convention) and
+  `UP042` (a `(str, Enum)`→`StrEnum` change would alter `str()` semantics). `ruff format` is
+  *not* enforced in CI yet — a one-off `ruff format` pass (74 files) is a separate change.
 
-> Note: `ruff check` still reports 9 pre-existing issues in these files (unused
-> imports/locals, import ordering) — unrelated to the above; fold into the lint-cleanup when
-> CI is added.
+Still deferred: the manual-order **API → live execution** path (needs an async order-intent
+consumer in the worker) and feeding risk live equity/PnL; plus the rest of productionisation
+(migrations + `Prediction` model, Docker hardening, frontend build, auth/login) — left for
+deliberate, separately reviewed changes.

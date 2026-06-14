@@ -9,17 +9,17 @@ signal generators) can react.
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 from typing import Any
 
-import numpy as np
 import polars as pl
 
 from config.settings import Settings, get_settings
 from core.events.base import Event, EventBus
 from core.events.market_events import BarCloseEvent
 from core.events.signal_events import FeaturesReadyEvent
-from services.feature_engineering.feature_store import FeatureStore
 from services.feature_engineering.feature_registry import FeatureRegistry
+from services.feature_engineering.feature_store import FeatureStore
 from services.feature_engineering.technical import indicators as ti
 
 logger = logging.getLogger(__name__)
@@ -166,10 +166,11 @@ class FeatureEngineeringService:
         """
         if self._store._db is not None:
             try:
-                from datetime import datetime, timedelta, timezone
+                from datetime import datetime, timedelta
+
                 from sqlalchemy import text
 
-                end = datetime.now(timezone.utc)
+                end = datetime.now(UTC)
                 start = end - timedelta(days=lookback)
                 query = (
                     "SELECT open, high, low, close, volume, vwap "
@@ -228,19 +229,19 @@ class FeatureEngineeringService:
         self._registry.register("bb_pct_b", lambda c: ti.bollinger(c)[4], _tech, "Bollinger %B")
         self._registry.register(
             "atr_14",
-            lambda h, l, c: ti.atr(h, l, c, 14),
+            lambda h, lo, c: ti.atr(h, lo, c, 14),
             _tech,
             "Average True Range (14)",
         )
         self._registry.register(
             "adx_14",
-            lambda h, l, c: ti.adx(h, l, c, 14),
+            lambda h, lo, c: ti.adx(h, lo, c, 14),
             _tech,
             "Average Directional Index (14)",
         )
         self._registry.register(
             "cci_20",
-            lambda h, l, c: ti.cci(h, l, c, 20),
+            lambda h, lo, c: ti.cci(h, lo, c, 20),
             _tech,
             "Commodity Channel Index (20)",
         )

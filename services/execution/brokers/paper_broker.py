@@ -6,7 +6,7 @@ import asyncio
 import random
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -220,7 +220,7 @@ class PaperBroker(BaseBroker):
             price=fill_price,
             quantity=order.quantity,
             commission=Decimal("0"),  # paper trading: no commissions
-            filled_at=datetime.now(timezone.utc),
+            filled_at=datetime.now(UTC),
         )
         self._fills.append(fill)
 
@@ -273,7 +273,7 @@ class PaperBroker(BaseBroker):
                 price=fill_price,
                 quantity=order.quantity,
                 commission=Decimal("0"),
-                filled_at=datetime.now(timezone.utc),
+                filled_at=datetime.now(UTC),
             )
             self._fills.append(fill)
 

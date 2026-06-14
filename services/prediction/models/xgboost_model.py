@@ -171,7 +171,11 @@ class XGBoostPredictor(BasePredictor):
             val_loss=val_loss,
             train_accuracy=train_accuracy,
             val_accuracy=val_accuracy,
-            epochs_trained=int(self._classifier.best_iteration) if hasattr(self._classifier, "best_iteration") else self._classifier.n_estimators,
+            epochs_trained=(
+                int(self._classifier.best_iteration)
+                if hasattr(self._classifier, "best_iteration")
+                else self._classifier.n_estimators
+            ),
             feature_importance=importance,
         )
 

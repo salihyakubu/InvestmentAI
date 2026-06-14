@@ -3,23 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from config.settings import Settings
 from core.events.base import Event, EventBus
-from core.events.market_events import BarCloseEvent
-from core.events.order_events import (
-    OrderCreatedEvent,
-    OrderFilledEvent,
-    OrderRejectedEvent,
-)
-from core.events.risk_events import CircuitBreakerEvent, RiskBreachedEvent
-from core.events.signal_events import PredictionReadyEvent
-from core.events.system_events import DriftDetectedEvent
 from services.monitoring.alerting import AlertManager, Severity
 from services.monitoring.audit import AuditLogger
 from services.monitoring.health import HealthChecker, HealthStatus
@@ -126,7 +116,7 @@ class MonitoringService:
 
     async def handle_event(self, event: Event) -> None:
         """Route an event to the appropriate handler and record lag."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         lag = (now - event.timestamp).total_seconds()
         self._metrics.record_event_lag(event.event_type, lag)
 
@@ -154,7 +144,7 @@ class MonitoringService:
 
     async def _handle_prediction_event(self, event: Event) -> None:
         """Track prediction metrics."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         lag = (now - event.timestamp).total_seconds()
         self._metrics.record_event_lag("PredictionReadyEvent", lag)
 

@@ -175,7 +175,11 @@ class LightGBMPredictor(BasePredictor):
             val_loss=val_loss,
             train_accuracy=train_accuracy,
             val_accuracy=val_accuracy,
-            epochs_trained=int(self._classifier.best_iteration_) if hasattr(self._classifier, "best_iteration_") else self._classifier.n_estimators,
+            epochs_trained=(
+                int(self._classifier.best_iteration_)
+                if hasattr(self._classifier, "best_iteration_")
+                else self._classifier.n_estimators
+            ),
             feature_importance=importance,
         )
 

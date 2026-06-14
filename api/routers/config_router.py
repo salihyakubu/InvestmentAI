@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from config.settings import get_settings as _get_settings
 from api.dependencies import get_current_user
 from api.schemas.risk import RiskRulesSchema
+from config.settings import get_settings as _get_settings
 
 router = APIRouter(prefix="/config")
 

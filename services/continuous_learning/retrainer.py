@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -57,7 +57,7 @@ class AutoRetrainer:
             return True
 
         interval = timedelta(hours=self._settings.retrain_interval_hours)
-        if datetime.now(timezone.utc) - last > interval:
+        if datetime.now(UTC) - last > interval:
             logger.info("retrainer.should_retrain.schedule", model_id=model_id)
             return True
 
@@ -107,10 +107,9 @@ class AutoRetrainer:
 
         # Validate against old model
         try:
-            old_model, old_meta = self._registry.get_active(model_type)
+            _, old_meta = self._registry.get_active(model_type)
             old_metrics = old_meta.metrics
         except ValueError:
-            old_model = None
             old_metrics = {}
 
         if not self._validate_new_model(new_metrics, old_metrics):
@@ -130,7 +129,7 @@ class AutoRetrainer:
         )
         self._registry.promote(new_model_id, version)
 
-        self._last_trained[model_id] = datetime.now(timezone.utc)
+        self._last_trained[model_id] = datetime.now(UTC)
         self._drift_flags[model_id] = False
 
         logger.info(

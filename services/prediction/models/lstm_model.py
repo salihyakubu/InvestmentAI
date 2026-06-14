@@ -16,7 +16,6 @@ DIRECTION_MAP = {0: "short", 1: "flat", 2: "long"}
 try:
     import torch
     import torch.nn as nn
-    from sklearn.metrics import accuracy_score
     from torch.utils.data import DataLoader, TensorDataset
 
     TORCH_AVAILABLE = True

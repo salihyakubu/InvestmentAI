@@ -48,12 +48,12 @@ async def _build_services(
     risk_manager = RiskManagerService(event_bus=event_bus, settings=settings)
 
     # -- Execution Engine --
+    from decimal import Decimal
+
     from services.execution.brokers.paper_broker import PaperBroker
     from services.execution.service import ExecutionEngineService
 
-    from decimal import Decimal as D
-
-    paper_broker = PaperBroker(initial_cash=D(str(settings.initial_capital)))
+    paper_broker = PaperBroker(initial_cash=Decimal(str(settings.initial_capital)))
     brokers: dict[str, Any] = {"paper": paper_broker}
 
     # Wire up live brokers only if real credentials are provided

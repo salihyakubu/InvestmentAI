@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -169,7 +169,7 @@ class ContinuousLearningService:
                 "prediction_id": prediction_id,
                 "predicted": direction,
                 "confidence": confidence,
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
             }
         )
 

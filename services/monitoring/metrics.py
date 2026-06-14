@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import time
-from typing import Any
-
 import structlog
 from prometheus_client import Counter, Gauge, Histogram
 

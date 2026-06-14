@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -45,7 +45,7 @@ class TradingFeedbackLoop:
         self._outcomes[prediction_id] = {
             "actual_return": actual_return,
             "trade_pnl": trade_pnl,
-            "recorded_at": datetime.now(timezone.utc),
+            "recorded_at": datetime.now(UTC),
         }
         logger.debug(
             "feedback.outcome_recorded",
@@ -73,7 +73,7 @@ class TradingFeedbackLoop:
             Dictionary with total_pnl, avg_return, win_rate, sharpe estimate,
             and sample_size.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
         pred_ids = self._model_predictions.get(model_id, [])
 
         pnl_values: list[float] = []

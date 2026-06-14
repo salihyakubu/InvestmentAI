@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.models.risk import RiskMetric
 from api.dependencies import get_current_user, get_db
 from api.schemas.common import SuccessResponse
 from api.schemas.risk import RiskMetricsSchema
+from core.models.risk import RiskMetric
 
 router = APIRouter(prefix="/risk")
 

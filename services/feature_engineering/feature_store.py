@@ -8,19 +8,19 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import numpy as np
 import polars as pl
 
 from services.feature_engineering.technical import indicators as ti
-from services.feature_engineering.technical.patterns import detect_patterns
 from services.feature_engineering.technical.microstructure import (
     price_momentum,
     volatility_regime,
     volume_profile,
 )
+from services.feature_engineering.technical.patterns import detect_patterns
 
 logger = logging.getLogger(__name__)
 

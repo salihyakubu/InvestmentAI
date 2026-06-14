@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 
-from api.dependencies import get_db, get_redis
 from api.schemas.common import HealthResponse
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ class CircuitBreaker:
         """Transition to OPEN state and record the timestamp."""
         previous = self._state
         self._state = CircuitBreakerState.OPEN
-        self._tripped_at = datetime.now(timezone.utc)
+        self._tripped_at = datetime.now(UTC)
         self._trip_reason = reason
 
         logger.warning(
@@ -164,7 +164,7 @@ class CircuitBreaker:
         if self._tripped_at is None:
             return False
 
-        elapsed = (datetime.now(timezone.utc) - self._tripped_at).total_seconds()
+        elapsed = (datetime.now(UTC) - self._tripped_at).total_seconds()
         cooldown_seconds = self.cooldown_minutes * 60
 
         if elapsed >= cooldown_seconds:
@@ -196,6 +196,6 @@ class CircuitBreaker:
         if self._tripped_at is None:
             return 0.0
 
-        elapsed = (datetime.now(timezone.utc) - self._tripped_at).total_seconds()
+        elapsed = (datetime.now(UTC) - self._tripped_at).total_seconds()
         remaining = max(self.cooldown_minutes * 60 - elapsed, 0.0)
         return remaining

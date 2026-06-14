@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.enums import OrderStatus
-from core.models.orders import Order
 from api.dependencies import get_current_user, get_db
 from api.schemas.orders import OrderCreate, OrderListResponse, OrderResponse
+from core.enums import OrderStatus
+from core.models.orders import Order
 
 router = APIRouter(prefix="/orders")
 
@@ -97,7 +97,7 @@ async def create_order(
     full pre-trade risk gate run in the worker process (see the execution
     engine's buying-power check) -- manual API orders are paper-mode for now.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     asset_class = "crypto" if "/" in payload.symbol else "stock"
     order = Order(
         symbol=payload.symbol,
@@ -147,6 +147,6 @@ async def cancel_order(
         )
 
     order.status = OrderStatus.CANCELLED.value
-    order.cancelled_at = datetime.now(timezone.utc)
-    order.updated_at = datetime.now(timezone.utc)
+    order.cancelled_at = datetime.now(UTC)
+    order.updated_at = datetime.now(UTC)
     await db.flush()

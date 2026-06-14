@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -23,7 +23,7 @@ class Event(BaseModel):
 
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     event_type: str = ""
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_service: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
 

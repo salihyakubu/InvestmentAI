@@ -5,7 +5,6 @@ from __future__ import annotations
 from decimal import Decimal
 
 import numpy as np
-import pytest
 
 from config.settings import Settings
 from core.events.base import InProcessEventBus

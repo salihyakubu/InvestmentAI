@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-import numpy as np
-
 from core.enums import OrderSide, OrderType
 
 logger = logging.getLogger(__name__)

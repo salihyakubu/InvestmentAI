@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config.settings import Settings, get_settings as _get_settings
-from core.events.base import EventBus
 from api.middleware.auth import JWTAuth
+from config.settings import Settings
+from config.settings import get_settings as _get_settings
+from core.events.base import EventBus
 
 logger = logging.getLogger(__name__)
 

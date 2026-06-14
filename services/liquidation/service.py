@@ -11,7 +11,6 @@ from core.events.base import Event, EventBus
 from core.events.market_events import PriceUpdateEvent
 from core.events.risk_events import RiskBreachedEvent
 from core.events.system_events import LiquidationTriggeredEvent
-
 from services.liquidation.emergency import EmergencyLiquidator
 from services.liquidation.stop_loss import StopLossManager
 from services.liquidation.trailing_stop import TrailingStopManager

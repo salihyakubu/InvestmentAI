@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import numpy as np
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -61,7 +60,7 @@ class ModelEvaluator:
                 "symbol": symbol,
                 "predicted": predicted,
                 "confidence": confidence,
-                "timestamp": datetime.now(timezone.utc),
+                "timestamp": datetime.now(UTC),
             }
         )
 
@@ -94,7 +93,7 @@ class ModelEvaluator:
         - Directional accuracy (predicted up/down matches actual).
         - Confidence calibration (actual accuracy per confidence bucket).
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
         preds = self._predictions.get(model_id, [])
         recent = [p for p in preds if p["timestamp"] >= cutoff]
 

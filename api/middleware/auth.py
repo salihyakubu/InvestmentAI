@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException, Request, Security, status
@@ -46,7 +46,7 @@ class JWTAuth:
         Returns:
             Encoded JWT string.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         payload: dict[str, Any] = {
             "sub": str(user_id),
             "role": role,
@@ -107,6 +107,7 @@ class APIKeyAuth:
 
         # Look up the key in the database via the app-level session factory
         from sqlalchemy import select
+
         from core.models.users import APIKey
 
         factory = request.app.state.db_session_factory

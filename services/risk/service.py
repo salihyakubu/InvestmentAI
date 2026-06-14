@@ -14,20 +14,17 @@ from core.enums import OrderSide
 from core.events.base import Event, EventBus
 from core.events.order_events import OrderFilledEvent
 from core.events.risk_events import (
-    CircuitBreakerEvent,
     RebalanceRequestEvent,
     RiskApprovedEvent,
     RiskBreachedEvent,
 )
 from core.events.streams import ORDERS, REBALANCE, RISK_APPROVED, RISK_BREACHED
-from services.risk.circuit_breaker import CircuitBreaker, CircuitBreakerState
+from services.risk.circuit_breaker import CircuitBreaker
 from services.risk.correlation_monitor import CorrelationMonitor
 from services.risk.drawdown_monitor import DrawdownMonitor, DrawdownState
 from services.risk.position_sizer import (
     FixedFractionalSizer,
-    KellyCriterionSizer,
     PositionSizer,
-    VolatilityTargetSizer,
 )
 from services.risk.rules import (
     CircuitBreakerRule,
@@ -262,7 +259,6 @@ class RiskManagerService:
 
         # Build rule evaluation context
         total_equity = float(self._equity) if self._equity > 0 else 1.0
-        current_position_value = self._positions.get(symbol, 0.0)
         proposed_position_pct = target_weight
 
         # Drawdown state
@@ -379,9 +375,7 @@ class RiskManagerService:
         # Deduct commission from equity
         self._equity -= Decimal(str(fill.commission))
 
-        # Update equity with the new position value
-        total_position_value = sum(self._positions.values())
-        # Note: equity is capital + unrealised; simplified here
+        # Update drawdown tracking with the latest equity.
         self.drawdown_monitor.update(float(self._equity))
 
         logger.debug(

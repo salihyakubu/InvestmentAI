@@ -7,8 +7,8 @@ from decimal import Decimal
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from core.enums import OrderStatus
 from config.settings import Settings
+from core.enums import OrderStatus
 from services.execution.brokers.base import BaseBroker, BrokerOrder
 
 logger = structlog.get_logger(__name__)
@@ -59,13 +59,14 @@ class AlpacaBroker(BaseBroker):
     )
     async def submit_order(self, order: BrokerOrder) -> str:
         """Submit an order to Alpaca and return the Alpaca order ID."""
+        from alpaca.trading.enums import OrderSide as AlpacaSide
+        from alpaca.trading.enums import TimeInForce
         from alpaca.trading.requests import (
             LimitOrderRequest,
             MarketOrderRequest,
             StopLimitOrderRequest,
             StopOrderRequest,
         )
-        from alpaca.trading.enums import OrderSide as AlpacaSide, TimeInForce
 
         client = self._get_client()
 

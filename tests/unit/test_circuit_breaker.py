@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -62,7 +61,7 @@ class TestHalfOpen:
         breaker.trip("test loss")
 
         # Simulate time passage beyond cooldown.
-        past = datetime.now(timezone.utc) - timedelta(minutes=31)
+        past = datetime.now(UTC) - timedelta(minutes=31)
         breaker._tripped_at = past
 
         reset = breaker.attempt_reset()

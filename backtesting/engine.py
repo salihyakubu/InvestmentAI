@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
-from config.settings import Settings
-from core.enums import OrderSide, OrderType, TimeFrame
-
 from backtesting.performance import PerformanceAnalyzer, TradeRecord
 from backtesting.simulator import Bar, MarketSimulator, SimulatedFill, SimulatedOrder
+from config.settings import Settings
+from core.enums import OrderSide, OrderType, TimeFrame
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class PortfolioState:
 
     cash: Decimal
     equity: Decimal
-    positions: dict[str, "OpenPosition"]
+    positions: dict[str, OpenPosition]
     timestamp: datetime | None = None
 
 

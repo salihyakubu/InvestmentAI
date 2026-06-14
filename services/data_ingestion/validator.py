@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -68,7 +67,7 @@ def validate_bar(bar: dict[str, Any]) -> tuple[bool, list[str]]:
 
     # ---- No future timestamps ----
     if bar_time is not None:
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         if isinstance(bar_time, datetime) and bar_time > now_utc:
             errors.append(f"bar timestamp {bar_time.isoformat()} is in the future")
 
