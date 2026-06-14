@@ -19,6 +19,7 @@ class TrainingDataset:
     y: np.ndarray
     feature_names: list[str] = field(default_factory=list)
     scaler: StandardScaler | None = None
+    returns: np.ndarray | None = None  # real forward returns aligned with y
 
 
 class TrainingDataLoader:
@@ -58,7 +59,8 @@ class TrainingDataLoader:
         Returns:
             :class:`TrainingDataset` with normalised X and labels y.
         """
-        labels = self._create_labels(close_prices, self.target_horizon_bars)
+        forward_returns = self._forward_returns(close_prices, self.target_horizon_bars)
+        labels = self._labels_from_returns(forward_returns)
 
         # Trim features to match labels length (labels are shorter by horizon)
         valid_len = len(labels)
@@ -83,6 +85,7 @@ class TrainingDataLoader:
             y=labels,
             feature_names=feature_names or [f"f{i}" for i in range(X.shape[1])],
             scaler=None,
+            returns=forward_returns,
         )
 
     def load_sequence_data(
@@ -124,18 +127,20 @@ class TrainingDataLoader:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _create_labels(self, close_prices: np.ndarray, horizon: int) -> np.ndarray:
-        """Create 3-class direction labels based on forward returns.
+    def _forward_returns(self, close_prices: np.ndarray, horizon: int) -> np.ndarray:
+        """Forward simple returns over *horizon* bars (len = len(close) - horizon)."""
+        return (close_prices[horizon:] - close_prices[:-horizon]) / close_prices[:-horizon]
 
-        Returns:
-            Array of length ``len(close_prices) - horizon`` with values
-            0 (short / down), 1 (flat), 2 (long / up).
-        """
-        forward_returns = (close_prices[horizon:] - close_prices[:-horizon]) / close_prices[:-horizon]
+    def _labels_from_returns(self, forward_returns: np.ndarray) -> np.ndarray:
+        """Map forward returns to 3-class labels: 0 short, 1 flat, 2 long."""
         labels = np.ones(len(forward_returns), dtype=np.int64)  # default flat
         labels[forward_returns <= self.down_threshold] = 0  # short
         labels[forward_returns >= self.up_threshold] = 2  # long
         return labels
+
+    def _create_labels(self, close_prices: np.ndarray, horizon: int) -> np.ndarray:
+        """Create 3-class direction labels based on forward returns."""
+        return self._labels_from_returns(self._forward_returns(close_prices, horizon))
 
     def _create_sequences(
         self,

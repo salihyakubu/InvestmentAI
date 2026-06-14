@@ -75,15 +75,18 @@ system — a well-built engine with no fuel line attached.
   does not exist on `TrainResult` → `new_metrics` is always `{}` → every retrain rejected;
   and the retrainer is fed `np.empty((0,0))` (`retrainer.py:173`) so it never trains.
 - **`expected_return` is fake:** all models map labels to `{-0.01, 0, +0.01}`
-  (`xgboost_model.py:137` and siblings), discarding the real forward returns.
+  (`xgboost_model.py:137` and siblings), discarding the real forward returns. _(Fixed for the
+  live tree models — the regressor now trains on real forward returns; see update below.)_
 - **LSTM/Transformer never contribute** at inference (sequence input hardcoded to `None`,
   `service.py:148`), so the live signal is only the (broken) tree models.
 
 > **Update (this commit):** the tree (direction) path is fixed — training no longer scales
 > features (train==serve) and inference orders features by the persisted `feature_names`; the
 > champion/challenger metrics bug is fixed. Verified by `tests/unit/test_prediction_serving.py`.
-> Still open: the regressor trains on fabricated ±1% returns (so `expected_return` magnitude is
-> a placeholder) and the sequence-model leakage — tracked separately.
+> The **tree regressor now trains on real forward returns** (the data loader exposes them and
+> the trainer threads them through), so `expected_return` carries real magnitude. Still open:
+> probability calibration / confidence-gating, and the sequence-model double-normalisation +
+> NN regressor (sequence models don't run at inference) — tracked separately.
 
 ### B — Backtest results cannot be trusted
 - **Look-ahead bias:** strategy sees bar *i* (close/high/low), decides, then is **filled at
@@ -239,8 +242,8 @@ resolves — pin it). _(DB-layer and API-layer coverage have since been added; s
       `tests/integration/test_trading_pipeline.py`. _(Done — see Appendix.)_
 - [x] **3. Fix ML serving (direction path)** — trees no longer scale (train==serve); inference
       orders features by persisted `feature_names`; empty-metrics promotion bug fixed via
-      `TrainResult.to_metrics()`. _(Deferred: regressor trains on fabricated ±1% returns so
-      `expected_return` magnitude is a placeholder; sequence-path leakage.)_
+      `TrainResult.to_metrics()`; the tree regressor now trains on real forward returns.
+      _(Deferred: probability calibration; sequence-path leakage.)_
 - [~] **4. Connect risk to the order path** — **done:** buying-power check + client-order-id
       idempotency in execution; strict order-input validation; positions fed from fills (item 2).
       **Deferred:** synchronous manual-API → execution wiring (needs an async order-intent
@@ -319,6 +322,10 @@ ML serving skew (roadmap item 3, verified by `tests/unit/test_prediction_serving
 - `services/continuous_learning/retrainer.py` + `models/base.py`: promotion uses
   `TrainResult.to_metrics()` (the old code read a non-existent `.metrics`, always `{}`).
   _(Runtime-unverified here: xgboost/lightgbm need OpenMP, absent in this environment.)_
+- `services/prediction/training/data_loader.py` + `trainer.py` + the tree models: the loader
+  now exposes the real forward returns and the trainer threads them into the regressor, so
+  `expected_return` is a real magnitude instead of a fabricated ±1% step. Verified by
+  `tests/unit/test_data_loader_returns.py`.
 
 Backtest correctness (roadmap item 5, verified by `tests/unit/test_backtesting.py`):
 - `backtesting/engine.py` + `simulator.py`: signals decided on a bar execute on the NEXT bar

@@ -115,6 +115,8 @@ class XGBoostPredictor(BasePredictor):
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
+        returns_train: np.ndarray | None = None,
+        returns_val: np.ndarray | None = None,
     ) -> TrainResult:
         """Train classifier and regressor with early stopping.
 
@@ -134,9 +136,13 @@ class XGBoostPredictor(BasePredictor):
         )
 
         # --- Regressor (approximate returns from labels if needed) ---
-        return_map = {0: -0.01, 1: 0.0, 2: 0.01}
-        y_train_returns = np.array([return_map.get(int(y), 0.0) for y in y_train])
-        y_val_returns = np.array([return_map.get(int(y), 0.0) for y in y_val])
+        if returns_train is not None and returns_val is not None:
+            y_train_returns = np.asarray(returns_train, dtype=np.float64)
+            y_val_returns = np.asarray(returns_val, dtype=np.float64)
+        else:
+            return_map = {0: -0.01, 1: 0.0, 2: 0.01}
+            y_train_returns = np.array([return_map.get(int(y), 0.0) for y in y_train])
+            y_val_returns = np.array([return_map.get(int(y), 0.0) for y in y_val])
 
         self._regressor.fit(
             X_train,
