@@ -151,10 +151,17 @@ system — a well-built engine with no fuel line attached.
   routes need a JWT; the client redirects 401s to a nonexistent `/login`. Several hooks call
   paths the API doesn't expose; the WS URL omits the `/api/v1` prefix.
 
+> **Update (this commit):** the backend now issues tokens — `POST /api/v1/auth/token` verifies
+> credentials (bcrypt) and returns a JWT (`api/routers/auth.py`), verified end-to-end by
+> `tests/integration/test_auth_login.py`. The frontend login page and the FE↔BE path /
+> WS-prefix reconcile still remain (need the JS toolchain).
+
 ---
 
 ## 🟠 High / 🟡 Medium (condensed)
 - Docker images run as **root**; the "frontend" prod image ships the **Vite dev server**.
+  _(Fixed for the Python images: non-root `USER` + the missing `libgomp1` (xgboost/lightgbm
+  OpenMP runtime) added to the root and api Dockerfiles. The frontend prod build remains.)_
 - Two divergent Dockerfiles (ports 8000 vs 8080; one installs dev deps into prod).
 - Redis EventBus **silently drops messages** on a failing handler — no retry/`XAUTOCLAIM`/DLQ
   (`core/events/base.py:131`); the in-process bus lets one bad subscriber crash the producer.
@@ -241,10 +248,10 @@ resolves — pin it). _(DB-layer and API-layer coverage have since been added; s
 - [x] **5. Trustworthy backtest** — next-bar-open fills (no look-ahead); correct short cash
       signs + signed-equity model; buying-power cap; timestamp alignment; timeframe-aware
       Sharpe/Sortino/annual-return. Verified by `tests/unit/test_backtesting.py`.
-- [~] **6. Productionize** — **done:** CI (ruff + pytest gating, mypy non-blocking) + repo-wide
-      lint cleanup; baseline Alembic migration + `Prediction` model + FK fix (schema coherent,
-      `ruff check` green). **Pending:** non-root containers + real frontend build, auth/login
-      flow, FE/BE API-path reconcile, `init.sql` retirement + Timescale hypertables.
+- [~] **6. Productionize** — **done:** CI + lint cleanup; baseline Alembic migration +
+      `Prediction` model + FK fix; non-root Python containers (+ `libgomp1`); backend
+      auth/login endpoint (`POST /auth/token`, bcrypt). **Pending:** frontend prod build +
+      login page + FE/BE API-path reconcile; `init.sql` retirement + Timescale hypertables.
 - [x] **7. Money-path tests** — DB-backed order/fill persistence tests (SQLite), API-level
       auth-enforcement + order-validation tests (FastAPI TestClient), and the tautological e2e
       replaced with deterministic cases. Suite: 71 passing.
@@ -350,7 +357,16 @@ Money-path tests (roadmap item 7):
 - `tests/e2e/test_full_trading_cycle.py`: the tautological if/else assertion (asserted both
   branches, so it could never fail) replaced with deterministic approve/reject cases.
 
+Auth + Docker (roadmap item 6, verified by `tests/integration/test_auth_login.py`):
+- `api/routers/auth.py` (new): `POST /api/v1/auth/token` verifies email/password and issues a
+  JWT. `api/middleware/auth.py`: bcrypt `hash_password`/`verify_password` (using the bcrypt
+  library directly — passlib is incompatible with bcrypt 4.x), with a dummy-hash path so login
+  timing doesn't reveal whether an email exists. `noload` on the api_keys relationship keeps
+  login to one query. Deps: `passlib[bcrypt]` → `bcrypt` in pyproject + requirements.
+- `Dockerfile` + `infrastructure/docker/Dockerfile.api`: run as a non-root `appuser` and add
+  `libgomp1` (the OpenMP runtime xgboost/lightgbm load at import — was missing).
+
 Still deferred: the manual-order **API → live execution** path (needs an async order-intent
 consumer in the worker) and feeding risk live equity/PnL; plus the rest of productionisation
-(Docker hardening, frontend build, auth/login, `init.sql` retirement + Timescale hypertables)
-— left for deliberate, separately reviewed changes.
+(frontend prod build + login page + FE/BE path reconcile, `init.sql` retirement + Timescale
+hypertables) — left for deliberate, separately reviewed changes.

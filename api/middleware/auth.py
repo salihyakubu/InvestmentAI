@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import bcrypt
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
 from jose import JWTError, jwt
@@ -15,6 +16,29 @@ logger = logging.getLogger(__name__)
 
 # Header scheme for API key authentication
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# bcrypt only uses the first 72 bytes of a password and (in 4.x) raises on
+# longer input, so we truncate explicitly. (Using the bcrypt library directly
+# rather than passlib, which is incompatible with bcrypt >= 4.)
+_BCRYPT_MAX_BYTES = 72
+
+
+def hash_password(password: str) -> str:
+    """Hash a plaintext password with bcrypt."""
+    digest = bcrypt.hashpw(
+        password.encode("utf-8")[:_BCRYPT_MAX_BYTES], bcrypt.gensalt()
+    )
+    return digest.decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a plaintext password against a bcrypt hash (False on any error)."""
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8")[:_BCRYPT_MAX_BYTES], hashed.encode("utf-8")
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 class JWTAuth:

@@ -13,6 +13,7 @@ from fastapi.responses import PlainTextResponse
 
 from api.routers import (
     audit,
+    auth,
     backtest,
     config_router,
     health,
@@ -106,6 +107,7 @@ app.add_middleware(
 API_V1 = "/api/v1"
 
 app.include_router(health.router, prefix=API_V1, tags=["health"])
+app.include_router(auth.router, prefix=API_V1, tags=["auth"])
 app.include_router(market_data.router, prefix=API_V1, tags=["market-data"])
 app.include_router(orders.router, prefix=API_V1, tags=["orders"])
 app.include_router(portfolio.router, prefix=API_V1, tags=["portfolio"])
