@@ -136,7 +136,17 @@ system — a well-built engine with no fuel line attached.
 - **Three divergent schemas:** `init.sql` (native enums + Timescale hypertables), the ORM
   (enums as `String`, **no `Prediction` model**), and empty Alembic. `core/models/orders.py:38`
   FKs `predictions.id`, a table the ORM doesn't define and whose real PK is composite.
+
+> **Update (this commit):** the empty-DB blocker and the broken FK are fixed. Added the
+> `Prediction` ORM model (simple `id` PK so `orders.prediction_id` resolves), a baseline Alembic
+> migration (`0001_baseline`, `create_all` from the ORM — now the single source of truth), and
+> `prepend_sys_path = .` so `alembic upgrade head` can import `core`/`config` on Railway.
+> Verified: alembic discovers the head, all 11 tables compile to PostgreSQL DDL, FK resolves
+> (`tests/unit/test_models_metadata.py`). Deferred: retiring `init.sql` and re-adding Timescale
+> hypertables/retention as a follow-up migration.
+
 - **No CI/CD** — `ruff`, `mypy --strict`, `pytest` all configured but nothing runs them.
+  _(Fixed: see roadmap item 6 / the CI commit.)_
 - **Frontend can't authenticate:** no login/token endpoint or login page exists, yet all
   routes need a JWT; the client redirects 401s to a nonexistent `/login`. Several hooks call
   paths the API doesn't expose; the WS URL omits the `/api/v1` prefix.
@@ -230,10 +240,10 @@ masked by running against whatever numpy resolves — pin it).
 - [x] **5. Trustworthy backtest** — next-bar-open fills (no look-ahead); correct short cash
       signs + signed-equity model; buying-power cap; timestamp alignment; timeframe-aware
       Sharpe/Sortino/annual-return. Verified by `tests/unit/test_backtesting.py`.
-- [~] **6. Productionize** — **done:** CI (GitHub Actions: ruff + pytest gating, mypy
-      non-blocking) and a repo-wide lint cleanup so `ruff check` is green. **Pending:** baseline
-      Alembic migration + `Prediction` model, non-root containers + real frontend build,
-      auth/login flow, FE/BE API-path reconcile.
+- [~] **6. Productionize** — **done:** CI (ruff + pytest gating, mypy non-blocking) + repo-wide
+      lint cleanup; baseline Alembic migration + `Prediction` model + FK fix (schema coherent,
+      `ruff check` green). **Pending:** non-root containers + real frontend build, auth/login
+      flow, FE/BE API-path reconcile, `init.sql` retirement + Timescale hypertables.
 - [ ] **7. Money-path tests** — DB-backed + API-level tests; replace the tautological e2e.
 
 **Do not enable live trading until items 0–5 are done and verified.** Today a single flag
@@ -319,7 +329,17 @@ CI + lint (roadmap item 6, partial):
   `UP042` (a `(str, Enum)`→`StrEnum` change would alter `str()` semantics). `ruff format` is
   *not* enforced in CI yet — a one-off `ruff format` pass (74 files) is a separate change.
 
+Schema & migrations (roadmap item 6, verified by `tests/unit/test_models_metadata.py`):
+- `core/models/predictions.py` (new): the missing `Prediction` ORM model, with a simple `id`
+  PK so `orders.prediction_id` resolves to a valid FK (was `NoReferencedTableError`).
+- `alembic/versions/0001_baseline_schema.py` (new): baseline migration that `create_all`s the
+  ORM schema — `alembic upgrade head` now builds the DB (was a no-op against an empty
+  `versions/`, so prod came up empty). ORM/alembic is the single source of truth.
+- `alembic.ini`: `prepend_sys_path = .` so alembic can import `core`/`config` (this would also
+  have broken on Railway, not just locally). `alembic/env.py` + `core/models/__init__.py`
+  register the new model.
+
 Still deferred: the manual-order **API → live execution** path (needs an async order-intent
 consumer in the worker) and feeding risk live equity/PnL; plus the rest of productionisation
-(migrations + `Prediction` model, Docker hardening, frontend build, auth/login) — left for
-deliberate, separately reviewed changes.
+(Docker hardening, frontend build, auth/login, `init.sql` retirement + Timescale hypertables)
+— left for deliberate, separately reviewed changes.

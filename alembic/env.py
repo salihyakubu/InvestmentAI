@@ -20,6 +20,7 @@ from core.models.ml_models import ModelMetadata  # noqa: F401
 from core.models.orders import Fill, Order  # noqa: F401
 from core.models.portfolio import PortfolioSnapshot  # noqa: F401
 from core.models.positions import Position  # noqa: F401
+from core.models.predictions import Prediction  # noqa: F401
 from core.models.risk import RiskMetric  # noqa: F401
 from core.models.users import APIKey, User  # noqa: F401
 
