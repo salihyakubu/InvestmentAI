@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,7 +52,7 @@ class APIKey(UUIDMixin, AsyncBase):
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     permissions: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, server_default="'[]'::jsonb"
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
