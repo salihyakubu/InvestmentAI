@@ -132,6 +132,8 @@ class RiskManagerService:
         self._equity: Decimal = self.settings.initial_capital
         self._daily_pnl_pct: float = 0.0
         self._returns_history: dict[str, list[float]] = {}  # symbol -> returns
+        # Equity at the start of the trading day, for daily-PnL computation.
+        self._day_start_equity: float = float(self.settings.initial_capital)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -477,6 +479,20 @@ class RiskManagerService:
         """Set the current daily PnL percentage."""
         self._daily_pnl_pct = pnl_pct
 
+    def sync_account(self, equity: Decimal | float) -> None:
+        """Feed the live broker account into the risk engine.
+
+        Sets current equity, recomputes daily PnL versus the day's starting
+        equity, and advances the drawdown monitor -- so the drawdown rule and
+        circuit breaker act on real account state, not stale/empty values. A
+        worker should call this periodically with ``broker.get_account()``.
+        """
+        self._equity = Decimal(str(equity))
+        eq = float(self._equity)
+        if self._day_start_equity > 0:
+            self._daily_pnl_pct = (eq - self._day_start_equity) / self._day_start_equity
+        self.drawdown_monitor.update(eq)
+
     def update_returns(self, symbol: str, returns: list[float]) -> None:
         """Set the historical return series for a symbol."""
         self._returns_history[symbol] = returns
@@ -491,6 +507,7 @@ class RiskManagerService:
     def reset_daily(self) -> None:
         """Reset daily counters at the start of a new trading day."""
         self._daily_pnl_pct = 0.0
+        self._day_start_equity = float(self._equity)
         self.drawdown_monitor.reset_daily(float(self._equity))
         self.circuit_breaker.reset()
         logger.info("Risk manager daily reset complete.")
