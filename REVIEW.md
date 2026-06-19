@@ -55,8 +55,9 @@ system — a well-built engine with no fuel line attached.
 > **Update (this commit):** rows 1–2 are now **fixed and verified** by an end-to-end
 > integration test (`tests/integration/test_trading_pipeline.py`): `RebalanceRequestEvent`
 > → risk sizes + risk-checks → `RiskApprovedEvent` (full order params) → execution creates +
-> submits → paper broker fills → `OrderFilledEvent` → risk position feedback. Rows 3–4 (the
-> order-API bypass and the orphaned live inputs) remain — that is roadmap item 4 below.
+> submits → paper broker fills → `OrderFilledEvent` → risk position feedback. Rows 3–4 are now
+> addressed too: the order API publishes an `OrderIntentEvent` the execution worker executes,
+> and live equity is fed to the risk engine via `sync_account()` on a worker timer.
 
 ---
 
@@ -250,10 +251,11 @@ resolves — pin it). _(DB-layer and API-layer coverage have since been added; s
       orders features by persisted `feature_names`; empty-metrics promotion bug fixed via
       `TrainResult.to_metrics()`; the tree regressor now trains on real forward returns.
       _(Deferred: probability calibration; sequence-path leakage.)_
-- [~] **4. Connect risk to the order path** — **done:** buying-power check + client-order-id
-      idempotency in execution; strict order-input validation; positions fed from fills (item 2).
-      **Deferred:** synchronous manual-API → execution wiring (needs an async order-intent
-      consumer) and the equity/PnL feed. See Appendix.
+- [x] **4. Connect risk to the order path** — buying-power + client-order-id idempotency;
+      strict order-input validation; positions fed from fills; live equity/PnL → circuit
+      breaker via `sync_account()` on a worker timer; the manual order API publishes an
+      `OrderIntentEvent` the execution worker executes. _(Remaining: sync the DB order row's
+      status from fills — reporting only.)_
 - [x] **5. Trustworthy backtest** — next-bar-open fills (no look-ahead); correct short cash
       signs + signed-equity model; buying-power cap; timestamp alignment; timeframe-aware
       Sharpe/Sortino/annual-return. Verified by `tests/unit/test_backtesting.py`.
