@@ -21,5 +21,8 @@ RISK_BREACHED = "risk.breached"
 # (created / filled / rejected / cancelled) all flow on this stream.
 ORDERS = "orders"
 
+# API -> Execution: a manual order request for the worker to execute.
+ORDER_INTENTS = "order.intents"
+
 # Prediction -> Portfolio: model predictions ready for optimisation.
 PREDICTIONS = "predictions"

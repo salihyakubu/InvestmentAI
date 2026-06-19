@@ -9,11 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, get_db
+from api.dependencies import get_current_user, get_db, get_event_bus
 from api.middleware.rate_limit import RateLimiter
 from api.schemas.orders import OrderCreate, OrderListResponse, OrderResponse
 from config.settings import get_settings
 from core.enums import OrderStatus
+from core.events.base import EventBus
+from core.events.order_events import OrderIntentEvent
+from core.events.streams import ORDER_INTENTS
 from core.models.orders import Order
 
 router = APIRouter(prefix="/orders")
@@ -89,7 +92,7 @@ async def get_order(
 @router.post(
     "",
     response_model=OrderResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Submit a manual order",
 )
 async def create_order(
@@ -97,13 +100,15 @@ async def create_order(
     db: AsyncSession = Depends(get_db),
     _user: dict = Depends(get_current_user),
     _rate: None = Depends(_order_limiter),
+    bus: EventBus | None = Depends(get_event_bus),
 ) -> OrderResponse:
     """Submit a new manual order.
 
-    The payload is validated for bounds and price consistency by
-    ``OrderCreate``. The order is persisted as PENDING; live execution and the
-    full pre-trade risk gate run in the worker process (see the execution
-    engine's buying-power check) -- manual API orders are paper-mode for now.
+    Validated by ``OrderCreate``, persisted as PENDING, then published as an
+    ``OrderIntentEvent`` for the execution worker (202 Accepted). Manual orders
+    are paper-mode and rely on the execution-level safety gates (buying-power,
+    halt). If the event bus is unavailable the order is persisted but not
+    dispatched.
     """
     now = datetime.now(UTC)
     asset_class = "crypto" if "/" in payload.symbol else "stock"
@@ -123,6 +128,21 @@ async def create_order(
     db.add(order)
     await db.flush()
     await db.refresh(order)
+
+    if bus is not None:
+        await bus.publish(
+            ORDER_INTENTS,
+            OrderIntentEvent(
+                order_id=str(order.id),
+                symbol=order.symbol,
+                side=order.side,
+                order_type=order.order_type,
+                quantity=float(order.quantity),
+                limit_price=float(order.limit_price) if order.limit_price is not None else None,
+                stop_price=float(order.stop_price) if order.stop_price is not None else None,
+                source_service="api",
+            ),
+        )
 
     return OrderResponse.model_validate(order)
 

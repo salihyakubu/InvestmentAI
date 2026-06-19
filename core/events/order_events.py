@@ -38,3 +38,19 @@ class OrderCancelledEvent(Event):
 
     order_id: str
     reason: str = ""
+
+
+class OrderIntentEvent(Event):
+    """A manual order request published by the API for the execution worker.
+
+    Carries the full order so execution can create and submit it; ``order_id``
+    is the DB order id, used as a correlation handle.
+    """
+
+    symbol: str
+    side: str
+    quantity: float
+    order_type: str = "market"
+    order_id: str = ""
+    limit_price: float | None = None
+    stop_price: float | None = None

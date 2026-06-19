@@ -17,7 +17,7 @@ from core.events import (
     OrderRejectedEvent,
 )
 from core.events.base import Event
-from core.events.streams import ORDERS, RISK_APPROVED
+from core.events.streams import ORDER_INTENTS, ORDERS, RISK_APPROVED
 from services.execution.brokers.base import BaseBroker, BrokerOrder
 from services.execution.fill_tracker import FillTracker
 from services.execution.order_manager import OrderError, OrderManager
@@ -76,6 +76,12 @@ class ExecutionEngineService:
             group=_CONSUMER_GROUP,
             consumer="exec-worker-1",
             handler=self._handle_risk_approved,
+        )
+        await self._event_bus.subscribe(
+            stream=ORDER_INTENTS,
+            group=_CONSUMER_GROUP,
+            consumer="exec-intents-1",
+            handler=self._handle_order_intent,
         )
         self._monitor_task = asyncio.create_task(self._monitor_pending_orders())
         logger.info("execution_engine_started")
@@ -183,6 +189,44 @@ class ExecutionEngineService:
         except Exception as exc:
             logger.warning("buying_power_check_failed", error=str(exc))
             return None
+
+    async def _handle_order_intent(self, event: Event) -> None:
+        """Handle a manual OrderIntentEvent: create + submit the order.
+
+        Manual orders rely on the execution-level gates (buying-power, halt)
+        rather than the weight-based pre_trade_check used by the rebalance path.
+        """
+        symbol = getattr(event, "symbol", "") or event.payload.get("symbol", "")
+        side = getattr(event, "side", "") or event.payload.get("side", "")
+        order_type = (
+            getattr(event, "order_type", "")
+            or event.payload.get("order_type", "")
+            or "market"
+        )
+        quantity_raw = getattr(event, "quantity", 0.0) or event.payload.get("quantity", 0.0)
+        if not symbol or not side:
+            logger.warning("order_intent_missing_fields", event_id=event.event_id)
+            return
+        try:
+            quantity = Decimal(str(quantity_raw))
+        except (InvalidOperation, ValueError):
+            logger.warning("order_intent_bad_quantity", quantity=quantity_raw)
+            return
+        if quantity <= 0:
+            return
+        try:
+            await self.submit_order(
+                order_id=None,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=self._coerce_decimal(getattr(event, "limit_price", None)),
+                stop_price=self._coerce_decimal(getattr(event, "stop_price", None)),
+                reference_price=self._coerce_decimal(getattr(event, "reference_price", None)),
+            )
+        except Exception as exc:
+            logger.error("order_intent_submit_failed", error=str(exc))
 
     # ------------------------------------------------------------------
     # Public API
