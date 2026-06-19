@@ -173,11 +173,33 @@ async def _run() -> None:
     await asyncio.gather(*start_tasks)
     logger.info("worker.all_services_started")
 
+    # Periodically sync the live broker account into the risk engine so the
+    # drawdown monitor / circuit breaker act on real capital.
+    from decimal import Decimal
+
+    from services.execution.service import ExecutionEngineService
+    from services.risk.service import RiskManagerService
+
+    risk = next((s for s in services if isinstance(s, RiskManagerService)), None)
+    execution = next((s for s in services if isinstance(s, ExecutionEngineService)), None)
+    account_sync_task: asyncio.Task | None = None
+    if risk is not None and execution is not None and execution.brokers:
+        broker = next(iter(execution.brokers.values()))
+
+        async def _equity_provider() -> Decimal:
+            account = await broker.get_account()
+            return Decimal(str(account.get("equity", "0")))
+
+        account_sync_task = asyncio.create_task(risk.run_account_sync(_equity_provider))
+        logger.info("worker.account_sync_started")
+
     # Wait until shutdown signal
     await shutdown_event.wait()
 
     # Graceful shutdown
     logger.info("worker.shutting_down")
+    if account_sync_task is not None:
+        account_sync_task.cancel()
     stop_tasks = []
     for svc in reversed(services):
         if hasattr(svc, "stop"):

@@ -5,6 +5,7 @@ never fed from the broker account, leaving those controls blind.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import pytest
@@ -40,3 +41,27 @@ def test_sync_account_healthy_allows_trading(mock_settings: Settings) -> None:
     svc.sync_account(Decimal("10050"))  # +0.5%, no breach
     decision = svc.pre_trade_check({"symbol": "AAPL", "target_weight": 0.05})
     assert decision.approved
+
+
+@pytest.mark.asyncio
+async def test_account_sync_loop_feeds_risk(mock_settings: Settings) -> None:
+    svc = _svc(mock_settings)
+    calls = {"n": 0}
+
+    async def provider() -> Decimal:
+        calls["n"] += 1
+        return Decimal("8000")  # -20% intraday
+
+    task = asyncio.create_task(svc.run_account_sync(provider, interval_seconds=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert calls["n"] >= 1
+    assert svc._daily_pnl_pct == pytest.approx(-0.20)
+    # The synced loss must have tripped the circuit breaker.
+    decision = svc.pre_trade_check({"symbol": "AAPL", "target_weight": 0.05})
+    assert not decision.approved

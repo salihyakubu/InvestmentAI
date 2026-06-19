@@ -335,6 +335,11 @@ class ExecutionEngineService:
         """Whether the engine is currently refusing new orders."""
         return self._halted
 
+    @property
+    def brokers(self) -> dict[str, BaseBroker]:
+        """Configured brokers (name -> adapter)."""
+        return self._brokers
+
     def halt(self) -> None:
         """Stop accepting new orders."""
         self._halted = True

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -492,6 +494,25 @@ class RiskManagerService:
         if self._day_start_equity > 0:
             self._daily_pnl_pct = (eq - self._day_start_equity) / self._day_start_equity
         self.drawdown_monitor.update(eq)
+
+    async def run_account_sync(
+        self,
+        account_provider: Callable[[], Awaitable[Decimal | float | None]],
+        interval_seconds: float = 30.0,
+    ) -> None:
+        """Background loop: periodically pull live equity via *account_provider*
+        and feed it into the risk engine, so the drawdown monitor and circuit
+        breaker track real capital. Runs until cancelled."""
+        while True:
+            try:
+                await asyncio.sleep(interval_seconds)
+                equity = await account_provider()
+                if equity is not None:
+                    self.sync_account(equity)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Account sync iteration failed")
 
     def update_returns(self, symbol: str, returns: list[float]) -> None:
         """Set the historical return series for a symbol."""
