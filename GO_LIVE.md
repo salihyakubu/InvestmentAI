@@ -15,12 +15,14 @@ and Stage 3 (paper soak) pass.**
   (`scripts/validate_model.py`); auth path verified on real Postgres.
 
 ## Stage 1 — Deploy + smoke test on real infra ⚙️
-1. 🔴 **Rotate credentials** (the leaked ones are compromised):
-   - New Alpaca + Binance API keys (broker dashboards).
-   - `ALPACA_BASE_URL=https://paper-api.alpaca.markets` (paper).
-   - Strong `JWT_SECRET` (≥32 random chars). In live mode the app refuses to
-     start with the default — by design.
-   - Put all of these in Railway's secret store, not a file.
+1. ✅ **Rotate credentials** (done locally 2026-06-21; old keys revoked at source):
+   - New Alpaca key verified live against the paper endpoint (HTTP 200, ACTIVE).
+   - New Binance key set (64/64); old key deleted in console = revoked.
+   - Strong `JWT_SECRET` (64 random hex chars) in place — no longer the default.
+   - `ALPACA_BASE_URL=https://paper-api.alpaca.markets` (paper) confirmed.
+   - ⚠️ Still TODO at deploy time: put these same 5 secrets in Railway's secret
+     store (the local `.env` is not shipped). In live mode the app refuses to
+     start with the default `JWT_SECRET` — by design.
 2. Deploy (Railway uses `Dockerfile`; release runs `alembic upgrade head`).
    Locally: `docker compose up` then `alembic upgrade head`.
 3. Create a login user: `PYTHONPATH=. python scripts/create_user.py you@x.com '<pw>' admin`.
