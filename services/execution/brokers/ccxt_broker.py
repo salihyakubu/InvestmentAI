@@ -48,6 +48,12 @@ class CCXTBroker(BaseBroker):
                     "adjustForTimeDifference": True,
                 },
             })
+            # Paper-first: only touch the real Binance venue in live mode.
+            # Outside live mode, route to Binance's testnet/sandbox so a
+            # misrouted order can never reach real funds -- mirroring
+            # AlpacaBroker's paper default and the CCXTDataProvider sandbox flag.
+            if self._settings.trading_mode != "live":
+                self._exchange.set_sandbox_mode(True)
             await self._exchange.load_markets()
         return self._exchange
 

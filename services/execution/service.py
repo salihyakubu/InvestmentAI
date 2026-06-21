@@ -291,10 +291,33 @@ class ExecutionEngineService:
             limit_price=order.limit_price,
         )
 
-        broker = self._brokers.get(decision.broker_name)
+        # The router returns None when no broker is safe to route to (e.g. only
+        # live brokers wired in a non-live mode). Refuse rather than dispatch.
+        broker_name = decision.broker_name
+        if broker_name is None:
+            await self._publish_rejected(
+                order_id,
+                f"no_safe_broker symbol={order.symbol} "
+                f"trading_mode={self._settings.trading_mode}",
+            )
+            return order
+
+        broker = self._brokers.get(broker_name)
         if broker is None:
-            reason = f"Broker not found: {decision.broker_name}"
-            await self._publish_rejected(order_id, reason)
+            await self._publish_rejected(order_id, f"Broker not found: {broker_name}")
+            return order
+
+        # Hard safety guard (defence in depth): never dispatch to a venue that
+        # can place real-money orders unless we are explicitly in live mode.
+        # This is independent of the router's selection and of broker-dict
+        # ordering, so the paper-first posture holds even if a live broker is
+        # somehow wired or selected outside live mode.
+        if broker.supports_live and self._settings.trading_mode != "live":
+            await self._publish_rejected(
+                order_id,
+                f"live_broker_blocked broker={broker_name} "
+                f"trading_mode={self._settings.trading_mode}",
+            )
             return order
 
         # Pre-trade buying-power check for buys (defence on the money path).
@@ -326,20 +349,20 @@ class ExecutionEngineService:
             external_id = await broker.submit_order(broker_order)
             self._order_manager.update_status(order_id, OrderStatus.SUBMITTED)
             order.external_id = external_id
-            order.broker_name = decision.broker_name
-            self._in_flight[order_id] = (decision.broker_name, external_id)
+            order.broker_name = broker_name
+            self._in_flight[order_id] = (broker_name, external_id)
 
             logger.info(
                 "order_submitted_to_broker",
                 order_id=order_id,
-                broker=decision.broker_name,
+                broker=broker_name,
                 external_id=external_id,
             )
         except Exception as exc:
             logger.error(
                 "broker_submit_failed",
                 order_id=order_id,
-                broker=decision.broker_name,
+                broker=broker_name,
                 error=str(exc),
             )
             await self._publish_rejected(order_id, str(exc))

@@ -34,7 +34,7 @@ class ChildOrder:
 class RoutingDecision:
     """The result of the smart router's analysis."""
 
-    broker_name: str
+    broker_name: str | None  # None when no broker is safe to route to
     algo_type: str  # "direct", "twap", or "vwap"
     child_orders: list[ChildOrder] = field(default_factory=list)
 
@@ -137,24 +137,54 @@ class SmartOrderRouter:
         )
         return decision
 
-    def _select_broker(self, symbol: str) -> str:
-        """Select a broker based on symbol's asset class."""
+    def _select_broker(self, symbol: str) -> str | None:
+        """Select a broker for *symbol* by asset class, honouring trading mode.
+
+        Safety: outside live mode we only ever consider brokers that cannot
+        place real-money orders (``supports_live is False``). This filter --
+        not dict insertion order -- is what protects paper/backtest traffic
+        from reaching a live venue. Reordering, removing, or rebuilding the
+        brokers dict therefore cannot accidentally route a "paper" crypto
+        order to the real Binance venue.
+
+        Returns the chosen broker name, or ``None`` when no broker is eligible
+        (e.g. only live brokers are wired in a non-live mode); the caller must
+        refuse to dispatch in that case rather than fall back to a live venue.
+        """
         # Crypto symbols typically contain a slash (e.g. BTC/USDT).
         if "/" in symbol:
             target_class = AssetClass.CRYPTO
         else:
             target_class = AssetClass.STOCK
 
-        for name, broker in self._brokers.items():
+        live_mode = self._settings.trading_mode == "live"
+        eligible = [
+            (name, broker)
+            for name, broker in self._brokers.items()
+            if live_mode or not broker.supports_live
+        ]
+
+        for name, broker in eligible:
             if broker.asset_class == target_class or broker.asset_class == "all":
                 return name
 
-        # Fallback to the first available broker.
-        first = next(iter(self._brokers))
-        logger.warning(
-            "smart_router_no_class_match",
+        # No asset-class match among eligible brokers; fall back to the first
+        # eligible broker (guaranteed non-live outside live mode).
+        if eligible:
+            first = eligible[0][0]
+            logger.warning(
+                "smart_router_no_class_match",
+                symbol=symbol,
+                target_class=target_class,
+                fallback=first,
+            )
+            return first
+
+        # Nothing safe to route to. Refuse rather than touch a live venue.
+        logger.error(
+            "smart_router_no_safe_broker",
             symbol=symbol,
             target_class=target_class,
-            fallback=first,
+            trading_mode=self._settings.trading_mode,
         )
-        return first
+        return None
