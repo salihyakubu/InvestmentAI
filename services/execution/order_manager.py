@@ -34,6 +34,7 @@ class Order:
     avg_fill_price: Decimal | None = None
     external_id: str | None = None
     broker_name: str | None = None
+    client_order_id: str | None = None  # correlates to the originating DB order id
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -123,6 +124,7 @@ class OrderManager:
         quantity: Decimal,
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
+        client_order_id: str | None = None,
     ) -> Order:
         """Create a new order in PENDING status."""
         order_id = str(uuid.uuid4())
@@ -134,6 +136,7 @@ class OrderManager:
             quantity=quantity,
             limit_price=limit_price,
             stop_price=stop_price,
+            client_order_id=client_order_id,
         )
         self._orders[order_id] = order
         self._fills[order_id] = []

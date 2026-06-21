@@ -214,6 +214,9 @@ class ExecutionEngineService:
             return
         if quantity <= 0:
             return
+        # The intent's order_id is the originating DB order id; carry it as the
+        # client order id so fills can be persisted back to that row.
+        db_order_id = getattr(event, "order_id", "") or event.payload.get("order_id", "")
         try:
             await self.submit_order(
                 order_id=None,
@@ -224,6 +227,7 @@ class ExecutionEngineService:
                 limit_price=self._coerce_decimal(getattr(event, "limit_price", None)),
                 stop_price=self._coerce_decimal(getattr(event, "stop_price", None)),
                 reference_price=self._coerce_decimal(getattr(event, "reference_price", None)),
+                client_order_id=db_order_id or None,
             )
         except Exception as exc:
             logger.error("order_intent_submit_failed", error=str(exc))
@@ -242,6 +246,7 @@ class ExecutionEngineService:
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
         reference_price: Decimal | None = None,
+        client_order_id: str | None = None,
     ):
         """Create (or reuse) an order, route it, and submit to the broker."""
         if self._halted:
@@ -256,6 +261,7 @@ class ExecutionEngineService:
                 quantity=quantity,
                 limit_price=limit_price,
                 stop_price=stop_price,
+                client_order_id=client_order_id,
             )
             order_id = order.order_id
         else:
@@ -525,6 +531,7 @@ class ExecutionEngineService:
                                     side=side,
                                     fill_price=float(filled_price),
                                     fill_quantity=float(filled_qty),
+                                    client_order_id=(order.client_order_id or "") if order else "",
                                     source_service="execution-engine",
                                 ),
                             )
@@ -562,6 +569,7 @@ class ExecutionEngineService:
 
     async def _publish_rejected(self, order_id: str, reason: str) -> None:
         """Mark an order as rejected and publish the event."""
+        order = self._order_manager.get_order(order_id)
         try:
             self._order_manager.update_status(order_id, OrderStatus.REJECTED)
         except OrderError:
@@ -571,6 +579,7 @@ class ExecutionEngineService:
             OrderRejectedEvent(
                 order_id=order_id,
                 reason=reason,
+                client_order_id=(order.client_order_id or "") if order else "",
                 source_service="execution-engine",
             ),
         )

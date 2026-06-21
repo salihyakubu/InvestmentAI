@@ -24,6 +24,7 @@ class OrderFilledEvent(Event):
     commission: float = 0.0
     symbol: str = ""
     side: str = ""  # OrderSide value
+    client_order_id: str = ""  # originating DB order id, if any
 
 
 class OrderRejectedEvent(Event):
@@ -31,6 +32,7 @@ class OrderRejectedEvent(Event):
 
     order_id: str
     reason: str
+    client_order_id: str = ""  # originating DB order id, if any
 
 
 class OrderCancelledEvent(Event):

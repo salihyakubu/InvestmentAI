@@ -135,6 +135,14 @@ async def _build_services(
         audit_logger=audit_logger,
     )
 
+    # -- Order persistence (sync DB order/fill rows from execution events) --
+    from core.models.base import get_async_session_factory
+    from services.persistence.order_sync import OrderPersistenceService
+
+    order_persistence = OrderPersistenceService(
+        event_bus=event_bus, session_factory=get_async_session_factory()
+    )
+
     return [
         data_ingestion,
         feature_engineering,
@@ -145,6 +153,7 @@ async def _build_services(
         liquidation,
         continuous_learning,
         monitoring,
+        order_persistence,
     ]
 
 
