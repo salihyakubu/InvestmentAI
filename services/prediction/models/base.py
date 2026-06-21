@@ -30,12 +30,35 @@ class TrainResult:
     epochs_trained: int
     feature_importance: dict[str, float] | None = None
 
+    def to_metrics(self) -> dict[str, float]:
+        """Flatten the core metrics for the registry / promotion gate.
+
+        ``TrainResult`` has no ``metrics`` attribute, so callers must build the
+        dict from these fields (a previous bug read a non-existent attribute and
+        silently produced an empty dict, breaking champion/challenger).
+        """
+        return {
+            "train_loss": self.train_loss,
+            "val_loss": self.val_loss,
+            "train_accuracy": self.train_accuracy,
+            "val_accuracy": self.val_accuracy,
+        }
+
 
 class BasePredictor(ABC):
     """Interface that every prediction model must implement."""
 
     model_type: str = "base"
     required_features: list[str] = []
+
+    @property
+    def feature_names(self) -> list[str]:
+        """Ordered training feature names, if the model recorded them.
+
+        Used at inference to build the feature vector in the *same* column order
+        the model was trained on, avoiding train/serve feature skew.
+        """
+        return list(getattr(self, "_feature_names", []) or [])
 
     @abstractmethod
     def predict(self, features: np.ndarray) -> PredictionOutput:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
@@ -180,7 +180,7 @@ class TimeBasedRule(LiquidationRule):
                 symbol=position.symbol,
             )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         held_seconds = (now - position.entry_time).total_seconds()
         triggered = held_seconds >= position.max_hold_seconds
 

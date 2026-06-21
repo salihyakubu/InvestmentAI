@@ -7,13 +7,12 @@ unit and integration tests without requiring a live database connection.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import factory
 
 from core.enums import AssetClass, OrderSide, OrderStatus, OrderType, TradingMode
-
 
 # ---------------------------------------------------------------------------
 # OHLCV Factory
@@ -26,7 +25,7 @@ class OHLCVFactory(factory.Factory):
     class Meta:
         model = dict
 
-    time = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    time = factory.LazyFunction(lambda: datetime.now(UTC))
     symbol = "AAPL"
     timeframe = "1d"
     asset_class = AssetClass.STOCK
@@ -38,7 +37,7 @@ class OHLCVFactory(factory.Factory):
     vwap = factory.LazyFunction(lambda: Decimal("151.00"))
     trade_count = 125000
     source = "test"
-    ingested_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    ingested_at = factory.LazyFunction(lambda: datetime.now(UTC))
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +68,8 @@ class OrderFactory(factory.Factory):
     submitted_at = None
     filled_at = None
     cancelled_at = None
-    created_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
-    updated_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    created_at = factory.LazyFunction(lambda: datetime.now(UTC))
+    updated_at = factory.LazyFunction(lambda: datetime.now(UTC))
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +90,8 @@ class FillFactory(factory.Factory):
     quantity = factory.LazyFunction(lambda: Decimal("10"))
     commission = factory.LazyFunction(lambda: Decimal("0.00"))
     slippage_bps = 1.5
-    filled_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
-    created_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    filled_at = factory.LazyFunction(lambda: datetime.now(UTC))
+    created_at = factory.LazyFunction(lambda: datetime.now(UTC))
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +117,9 @@ class PositionFactory(factory.Factory):
     stop_loss_price = None
     trailing_stop_pct = None
     highest_price = None
-    opened_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    opened_at = factory.LazyFunction(lambda: datetime.now(UTC))
     closed_at = None
-    updated_at = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    updated_at = factory.LazyFunction(lambda: datetime.now(UTC))
 
 
 # ---------------------------------------------------------------------------
@@ -140,4 +139,4 @@ class PredictionFactory(factory.Factory):
     confidence = 0.75
     expected_return = 0.02
     model_id = "xgboost_v1"
-    timestamp = factory.LazyFunction(lambda: datetime.now(timezone.utc))
+    timestamp = factory.LazyFunction(lambda: datetime.now(UTC))

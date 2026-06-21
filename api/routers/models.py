@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.models.ml_models import ModelMetadata
 from api.dependencies import get_current_user, get_db
 from api.schemas.common import SuccessResponse
+from core.models.ml_models import ModelMetadata
 
 router = APIRouter(prefix="/models")
 

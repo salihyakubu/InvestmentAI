@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.models.portfolio import PortfolioSnapshot
 from api.dependencies import get_current_user, get_db
 from api.schemas.common import SuccessResponse
 from api.schemas.portfolio import AllocationSchema, PortfolioSummary
+from core.models.portfolio import PortfolioSnapshot
 
 router = APIRouter(prefix="/portfolio")
 

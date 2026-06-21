@@ -5,22 +5,23 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from config.settings import get_settings
+from core.models.audit import AuditLog  # noqa: F401
 
 # Import all models so Alembic autogenerate can detect them.
 from core.models.base import AsyncBase
 from core.models.market_data import OHLCVRecord  # noqa: F401
-from core.models.orders import Fill, Order  # noqa: F401
-from core.models.positions import Position  # noqa: F401
-from core.models.portfolio import PortfolioSnapshot  # noqa: F401
-from core.models.risk import RiskMetric  # noqa: F401
 from core.models.ml_models import ModelMetadata  # noqa: F401
-from core.models.audit import AuditLog  # noqa: F401
+from core.models.orders import Fill, Order  # noqa: F401
+from core.models.portfolio import PortfolioSnapshot  # noqa: F401
+from core.models.positions import Position  # noqa: F401
+from core.models.predictions import Prediction  # noqa: F401
+from core.models.risk import RiskMetric  # noqa: F401
 from core.models.users import APIKey, User  # noqa: F401
 
 # This is the Alembic Config object.

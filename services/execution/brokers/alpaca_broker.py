@@ -7,8 +7,8 @@ from decimal import Decimal
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from core.enums import OrderStatus
 from config.settings import Settings
+from core.enums import OrderStatus
 from services.execution.brokers.base import BaseBroker, BrokerOrder
 
 logger = structlog.get_logger(__name__)
@@ -59,17 +59,23 @@ class AlpacaBroker(BaseBroker):
     )
     async def submit_order(self, order: BrokerOrder) -> str:
         """Submit an order to Alpaca and return the Alpaca order ID."""
+        from alpaca.trading.enums import OrderSide as AlpacaSide
+        from alpaca.trading.enums import TimeInForce
         from alpaca.trading.requests import (
             LimitOrderRequest,
             MarketOrderRequest,
             StopLimitOrderRequest,
             StopOrderRequest,
         )
-        from alpaca.trading.enums import OrderSide as AlpacaSide, TimeInForce
 
         client = self._get_client()
 
         side = AlpacaSide.BUY if order.side == "buy" else AlpacaSide.SELL
+
+        # Idempotency: a stable client order id makes the tenacity retry above
+        # safe -- if a submit succeeds but the response is lost, the retry is
+        # deduped by Alpaca instead of placing a second live order.
+        client_order_id = order.external_id or None
 
         if order.order_type == "market":
             request = MarketOrderRequest(
@@ -77,6 +83,7 @@ class AlpacaBroker(BaseBroker):
                 qty=float(order.quantity),
                 side=side,
                 time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
             )
         elif order.order_type == "limit":
             request = LimitOrderRequest(
@@ -85,6 +92,7 @@ class AlpacaBroker(BaseBroker):
                 side=side,
                 time_in_force=TimeInForce.DAY,
                 limit_price=float(order.limit_price) if order.limit_price else None,
+                client_order_id=client_order_id,
             )
         elif order.order_type == "stop":
             request = StopOrderRequest(
@@ -93,6 +101,7 @@ class AlpacaBroker(BaseBroker):
                 side=side,
                 time_in_force=TimeInForce.DAY,
                 stop_price=float(order.stop_price) if order.stop_price else None,
+                client_order_id=client_order_id,
             )
         elif order.order_type == "stop_limit":
             request = StopLimitOrderRequest(
@@ -102,6 +111,7 @@ class AlpacaBroker(BaseBroker):
                 time_in_force=TimeInForce.DAY,
                 limit_price=float(order.limit_price) if order.limit_price else None,
                 stop_price=float(order.stop_price) if order.stop_price else None,
+                client_order_id=client_order_id,
             )
         else:
             raise ValueError(f"Unsupported order type for Alpaca: {order.order_type}")

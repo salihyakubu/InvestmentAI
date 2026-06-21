@@ -3,21 +3,17 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
-from config.logging_config import setup_logging
-from config.settings import get_settings
-from core.events.base import EventBus
-from core.models.base import get_async_session_factory
-
 from api.routers import (
     audit,
+    auth,
     backtest,
     config_router,
     health,
@@ -30,6 +26,10 @@ from api.routers import (
     risk,
 )
 from api.websockets.streams import router as ws_router
+from config.logging_config import setup_logging
+from config.settings import get_settings
+from core.events.base import EventBus
+from core.models.base import get_async_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +91,11 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS (permissive for development)
+# CORS (explicit allowlist; configure per environment via CORS_ALLOW_ORIGINS)
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_settings().cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,6 +107,7 @@ app.add_middleware(
 API_V1 = "/api/v1"
 
 app.include_router(health.router, prefix=API_V1, tags=["health"])
+app.include_router(auth.router, prefix=API_V1, tags=["auth"])
 app.include_router(market_data.router, prefix=API_V1, tags=["market-data"])
 app.include_router(orders.router, prefix=API_V1, tags=["orders"])
 app.include_router(portfolio.router, prefix=API_V1, tags=["portfolio"])

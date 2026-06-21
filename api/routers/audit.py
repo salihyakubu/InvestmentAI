@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.models.audit import AuditLog
 from api.dependencies import get_current_user, get_db
+from core.models.audit import AuditLog
 
 router = APIRouter(prefix="/audit")
 

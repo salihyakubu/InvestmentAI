@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -37,8 +37,8 @@ def _standardize_symbol(symbol: str, asset_class: AssetClass) -> str:
 def _ensure_utc(dt: datetime) -> datetime:
     """Return *dt* with UTC timezone.  Naive datetimes are assumed UTC."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def normalize_bar(
@@ -63,7 +63,7 @@ def normalize_bar(
     """
     symbol = _standardize_symbol(raw_bar.symbol, asset_class)
     bar_time = _ensure_utc(raw_bar.time)
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
 
     # ----- Sanity checks -----
     for field_name, value in [

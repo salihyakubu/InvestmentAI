@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -44,7 +44,7 @@ class AuditLogger:
             decision_trace: Optional full decision trace (prediction -> execution).
         """
         entry = AuditLog(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             service=service,
             action=action,
             entity_type=entity_type,

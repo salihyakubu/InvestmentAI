@@ -1,0 +1,31 @@
+# Secrets — never bake credentials into the image layers
+.env
+.env.local
+.env.production
+
+# Virtualenv / VCS / local agent state
+.venv
+.git
+.gitignore
+.claude
+
+# Python caches & artifacts
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.egg-info
+
+# Not needed in the backend runtime image
+tests
+frontend
+notebooks
+.github
+*.md
+docker-compose.yml
+infrastructure/docker/Dockerfile.frontend
+*.log
+.DS_Store

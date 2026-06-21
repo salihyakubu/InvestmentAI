@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -26,7 +26,7 @@ class LiquidationOrder:
     order_type: OrderType
     reason: str
     created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
 
@@ -169,7 +169,7 @@ class EmergencyLiquidator:
             {
                 "action": action,
                 "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "order_ids": [o.order_id for o in orders],
                 "symbols": [o.symbol for o in orders],
             }

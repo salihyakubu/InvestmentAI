@@ -10,21 +10,19 @@ services (Redis, PostgreSQL, brokers) are required.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import numpy as np
 import pytest
 
 from config.settings import Settings
-from core.enums import OrderSide, OrderStatus, OrderType
 from core.events.base import Event, InProcessEventBus
 from core.events.market_events import BarCloseEvent
 from core.events.order_events import OrderFilledEvent
 from core.events.signal_events import FeaturesReadyEvent, PredictionReadyEvent
 from services.execution.brokers.base import BrokerOrder
 from services.execution.brokers.paper_broker import PaperBroker
-from services.execution.order_manager import OrderManager
 from services.feature_engineering.feature_store import FeatureStore
 from services.feature_engineering.service import FeatureEngineeringService
 from services.portfolio.optimizers.mean_variance import MeanVarianceOptimizer
@@ -88,7 +86,7 @@ async def test_full_cycle(
         close=last_bar["close"],
         volume=last_bar["volume"],
         vwap=last_bar["vwap"],
-        bar_time=datetime.now(timezone.utc),
+        bar_time=datetime.now(UTC),
         source_service="data_ingestion",
     )
     await fe_service.handle_bar_close(bar_event)
@@ -148,23 +146,15 @@ async def test_full_cycle(
     risk_svc.update_equity(mock_settings.initial_capital)
     risk_svc.drawdown_monitor.update(float(mock_settings.initial_capital))
 
-    decision = risk_svc.pre_trade_check(
-        {"symbol": "AAPL", "target_weight": aapl_weight}
-    )
+    # Deterministic risk checks. (The previous version asserted *both* branches
+    # of an if/else, so it could never fail.) A position within the per-position
+    # cap is approved; one above it is rejected for the position-size rule.
+    within_cap = risk_svc.pre_trade_check({"symbol": "AAPL", "target_weight": 0.05})
+    assert within_cap.approved
 
-    # The allocation from the optimizer should be within risk limits
-    # if max_position_pct is 0.10 and the optimizer caps at 0.50.
-    # The risk manager will reject if aapl_weight > 0.10.
-    # We test both paths:
-    if aapl_weight <= mock_settings.max_position_pct:
-        assert decision.approved
-    else:
-        assert not decision.approved
-        # Retry with a clipped weight.
-        decision = risk_svc.pre_trade_check(
-            {"symbol": "AAPL", "target_weight": min(aapl_weight, 0.08)}
-        )
-        assert decision.approved
+    over_cap = risk_svc.pre_trade_check({"symbol": "AAPL", "target_weight": 0.50})
+    assert not over_cap.approved
+    assert any("MaxPositionSize" in r for r in over_cap.rejections)
 
     # ------------------------------------------------------------------
     # 5. EXECUTION via PaperBroker

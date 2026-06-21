@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Integer, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.models.base import AsyncBase, UUIDMixin

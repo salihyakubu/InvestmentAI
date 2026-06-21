@@ -45,6 +45,7 @@ class PerformanceAnalyzer:
         cls,
         equity_curve: np.ndarray,
         trades: list[TradeRecord],
+        periods_per_year: float = _TRADING_DAYS,
     ) -> dict[str, Any]:
         """Compute a full suite of performance metrics.
 
@@ -67,14 +68,14 @@ class PerformanceAnalyzer:
         returns = returns[np.isfinite(returns)]
 
         total_ret = cls.total_return(equity_curve)
-        annual_ret = cls.annualized_return(equity_curve)
+        annual_ret = cls.annualized_return(equity_curve, periods_per_year)
         dd, peak_idx, trough_idx = cls.max_drawdown(equity_curve)
 
         return {
             "total_return": total_ret,
             "annualized_return": annual_ret,
-            "sharpe_ratio": cls.sharpe_ratio(returns),
-            "sortino_ratio": cls.sortino_ratio(returns),
+            "sharpe_ratio": cls.sharpe_ratio(returns, periods_per_year=periods_per_year),
+            "sortino_ratio": cls.sortino_ratio(returns, periods_per_year=periods_per_year),
             "calmar_ratio": cls.calmar_ratio(annual_ret, dd),
             "max_drawdown": dd,
             "max_drawdown_peak_idx": int(peak_idx),
@@ -99,12 +100,14 @@ class PerformanceAnalyzer:
         return float((equity_curve[-1] / equity_curve[0]) - 1.0)
 
     @staticmethod
-    def annualized_return(equity_curve: np.ndarray) -> float:
-        """Annualised return assuming 252 trading days per bar."""
+    def annualized_return(
+        equity_curve: np.ndarray, periods_per_year: float = _TRADING_DAYS
+    ) -> float:
+        """Annualised return; *periods_per_year* must match the bar timeframe."""
         if equity_curve[0] == 0 or len(equity_curve) < 2:
             return 0.0
         total = equity_curve[-1] / equity_curve[0]
-        n_years = len(equity_curve) / _TRADING_DAYS
+        n_years = len(equity_curve) / periods_per_year
         if n_years <= 0:
             return 0.0
         if total <= 0:
@@ -116,37 +119,47 @@ class PerformanceAnalyzer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def sharpe_ratio(returns: np.ndarray, rf: float = 0.0) -> float:
+    def sharpe_ratio(
+        returns: np.ndarray, rf: float = 0.0, periods_per_year: float = _TRADING_DAYS
+    ) -> float:
         """Annualised Sharpe ratio.
 
         Parameters
         ----------
         returns:
-            Array of periodic (daily) returns.
+            Array of per-bar returns.
         rf:
-            Risk-free rate per period (default 0).
+            Risk-free rate per bar (default 0).
+        periods_per_year:
+            Bars per year for annualisation (must match the bar timeframe).
         """
-        if len(returns) == 0:
+        if len(returns) < 2:
             return 0.0
         excess = returns - rf
         std = float(np.std(excess, ddof=1))
         if std == 0:
             return 0.0
-        return float(np.mean(excess) / std * np.sqrt(_TRADING_DAYS))
+        return float(np.mean(excess) / std * np.sqrt(periods_per_year))
 
     @staticmethod
-    def sortino_ratio(returns: np.ndarray, rf: float = 0.0) -> float:
-        """Annualised Sortino ratio (uses downside deviation only)."""
-        if len(returns) == 0:
+    def sortino_ratio(
+        returns: np.ndarray, rf: float = 0.0, periods_per_year: float = _TRADING_DAYS
+    ) -> float:
+        """Annualised Sortino ratio using target downside deviation.
+
+        Downside deviation is the RMS of negative excess returns over *all*
+        periods (not only the losing ones), per the standard definition --
+        dividing by the count of losers instead overstates it and understates
+        the ratio.
+        """
+        if len(returns) < 2:
             return 0.0
         excess = returns - rf
-        downside = excess[excess < 0]
-        if len(downside) == 0:
-            return float("inf") if np.mean(excess) > 0 else 0.0
+        downside = np.minimum(excess, 0.0)
         downside_std = float(np.sqrt(np.mean(downside**2)))
         if downside_std == 0:
-            return 0.0
-        return float(np.mean(excess) / downside_std * np.sqrt(_TRADING_DAYS))
+            return float("inf") if np.mean(excess) > 0 else 0.0
+        return float(np.mean(excess) / downside_std * np.sqrt(periods_per_year))
 
     @staticmethod
     def calmar_ratio(annual_return: float, max_drawdown: float) -> float:

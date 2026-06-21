@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from services.risk.circuit_breaker import CircuitBreaker, CircuitBreakerState
+from services.risk.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 

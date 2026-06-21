@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_user
-from api.schemas.common import SuccessResponse
 
 router = APIRouter(prefix="/backtest")
 

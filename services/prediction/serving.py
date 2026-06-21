@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import numpy as np
 
@@ -133,3 +132,16 @@ class ModelServer:
     @property
     def active_model_types(self) -> list[str]:
         return list(self._models.keys())
+
+    @property
+    def feature_names(self) -> list[str]:
+        """Canonical training feature order from the active flat models.
+
+        Tree models share the feature set, so the prediction service can use
+        this to order inference features identically to training.
+        """
+        for model_type in ("xgboost", "lightgbm"):
+            model = self._models.get(model_type)
+            if model is not None and model.feature_names:
+                return model.feature_names
+        return []

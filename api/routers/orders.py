@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.enums import OrderStatus
-from core.models.orders import Order
-from api.dependencies import get_current_user, get_db
+from api.dependencies import get_current_user, get_db, get_event_bus
+from api.middleware.rate_limit import RateLimiter
 from api.schemas.orders import OrderCreate, OrderListResponse, OrderResponse
+from config.settings import get_settings
+from core.enums import OrderStatus
+from core.events.base import EventBus
+from core.events.order_events import OrderIntentEvent
+from core.events.streams import ORDER_INTENTS
+from core.models.orders import Order
 
 router = APIRouter(prefix="/orders")
+
+# Rate-limit order submission per user/IP (wires up settings.api_rate_limit).
+_order_limiter = RateLimiter(
+    max_requests=get_settings().api_rate_limit, window_seconds=60, key_prefix="rl:orders"
+)
 
 
 @router.get(
@@ -82,36 +92,57 @@ async def get_order(
 @router.post(
     "",
     response_model=OrderResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Submit a manual order",
 )
 async def create_order(
     payload: OrderCreate,
     db: AsyncSession = Depends(get_db),
     _user: dict = Depends(get_current_user),
+    _rate: None = Depends(_order_limiter),
+    bus: EventBus | None = Depends(get_event_bus),
 ) -> OrderResponse:
     """Submit a new manual order.
 
-    The order will be validated against risk rules before execution.
+    Validated by ``OrderCreate``, persisted as PENDING, then published as an
+    ``OrderIntentEvent`` for the execution worker (202 Accepted). Manual orders
+    are paper-mode and rely on the execution-level safety gates (buying-power,
+    halt). If the event bus is unavailable the order is persisted but not
+    dispatched.
     """
-    # TODO: Integrate with execution service and risk checks
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
+    asset_class = "crypto" if "/" in payload.symbol else "stock"
     order = Order(
         symbol=payload.symbol,
-        asset_class="stock",  # TODO: infer from symbol
+        asset_class=asset_class,
         side=payload.side.value,
         order_type=payload.order_type.value,
         quantity=payload.quantity,
         limit_price=payload.limit_price,
         stop_price=payload.stop_price,
         status=OrderStatus.PENDING.value,
-        trading_mode="paper",  # TODO: from settings
+        trading_mode="paper",  # manual API orders are paper-only until live wiring lands
         created_at=now,
         updated_at=now,
     )
     db.add(order)
     await db.flush()
     await db.refresh(order)
+
+    if bus is not None:
+        await bus.publish(
+            ORDER_INTENTS,
+            OrderIntentEvent(
+                order_id=str(order.id),
+                symbol=order.symbol,
+                side=order.side,
+                order_type=order.order_type,
+                quantity=float(order.quantity),
+                limit_price=float(order.limit_price) if order.limit_price is not None else None,
+                stop_price=float(order.stop_price) if order.stop_price is not None else None,
+                source_service="api",
+            ),
+        )
 
     return OrderResponse.model_validate(order)
 
@@ -144,6 +175,6 @@ async def cancel_order(
         )
 
     order.status = OrderStatus.CANCELLED.value
-    order.cancelled_at = datetime.now(timezone.utc)
-    order.updated_at = datetime.now(timezone.utc)
+    order.cancelled_at = datetime.now(UTC)
+    order.updated_at = datetime.now(UTC)
     await db.flush()

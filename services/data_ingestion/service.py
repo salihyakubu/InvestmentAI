@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config.settings import Settings, get_settings
 from core.enums import AssetClass, TimeFrame
-from core.events.base import Event, EventBus
+from core.events.base import EventBus
 from core.events.market_events import BarCloseEvent, PriceUpdateEvent
 from core.models.base import get_async_session_factory
 from core.models.market_data import OHLCVRecord

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -27,7 +27,8 @@ _ALPACA_TF_MAP: dict[str, Any] | None = None
 def _get_alpaca_tf_map() -> dict[str, Any]:
     global _ALPACA_TF_MAP
     if _ALPACA_TF_MAP is None:
-        from alpaca.data.timeframe import TimeFrame as AlpacaTF, TimeFrameUnit
+        from alpaca.data.timeframe import TimeFrame as AlpacaTF
+        from alpaca.data.timeframe import TimeFrameUnit
 
         _ALPACA_TF_MAP = {
             TimeFrame.M1: AlpacaTF(1, TimeFrameUnit.Minute),
@@ -91,8 +92,8 @@ class AlpacaDataProvider(BaseDataProvider):
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=alpaca_tf,
-            start=start.astimezone(timezone.utc),
-            end=end.astimezone(timezone.utc),
+            start=start.astimezone(UTC),
+            end=end.astimezone(UTC),
         )
 
         # The SDK call is synchronous; run in executor to keep the loop free.
@@ -104,7 +105,7 @@ class AlpacaDataProvider(BaseDataProvider):
         for bar in bars:
             raw_bars.append(
                 RawBar(
-                    time=bar.timestamp.replace(tzinfo=timezone.utc)
+                    time=bar.timestamp.replace(tzinfo=UTC)
                     if bar.timestamp.tzinfo is None
                     else bar.timestamp,
                     symbol=symbol,
@@ -145,7 +146,7 @@ class AlpacaDataProvider(BaseDataProvider):
 
         async def _on_bar(bar: Any) -> None:
             raw = RawBar(
-                time=bar.timestamp.replace(tzinfo=timezone.utc)
+                time=bar.timestamp.replace(tzinfo=UTC)
                 if bar.timestamp.tzinfo is None
                 else bar.timestamp,
                 symbol=bar.symbol,

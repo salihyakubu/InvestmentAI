@@ -12,7 +12,8 @@ export class WebSocketManager {
   constructor(baseUrl = '') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = baseUrl || window.location.host;
-    this.url = `${protocol}//${host}/ws`;
+    // Match the backend WebSocket mount (/api/v1/ws/<channel>).
+    this.url = `${protocol}//${host}/api/v1/ws`;
   }
 
   get connected(): boolean {

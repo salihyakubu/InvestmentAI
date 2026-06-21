@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import structlog
 
@@ -94,7 +93,7 @@ class YahooDataProvider(BaseDataProvider):
         for idx, row in df.iterrows():
             bar_time = idx.to_pydatetime()
             if bar_time.tzinfo is None:
-                bar_time = bar_time.replace(tzinfo=timezone.utc)
+                bar_time = bar_time.replace(tzinfo=UTC)
 
             raw_bars.append(
                 RawBar(

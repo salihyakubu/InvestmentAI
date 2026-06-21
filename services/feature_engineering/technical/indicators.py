@@ -30,12 +30,18 @@ def ema(series: NDArray, period: int) -> NDArray:
     """Exponential moving average (Wilder smoothing multiplier)."""
     out = np.empty_like(series, dtype=np.float64)
     out[:] = np.nan
-    if len(series) < period:
+    valid = ~np.isnan(series)
+    if int(valid.sum()) < period:
         return out
     alpha = 2.0 / (period + 1)
-    # Seed with the SMA of the first *period* values.
-    out[period - 1] = np.mean(series[:period])
-    for i in range(period, len(series)):
+    # Seed with the SMA of the first *period* non-NaN values. Skipping leading
+    # NaNs lets EMA-of-EMA chains work -- e.g. the MACD signal line is the EMA of
+    # the MACD line, which itself starts with NaNs; seeding over those NaNs would
+    # otherwise poison the whole output (all-NaN signal line / histogram).
+    start = int(np.argmax(valid))
+    seed_end = start + period
+    out[seed_end - 1] = np.mean(series[start:seed_end])
+    for i in range(seed_end, len(series)):
         out[i] = alpha * series[i] + (1.0 - alpha) * out[i - 1]
     return out
 

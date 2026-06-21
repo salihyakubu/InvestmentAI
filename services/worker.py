@@ -16,6 +16,48 @@ from core.events.base import EventBus
 logger = structlog.get_logger(__name__)
 
 
+def _build_brokers(settings: Settings) -> dict[str, Any]:
+    """Build the broker registry for the configured trading mode.
+
+    Live venues are wired ONLY in live mode. Credential presence is not
+    sufficient: in paper/backtest mode we must never reach a real venue, even if
+    production keys happen to be in the environment. This matters most for crypto
+    -- CCXTBroker talks to the real Binance spot venue with no testnet/sandbox,
+    so wiring it outside live mode would route "paper" crypto orders to real
+    money. Paper/backtest therefore keep only the PaperBroker.
+    """
+    from decimal import Decimal
+
+    from services.execution.brokers.paper_broker import PaperBroker
+
+    paper_broker = PaperBroker(initial_cash=Decimal(str(settings.initial_capital)))
+    brokers: dict[str, Any] = {"paper": paper_broker}
+
+    if settings.trading_mode != "live":
+        logger.info("worker.live_brokers_disabled", trading_mode=settings.trading_mode)
+        return brokers
+
+    alpaca_key = settings.alpaca_api_key.get_secret_value()
+    if alpaca_key and alpaca_key != "your_alpaca_api_key":
+        try:
+            from services.execution.brokers.alpaca_broker import AlpacaBroker
+
+            brokers["alpaca"] = AlpacaBroker(settings=settings)
+        except Exception as exc:
+            logger.warning("alpaca_broker.init_failed", error=str(exc))
+
+    binance_key = settings.binance_api_key.get_secret_value()
+    if binance_key and binance_key != "your_binance_api_key":
+        try:
+            from services.execution.brokers.ccxt_broker import CCXTBroker
+
+            brokers["ccxt"] = CCXTBroker(settings=settings)
+        except Exception as exc:
+            logger.warning("ccxt_broker.init_failed", error=str(exc))
+
+    return brokers
+
+
 async def _build_services(
     event_bus: EventBus,
     settings: Settings,
@@ -48,32 +90,9 @@ async def _build_services(
     risk_manager = RiskManagerService(event_bus=event_bus, settings=settings)
 
     # -- Execution Engine --
-    from services.execution.brokers.paper_broker import PaperBroker
     from services.execution.service import ExecutionEngineService
 
-    from decimal import Decimal as D
-
-    paper_broker = PaperBroker(initial_cash=D(str(settings.initial_capital)))
-    brokers: dict[str, Any] = {"paper": paper_broker}
-
-    # Wire up live brokers only if real credentials are provided
-    alpaca_key = settings.alpaca_api_key.get_secret_value()
-    if alpaca_key and alpaca_key != "your_alpaca_api_key":
-        try:
-            from services.execution.brokers.alpaca_broker import AlpacaBroker
-
-            brokers["alpaca"] = AlpacaBroker(settings=settings)
-        except Exception as exc:
-            logger.warning("alpaca_broker.init_failed", error=str(exc))
-
-    binance_key = settings.binance_api_key.get_secret_value()
-    if binance_key and binance_key != "your_binance_api_key":
-        try:
-            from services.execution.brokers.ccxt_broker import CCXTBroker
-
-            brokers["ccxt"] = CCXTBroker(settings=settings)
-        except Exception as exc:
-            logger.warning("ccxt_broker.init_failed", error=str(exc))
+    brokers = _build_brokers(settings)
 
     execution = ExecutionEngineService(
         event_bus=event_bus, settings=settings, brokers=brokers,
@@ -135,6 +154,14 @@ async def _build_services(
         audit_logger=audit_logger,
     )
 
+    # -- Order persistence (sync DB order/fill rows from execution events) --
+    from core.models.base import get_async_session_factory
+    from services.persistence.order_sync import OrderPersistenceService
+
+    order_persistence = OrderPersistenceService(
+        event_bus=event_bus, session_factory=get_async_session_factory()
+    )
+
     return [
         data_ingestion,
         feature_engineering,
@@ -145,6 +172,7 @@ async def _build_services(
         liquidation,
         continuous_learning,
         monitoring,
+        order_persistence,
     ]
 
 
@@ -173,11 +201,33 @@ async def _run() -> None:
     await asyncio.gather(*start_tasks)
     logger.info("worker.all_services_started")
 
+    # Periodically sync the live broker account into the risk engine so the
+    # drawdown monitor / circuit breaker act on real capital.
+    from decimal import Decimal
+
+    from services.execution.service import ExecutionEngineService
+    from services.risk.service import RiskManagerService
+
+    risk = next((s for s in services if isinstance(s, RiskManagerService)), None)
+    execution = next((s for s in services if isinstance(s, ExecutionEngineService)), None)
+    account_sync_task: asyncio.Task | None = None
+    if risk is not None and execution is not None and execution.brokers:
+        broker = next(iter(execution.brokers.values()))
+
+        async def _equity_provider() -> Decimal:
+            account = await broker.get_account()
+            return Decimal(str(account.get("equity", "0")))
+
+        account_sync_task = asyncio.create_task(risk.run_account_sync(_equity_provider))
+        logger.info("worker.account_sync_started")
+
     # Wait until shutdown signal
     await shutdown_event.wait()
 
     # Graceful shutdown
     logger.info("worker.shutting_down")
+    if account_sync_task is not None:
+        account_sync_task.cancel()
     stop_tasks = []
     for svc in reversed(services):
         if hasattr(svc, "stop"):

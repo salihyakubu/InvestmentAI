@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class OnChainMetrics:
             "value": 0,
             "change_pct": 0.0,
             "lookback_days": lookback_days,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     async def get_exchange_flows(self) -> dict:
@@ -56,7 +56,7 @@ class OnChainMetrics:
             "inflow": 0.0,
             "outflow": 0.0,
             "net_flow": 0.0,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     async def get_mvrv_ratio(self) -> dict:
@@ -70,7 +70,7 @@ class OnChainMetrics:
             "symbol": self.symbol,
             "metric": "mvrv_ratio",
             "value": 1.0,  # neutral default
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     async def get_all_metrics(self) -> dict[str, float]:

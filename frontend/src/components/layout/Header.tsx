@@ -1,12 +1,19 @@
-import { Bell, Wifi, WifiOff } from 'lucide-react';
+import { Bell, LogOut, Wifi, WifiOff } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
 import { useAppStore } from '../../store';
 import { usePortfolioSummary } from '../../api/hooks';
 
 export default function Header() {
-  const { tradingMode, connected, alerts } = useAppStore();
+  const navigate = useNavigate();
+  const { tradingMode, connected, alerts, logout } = useAppStore();
   const { data: portfolio } = usePortfolioSummary();
   const unreadCount = alerts.filter((a) => !a.read).length;
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login', { replace: true });
+  };
 
   const formatCurrency = (value: number) =>
     new Intl.NumberFormat('en-US', {
@@ -81,6 +88,14 @@ export default function Header() {
               {unreadCount}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={handleLogout}
+          title="Sign out"
+          className="p-2 text-gray-400 hover:text-gray-200 transition-colors"
+        >
+          <LogOut className="w-5 h-5" />
         </button>
       </div>
     </header>

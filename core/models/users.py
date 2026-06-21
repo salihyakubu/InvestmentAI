@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,7 +33,7 @@ class User(UUIDMixin, AsyncBase):
     )
 
     # Relationships
-    api_keys: Mapped[list["APIKey"]] = relationship(
+    api_keys: Mapped[list[APIKey]] = relationship(
         "APIKey", back_populates="user", lazy="selectin"
     )
 
@@ -52,7 +52,7 @@ class APIKey(UUIDMixin, AsyncBase):
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     permissions: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, server_default="'[]'::jsonb"
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -65,16 +65,15 @@ class APIKey(UUIDMixin, AsyncBase):
     )
 
     # Relationships
-    user: Mapped["User"] = relationship("User", back_populates="api_keys")
+    user: Mapped[User] = relationship("User", back_populates="api_keys")
 
     @property
     def is_expired(self) -> bool:
         """Return True if the key has an expiry date that has passed."""
         if self.expires_at is None:
             return False
-        from datetime import timezone
 
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     def __repr__(self) -> str:
         return f"<APIKey id={self.id} name={self.name!r} user={self.user_id}>"

@@ -5,9 +5,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Float
+from sqlalchemy import DateTime, Float, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,13 +62,13 @@ class Order(UUIDMixin, AsyncBase):
     )
 
     # Relationships
-    fills: Mapped[list["Fill"]] = relationship(
+    fills: Mapped[list[Fill]] = relationship(
         "Fill", back_populates="order", lazy="selectin"
     )
-    child_orders: Mapped[list["Order"]] = relationship(
+    child_orders: Mapped[list[Order]] = relationship(
         "Order", back_populates="parent_order", remote_side="Order.id"
     )
-    parent_order: Mapped[Optional["Order"]] = relationship(
+    parent_order: Mapped[Order | None] = relationship(
         "Order", back_populates="child_orders", remote_side="Order.parent_order_id"
     )
 
@@ -105,7 +104,7 @@ class Fill(UUIDMixin, AsyncBase):
     )
 
     # Relationships
-    order: Mapped["Order"] = relationship("Order", back_populates="fills")
+    order: Mapped[Order] = relationship("Order", back_populates="fills")
 
     def __repr__(self) -> str:
         return (

@@ -1,12 +1,31 @@
-FROM node:20-alpine
+# Production frontend image: build the Vite bundle, then serve it with nginx.
+# Build context is ./frontend (see docker-compose.yml / Railway config), so all
+# COPY paths are relative to the frontend directory.
 
+# --- build stage ---
+FROM node:20-alpine AS build
 WORKDIR /app
 
+# Install deps against the lockfile for reproducible builds.
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 
+# Build the static bundle (tsc type-check + vite build -> /app/dist).
 COPY . .
+RUN npm run build
 
-EXPOSE 3000
+# --- serve stage ---
+FROM nginx:1.27-alpine
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+# Static assets.
+COPY --from=build /app/dist /usr/share/nginx/html
+
+# nginx config template; the base image renders templates with envsubst at start,
+# substituting ${BACKEND_URL} into the proxy_pass target.
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+
+# Default backend for docker-compose; override per environment (e.g. Railway).
+ENV BACKEND_URL=http://api:8000
+
+EXPOSE 80
+# Default nginx CMD/entrypoint from the base image handles template rendering.

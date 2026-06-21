@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-
+from datetime import UTC, datetime
 
 # ---------------------------------------------------------------------------
 # Keyword lexicon
@@ -128,5 +127,5 @@ class SentimentAnalyzer:
             "score": 0.0,
             "volume": 0,
             "sources": [],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }

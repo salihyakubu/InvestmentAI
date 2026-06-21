@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.models.positions import Position
 from api.dependencies import get_current_user, get_db
 from api.schemas.portfolio import PositionSchema
+from core.models.positions import Position
 
 router = APIRouter(prefix="/positions")
 

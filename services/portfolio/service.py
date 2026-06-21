@@ -150,8 +150,6 @@ class PortfolioOptimizerService:
         available this should be replaced with sample covariance
         estimated over *lookback_days* of daily returns.
         """
-        n = len(symbols)
-
         # Expected returns from predictions.
         expected_returns = np.array(
             [

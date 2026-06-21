@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -34,7 +34,7 @@ class Prediction:
     expected_return: float
     probabilities: dict[str, float]
     model_id: str
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class PredictionService:
@@ -57,6 +57,9 @@ class PredictionService:
         self._model_server = model_server
         self._prediction_history: list[Prediction] = []
         self._running = False
+        # Minimum confidence to emit a non-flat (tradeable) signal; below this the
+        # prediction abstains (flat). Wires up settings.min_prediction_confidence.
+        self._min_confidence = float(getattr(settings, "min_prediction_confidence", 0.6))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -140,9 +143,29 @@ class PredictionService:
                 probabilities={"long": 0.0, "short": 0.0, "flat": 1.0},
             )
         else:
-            # Build flat feature vector (sorted keys for deterministic ordering)
-            sorted_keys = sorted(features.keys())
-            features_flat = np.array([features[k] for k in sorted_keys], dtype=np.float64)
+            # Build the flat feature vector in the SAME column order the models
+            # were trained on. Ordering by the persisted feature_names (not by
+            # alphabetical sorting) is essential -- otherwise each model column
+            # is fed a different feature at inference than during training.
+            feature_order = self._model_server.feature_names
+            if feature_order:
+                missing = [n for n in feature_order if n not in features]
+                if missing:
+                    logger.warning(
+                        "Missing %d feature(s) at inference for %s: %s",
+                        len(missing),
+                        symbol,
+                        missing,
+                    )
+                features_flat = np.array(
+                    [float(features.get(n, 0.0)) for n in feature_order],
+                    dtype=np.float64,
+                )
+            else:
+                # Fallback when no trained feature order is available.
+                features_flat = np.array(
+                    [features[k] for k in sorted(features.keys())], dtype=np.float64
+                )
 
             # For sequence models we would need buffered history; pass None for now
             output = self._model_server.predict(
@@ -157,9 +180,21 @@ class PredictionService:
             else "none"
         )
 
+        # Confidence gate: abstain (flat) on low-confidence non-flat signals so
+        # uncertain predictions don't drive trades.
+        direction = output.direction
+        if str(direction).lower() != "flat" and output.confidence < self._min_confidence:
+            logger.info(
+                "Prediction for %s gated: confidence %.3f < %.3f -> flat",
+                symbol,
+                output.confidence,
+                self._min_confidence,
+            )
+            direction = "flat"
+
         prediction = Prediction(
             symbol=symbol,
-            direction=output.direction,
+            direction=direction,
             confidence=output.confidence,
             expected_return=output.expected_return,
             probabilities=output.probabilities,

@@ -66,6 +66,8 @@ class ModelTrainer:
         n_trials: int = 50,
         extra_params: dict[str, Any] | None = None,
         feature_names: list[str] | None = None,
+        returns_train: np.ndarray | None = None,
+        returns_val: np.ndarray | None = None,
     ) -> tuple[TrainResult, BasePredictor]:
         """Train a single model, optionally preceded by hyperopt.
 
@@ -99,9 +101,20 @@ class ModelTrainer:
         # Instantiate model
         model = self._create_model(model_type, params, feature_names)
 
-        # Train
+        # Train. Pass real forward returns to the regressor when available
+        # (tree models); models without that parameter fall back to labels.
         logger.info("Training %s model", model_type)
-        result = model.train(X_train, y_train, X_val, y_val)
+        if returns_train is not None and returns_val is not None:
+            result = model.train(
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                returns_train=returns_train,
+                returns_val=returns_val,
+            )
+        else:
+            result = model.train(X_train, y_train, X_val, y_val)
 
         return result, model
 

@@ -2,7 +2,6 @@
 
 from core.events.base import Event, EventBus, InProcessEventBus
 from core.events.market_events import BarCloseEvent, PriceUpdateEvent
-from core.events.signal_events import FeaturesReadyEvent, PredictionReadyEvent
 from core.events.order_events import (
     OrderCancelledEvent,
     OrderCreatedEvent,
@@ -15,6 +14,7 @@ from core.events.risk_events import (
     RiskApprovedEvent,
     RiskBreachedEvent,
 )
+from core.events.signal_events import FeaturesReadyEvent, PredictionReadyEvent
 from core.events.system_events import (
     DriftDetectedEvent,
     LiquidationTriggeredEvent,

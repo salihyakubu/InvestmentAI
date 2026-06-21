@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import enum
-from typing import Any
 
 import structlog
 
@@ -41,8 +40,8 @@ class HealthChecker:
     async def check_database(self) -> bool:
         """Return ``True`` if the database responds to a simple query."""
         try:
-            from sqlalchemy.ext.asyncio import create_async_engine
             from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import create_async_engine
 
             engine = create_async_engine(self._database_url, echo=False)
             async with engine.connect() as conn:

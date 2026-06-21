@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from core.enums import AssetClass
 

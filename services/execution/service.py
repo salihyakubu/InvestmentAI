@@ -3,31 +3,31 @@
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import structlog
 
 from config.settings import Settings
-from core.enums import OrderStatus, TradingMode
+from core.enums import OrderStatus
 from core.events import (
     EventBus,
     OrderCancelledEvent,
     OrderCreatedEvent,
     OrderFilledEvent,
     OrderRejectedEvent,
-    RiskApprovedEvent,
 )
 from core.events.base import Event
-from services.execution.brokers.base import BaseBroker, BrokerFill, BrokerOrder
+from core.events.streams import ORDER_INTENTS, ORDERS, RISK_APPROVED
+from services.execution.brokers.base import BaseBroker, BrokerOrder
 from services.execution.fill_tracker import FillTracker
 from services.execution.order_manager import OrderError, OrderManager
 from services.execution.smart_router import SmartOrderRouter
 
 logger = structlog.get_logger(__name__)
 
-# Stream / group names for the event bus.
-_RISK_STREAM = "risk.approved"
-_ORDER_STREAM = "orders"
+# Stream / group names for the event bus (see core.events.streams).
+_RISK_STREAM = RISK_APPROVED
+_ORDER_STREAM = ORDERS
 _CONSUMER_GROUP = "execution-engine"
 
 # Polling interval for pending order monitoring (seconds).
@@ -59,6 +59,11 @@ class ExecutionEngineService:
         self._monitor_task: asyncio.Task | None = None
         # order_id -> (broker_name, external_id) for pending tracking.
         self._in_flight: dict[str, tuple[str, str]] = {}
+        # Correlation ids of RiskApprovedEvents already handled -- idempotency
+        # under at-least-once event delivery (a redelivered event is skipped).
+        self._processed_correlation_ids: set[str] = set()
+        # Kill switch: when True, no new orders are submitted.
+        self._halted: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -71,6 +76,12 @@ class ExecutionEngineService:
             group=_CONSUMER_GROUP,
             consumer="exec-worker-1",
             handler=self._handle_risk_approved,
+        )
+        await self._event_bus.subscribe(
+            stream=ORDER_INTENTS,
+            group=_CONSUMER_GROUP,
+            consumer="exec-intents-1",
+            handler=self._handle_order_intent,
         )
         self._monitor_task = asyncio.create_task(self._monitor_pending_orders())
         logger.info("execution_engine_started")
@@ -90,37 +101,136 @@ class ExecutionEngineService:
     # ------------------------------------------------------------------
 
     async def _handle_risk_approved(self, event: Event) -> None:
-        """Handle a RiskApprovedEvent by submitting the order to a broker."""
-        order_id = event.payload.get("order_id") or getattr(event, "order_id", None)
-        if not order_id:
-            logger.warning("risk_approved_missing_order_id", event_id=event.event_id)
+        """Create and submit the order described by a RiskApprovedEvent.
+
+        The event carries the full, sized order intent, so the order is created
+        fresh in this engine's OrderManager (the risk service runs in a separate
+        process with its own state, so its order id is not resolvable here).
+        """
+        symbol = getattr(event, "symbol", "") or event.payload.get("symbol", "")
+        side = getattr(event, "side", "") or event.payload.get("side", "")
+        order_type = (
+            getattr(event, "order_type", "")
+            or event.payload.get("order_type", "")
+            or "market"
+        )
+        quantity_raw = getattr(event, "quantity", 0.0) or event.payload.get("quantity", 0.0)
+        correlation_id = getattr(event, "order_id", "") or event.payload.get("order_id", "")
+
+        if correlation_id and correlation_id in self._processed_correlation_ids:
+            logger.info("risk_approved_duplicate_skipped", correlation_id=correlation_id)
             return
 
-        order = self._order_manager.get_order(order_id)
-        if order is None:
+        if not symbol or not side:
             logger.warning(
-                "risk_approved_order_not_found",
-                order_id=order_id,
+                "risk_approved_missing_fields",
+                event_id=event.event_id,
+                symbol=symbol,
+                side=side,
             )
             return
 
         try:
+            quantity = Decimal(str(quantity_raw))
+        except (InvalidOperation, ValueError):
+            logger.warning("risk_approved_bad_quantity", quantity=quantity_raw)
+            return
+        if quantity <= 0:
+            logger.warning("risk_approved_nonpositive_quantity", quantity=str(quantity))
+            return
+
+        limit_price = self._coerce_decimal(getattr(event, "limit_price", None))
+        stop_price = self._coerce_decimal(getattr(event, "stop_price", None))
+        reference_price = self._coerce_decimal(getattr(event, "reference_price", None))
+
+        if correlation_id:
+            self._processed_correlation_ids.add(correlation_id)
+
+        try:
             await self.submit_order(
-                order_id=order.order_id,
-                symbol=order.symbol,
-                side=order.side,
-                order_type=order.order_type,
-                quantity=order.quantity,
-                limit_price=order.limit_price,
-                stop_price=order.stop_price,
+                order_id=None,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=limit_price,
+                stop_price=stop_price,
+                reference_price=reference_price,
+            )
+            logger.info(
+                "risk_approved_order_submitted",
+                correlation_id=correlation_id,
+                symbol=symbol,
+                side=side,
+                quantity=str(quantity),
             )
         except Exception as exc:
             logger.error(
                 "risk_approved_submit_failed",
-                order_id=order_id,
+                correlation_id=correlation_id,
                 error=str(exc),
             )
-            await self._publish_rejected(order_id, str(exc))
+
+    @staticmethod
+    def _coerce_decimal(value: object) -> Decimal | None:
+        """Best-effort convert an optional numeric value to Decimal."""
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+    async def _get_buying_power(self, broker: BaseBroker) -> Decimal | None:
+        """Return the broker's available buying power, or None if unavailable."""
+        try:
+            account = await broker.get_account()
+            return Decimal(str(account.get("buying_power", "0")))
+        except Exception as exc:
+            logger.warning("buying_power_check_failed", error=str(exc))
+            return None
+
+    async def _handle_order_intent(self, event: Event) -> None:
+        """Handle a manual OrderIntentEvent: create + submit the order.
+
+        Manual orders rely on the execution-level gates (buying-power, halt)
+        rather than the weight-based pre_trade_check used by the rebalance path.
+        """
+        symbol = getattr(event, "symbol", "") or event.payload.get("symbol", "")
+        side = getattr(event, "side", "") or event.payload.get("side", "")
+        order_type = (
+            getattr(event, "order_type", "")
+            or event.payload.get("order_type", "")
+            or "market"
+        )
+        quantity_raw = getattr(event, "quantity", 0.0) or event.payload.get("quantity", 0.0)
+        if not symbol or not side:
+            logger.warning("order_intent_missing_fields", event_id=event.event_id)
+            return
+        try:
+            quantity = Decimal(str(quantity_raw))
+        except (InvalidOperation, ValueError):
+            logger.warning("order_intent_bad_quantity", quantity=quantity_raw)
+            return
+        if quantity <= 0:
+            return
+        # The intent's order_id is the originating DB order id; carry it as the
+        # client order id so fills can be persisted back to that row.
+        db_order_id = getattr(event, "order_id", "") or event.payload.get("order_id", "")
+        try:
+            await self.submit_order(
+                order_id=None,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=self._coerce_decimal(getattr(event, "limit_price", None)),
+                stop_price=self._coerce_decimal(getattr(event, "stop_price", None)),
+                reference_price=self._coerce_decimal(getattr(event, "reference_price", None)),
+                client_order_id=db_order_id or None,
+            )
+        except Exception as exc:
+            logger.error("order_intent_submit_failed", error=str(exc))
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,8 +245,13 @@ class ExecutionEngineService:
         quantity: Decimal = Decimal("0"),
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
+        reference_price: Decimal | None = None,
+        client_order_id: str | None = None,
     ):
         """Create (or reuse) an order, route it, and submit to the broker."""
+        if self._halted:
+            logger.warning("order_rejected_trading_halted", symbol=symbol)
+            return None
         # Create order if no existing order_id supplied.
         if order_id is None:
             order = self._order_manager.create_order(
@@ -146,6 +261,7 @@ class ExecutionEngineService:
                 quantity=quantity,
                 limit_price=limit_price,
                 stop_price=stop_price,
+                client_order_id=client_order_id,
             )
             order_id = order.order_id
         else:
@@ -175,15 +291,52 @@ class ExecutionEngineService:
             limit_price=order.limit_price,
         )
 
-        broker = self._brokers.get(decision.broker_name)
-        if broker is None:
-            reason = f"Broker not found: {decision.broker_name}"
-            await self._publish_rejected(order_id, reason)
+        # The router returns None when no broker is safe to route to (e.g. only
+        # live brokers wired in a non-live mode). Refuse rather than dispatch.
+        broker_name = decision.broker_name
+        if broker_name is None:
+            await self._publish_rejected(
+                order_id,
+                f"no_safe_broker symbol={order.symbol} "
+                f"trading_mode={self._settings.trading_mode}",
+            )
             return order
 
-        # Build broker order.
+        broker = self._brokers.get(broker_name)
+        if broker is None:
+            await self._publish_rejected(order_id, f"Broker not found: {broker_name}")
+            return order
+
+        # Hard safety guard (defence in depth): never dispatch to a venue that
+        # can place real-money orders unless we are explicitly in live mode.
+        # This is independent of the router's selection and of broker-dict
+        # ordering, so the paper-first posture holds even if a live broker is
+        # somehow wired or selected outside live mode.
+        if broker.supports_live and self._settings.trading_mode != "live":
+            await self._publish_rejected(
+                order_id,
+                f"live_broker_blocked broker={broker_name} "
+                f"trading_mode={self._settings.trading_mode}",
+            )
+            return order
+
+        # Pre-trade buying-power check for buys (defence on the money path).
+        est_price = order.limit_price if order.limit_price is not None else reference_price
+        if order.side == "buy" and est_price is not None and est_price > 0:
+            buying_power = await self._get_buying_power(broker)
+            required = order.quantity * est_price
+            if buying_power is not None and required > buying_power:
+                await self._publish_rejected(
+                    order_id,
+                    f"insufficient_buying_power required={required} available={buying_power}",
+                )
+                return order
+
+        # Build broker order. external_id doubles as the client order id, so a
+        # broker-side retry after a lost response is deduped rather than
+        # placing a second live order.
         broker_order = BrokerOrder(
-            external_id="",
+            external_id=order_id,
             symbol=order.symbol,
             side=order.side,
             order_type=order.order_type,
@@ -196,20 +349,20 @@ class ExecutionEngineService:
             external_id = await broker.submit_order(broker_order)
             self._order_manager.update_status(order_id, OrderStatus.SUBMITTED)
             order.external_id = external_id
-            order.broker_name = decision.broker_name
-            self._in_flight[order_id] = (decision.broker_name, external_id)
+            order.broker_name = broker_name
+            self._in_flight[order_id] = (broker_name, external_id)
 
             logger.info(
                 "order_submitted_to_broker",
                 order_id=order_id,
-                broker=decision.broker_name,
+                broker=broker_name,
                 external_id=external_id,
             )
         except Exception as exc:
             logger.error(
                 "broker_submit_failed",
                 order_id=order_id,
-                broker=decision.broker_name,
+                broker=broker_name,
                 error=str(exc),
             )
             await self._publish_rejected(order_id, str(exc))
@@ -245,6 +398,104 @@ class ExecutionEngineService:
             )
             logger.info("order_cancelled", order_id=order_id)
         return cancelled
+
+    # ------------------------------------------------------------------
+    # Kill switch & reconciliation
+    # ------------------------------------------------------------------
+
+    @property
+    def halted(self) -> bool:
+        """Whether the engine is currently refusing new orders."""
+        return self._halted
+
+    @property
+    def brokers(self) -> dict[str, BaseBroker]:
+        """Configured brokers (name -> adapter)."""
+        return self._brokers
+
+    def halt(self) -> None:
+        """Stop accepting new orders."""
+        self._halted = True
+        logger.warning("trading_halted")
+
+    def resume(self) -> None:
+        """Resume accepting new orders."""
+        self._halted = False
+        logger.info("trading_resumed")
+
+    async def emergency_flatten(self) -> dict:
+        """Kill switch: halt new orders, cancel open orders, and flatten every
+        broker position with market orders. Returns a summary."""
+        self._halted = True
+        cancelled = 0
+        for order_id in list(self._in_flight):
+            try:
+                if await self.cancel_order(order_id):
+                    cancelled += 1
+            except Exception as exc:
+                logger.error("flatten_cancel_failed", order_id=order_id, error=str(exc))
+
+        flattened: list[dict] = []
+        for broker_name, broker in self._brokers.items():
+            try:
+                positions = await broker.get_positions()
+            except Exception as exc:
+                logger.error("flatten_positions_failed", broker=broker_name, error=str(exc))
+                continue
+            for pos in positions:
+                qty = Decimal(str(pos.get("quantity", "0")))
+                if qty == 0:
+                    continue
+                side = "sell" if qty > 0 else "buy"
+                close = BrokerOrder(
+                    external_id="",
+                    symbol=pos["symbol"],
+                    side=side,
+                    order_type="market",
+                    quantity=abs(qty),
+                )
+                try:
+                    await broker.submit_order(close)
+                    flattened.append(
+                        {"symbol": pos["symbol"], "side": side, "quantity": str(abs(qty))}
+                    )
+                except Exception as exc:
+                    logger.error("flatten_submit_failed", symbol=pos["symbol"], error=str(exc))
+
+        logger.warning(
+            "emergency_flatten_complete", cancelled=cancelled, flattened=len(flattened)
+        )
+        return {"halted": True, "cancelled": cancelled, "flattened": flattened}
+
+    async def reconcile_positions(self, expected: dict[str, Decimal]) -> list[dict]:
+        """Compare *expected* positions (symbol -> signed qty) against the
+        broker's actual positions; return discrepancies. The broker is the
+        source of truth, so a non-empty result means our books have drifted."""
+        actual: dict[str, Decimal] = {}
+        for broker in self._brokers.values():
+            try:
+                for pos in await broker.get_positions():
+                    sym = pos["symbol"]
+                    actual[sym] = actual.get(sym, Decimal("0")) + Decimal(
+                        str(pos.get("quantity", "0"))
+                    )
+            except Exception as exc:
+                logger.error("reconcile_positions_failed", error=str(exc))
+
+        discrepancies: list[dict] = []
+        for sym in sorted(set(expected) | set(actual)):
+            exp = Decimal(str(expected.get(sym, 0)))
+            act = actual.get(sym, Decimal("0"))
+            if exp != act:
+                discrepancies.append(
+                    {
+                        "symbol": sym,
+                        "expected": str(exp),
+                        "actual": str(act),
+                        "diff": str(act - exp),
+                    }
+                )
+        return discrepancies
 
     # ------------------------------------------------------------------
     # Background monitoring
@@ -299,8 +550,11 @@ class ExecutionEngineService:
                                 _ORDER_STREAM,
                                 OrderFilledEvent(
                                     order_id=order_id,
+                                    symbol=symbol,
+                                    side=side,
                                     fill_price=float(filled_price),
                                     fill_quantity=float(filled_qty),
+                                    client_order_id=(order.client_order_id or "") if order else "",
                                     source_service="execution-engine",
                                 ),
                             )
@@ -338,6 +592,7 @@ class ExecutionEngineService:
 
     async def _publish_rejected(self, order_id: str, reason: str) -> None:
         """Mark an order as rejected and publish the event."""
+        order = self._order_manager.get_order(order_id)
         try:
             self._order_manager.update_status(order_id, OrderStatus.REJECTED)
         except OrderError:
@@ -347,6 +602,7 @@ class ExecutionEngineService:
             OrderRejectedEvent(
                 order_id=order_id,
                 reason=reason,
+                client_order_id=(order.client_order_id or "") if order else "",
                 source_service="execution-engine",
             ),
         )

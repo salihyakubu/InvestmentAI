@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from config.settings import Settings
 from core.events.base import InProcessEventBus
-
 
 # ---------------------------------------------------------------------------
 # Event bus

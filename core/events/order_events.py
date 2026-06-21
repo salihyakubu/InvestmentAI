@@ -22,6 +22,9 @@ class OrderFilledEvent(Event):
     fill_price: float
     fill_quantity: float
     commission: float = 0.0
+    symbol: str = ""
+    side: str = ""  # OrderSide value
+    client_order_id: str = ""  # originating DB order id, if any
 
 
 class OrderRejectedEvent(Event):
@@ -29,6 +32,7 @@ class OrderRejectedEvent(Event):
 
     order_id: str
     reason: str
+    client_order_id: str = ""  # originating DB order id, if any
 
 
 class OrderCancelledEvent(Event):
@@ -36,3 +40,19 @@ class OrderCancelledEvent(Event):
 
     order_id: str
     reason: str = ""
+
+
+class OrderIntentEvent(Event):
+    """A manual order request published by the API for the execution worker.
+
+    Carries the full order so execution can create and submit it; ``order_id``
+    is the DB order id, used as a correlation handle.
+    """
+
+    symbol: str
+    side: str
+    quantity: float
+    order_type: str = "market"
+    order_id: str = ""
+    limit_price: float | None = None
+    stop_price: float | None = None

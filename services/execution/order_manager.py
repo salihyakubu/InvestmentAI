@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -34,8 +34,9 @@ class Order:
     avg_fill_price: Decimal | None = None
     external_id: str | None = None
     broker_name: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    client_order_id: str | None = None  # correlates to the originating DB order id
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -47,7 +48,7 @@ class Fill:
     price: Decimal
     quantity: Decimal
     commission: Decimal = Decimal("0")
-    filled_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    filled_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class OrderStateMachine:
@@ -93,7 +94,7 @@ class OrderStateMachine:
                 f"(order {order.order_id})"
             )
         order.status = new_status
-        order.updated_at = datetime.now(timezone.utc)
+        order.updated_at = datetime.now(UTC)
         logger.info(
             "order_status_transition",
             order_id=order.order_id,
@@ -123,6 +124,7 @@ class OrderManager:
         quantity: Decimal,
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
+        client_order_id: str | None = None,
     ) -> Order:
         """Create a new order in PENDING status."""
         order_id = str(uuid.uuid4())
@@ -134,6 +136,7 @@ class OrderManager:
             quantity=quantity,
             limit_price=limit_price,
             stop_price=stop_price,
+            client_order_id=client_order_id,
         )
         self._orders[order_id] = order
         self._fills[order_id] = []
