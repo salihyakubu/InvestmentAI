@@ -299,6 +299,16 @@ resolves — pin it). _(DB-layer and API-layer coverage have since been added; s
 `GO_LIVE.md` (deploy + smoke-test on real infra, prove edge, paper soak) — not on outstanding
 code blockers.
 
+> **Update (pre-push safety sweep):** an adversarial scan of the branch flagged that brokers were
+> wired on credential-presence alone, with no `trading_mode` check — so a *paper* crypto order
+> could reach **live Binance** (CCXTBroker builds a real spot client with no sandbox). Fixed with
+> defence-in-depth, every layer gated on `trading_mode != "live"`: `_build_brokers()` wires
+> Alpaca/CCXT only in live mode; the router filters out `supports_live` brokers (returning `None`,
+> never a live fallback) so dict ordering no longer protects us; the execution engine hard-rejects
+> any `supports_live` dispatch outside live mode; and CCXTBroker enables Binance sandbox outside
+> live. Verified by `test_worker_broker_wiring.py` + `test_smart_router_safety.py` (a live crypto
+> broker inserted *before* paper still never dispatches live). Suite: **108 passing**.
+
 ---
 
 ## Appendix — quick-wins applied in this commit
