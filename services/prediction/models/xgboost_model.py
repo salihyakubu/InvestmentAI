@@ -7,6 +7,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, log_loss
 from xgboost import XGBClassifier, XGBRegressor
 
@@ -16,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 DIRECTION_MAP = {0: "short", 1: "flat", 2: "long"}
 DIRECTION_INV = {v: k for k, v in DIRECTION_MAP.items()}
+
+# Minimum validation rows (with all 3 classes present) before we fit a
+# probability calibrator. Below this a Platt fit is unstable, so we fall back to
+# raw classifier probabilities rather than emit a miscalibrated confidence.
+_MIN_CALIBRATION_SAMPLES = 30
 
 
 class XGBoostPredictor(BasePredictor):
@@ -65,17 +71,34 @@ class XGBoostPredictor(BasePredictor):
         self._classifier = XGBClassifier(**default_cls_params)
         self._regressor = XGBRegressor(**default_reg_params)
         self._feature_names = feature_names or []
+        self._calibrator: CalibratedClassifierCV | None = None
         self._is_fitted = False
 
     # ------------------------------------------------------------------
     # Prediction
     # ------------------------------------------------------------------
 
+    def _proba(self, features: np.ndarray) -> np.ndarray:
+        """Return (n, 3) class probabilities in [short, flat, long] order.
+
+        Uses the calibrated probabilities when a calibrator was fitted, else the
+        raw classifier softmax. Columns are remapped via the estimator's
+        ``classes_`` so a class absent from the fit data yields a zero column
+        rather than a silently shifted distribution.
+        """
+        estimator = self._calibrator if self._calibrator is not None else self._classifier
+        raw = estimator.predict_proba(features)
+        out = np.zeros((raw.shape[0], 3), dtype=np.float64)
+        for col, cls in enumerate(int(c) for c in estimator.classes_):
+            if 0 <= cls <= 2:
+                out[:, cls] = raw[:, col]
+        return out
+
     def predict(self, features: np.ndarray) -> PredictionOutput:
         """Predict for a single flat feature vector (1-D or 2-D with one row)."""
         if features.ndim == 1:
             features = features.reshape(1, -1)
-        probs = self._classifier.predict_proba(features)[0]
+        probs = self._proba(features)[0]
         direction_idx = int(np.argmax(probs))
         direction = DIRECTION_MAP[direction_idx]
         confidence = float(probs[direction_idx])
@@ -90,7 +113,7 @@ class XGBoostPredictor(BasePredictor):
 
     def predict_batch(self, features: np.ndarray) -> list[PredictionOutput]:
         """Predict for a batch of flat feature vectors."""
-        probs = self._classifier.predict_proba(features)
+        probs = self._proba(features)
         returns = self._regressor.predict(features)
         outputs: list[PredictionOutput] = []
         for i in range(len(features)):
@@ -104,6 +127,47 @@ class XGBoostPredictor(BasePredictor):
                 )
             )
         return outputs
+
+    def _fit_calibrator(
+        self, X_val: np.ndarray, y_val: np.ndarray
+    ) -> CalibratedClassifierCV | None:
+        """Fit a Platt (sigmoid) calibrator on the validation split.
+
+        The emitted confidence drives the live confidence gate
+        (``min_prediction_confidence``); that gate only protects capital if a
+        reported 0.6 really corresponds to ~60% empirical accuracy. Tree
+        classifiers are typically over-confident, so we map raw scores to
+        calibrated posteriors. Skipped (raw probabilities used) when the
+        validation split lacks all three classes or is too small for a stable
+        fit.
+        """
+        try:
+            y_val = np.asarray(y_val)
+            _, counts = np.unique(y_val, return_counts=True)
+            if len(y_val) < _MIN_CALIBRATION_SAMPLES or len(counts) < 3:
+                logger.info("Skipping probability calibration: insufficient validation coverage")
+                return None
+            # Calibrate the already-fitted classifier without refitting it. cv folds
+            # the validation rows for the sigmoid fit; cap folds at the rarest
+            # class count so StratifiedKFold always has >=1 row per class per fold.
+            n_splits = int(min(5, counts.min()))
+            if n_splits < 2:
+                logger.info("Skipping probability calibration: a class has too few validation rows")
+                return None
+            try:
+                from sklearn.frozen import FrozenEstimator
+
+                calibrator = CalibratedClassifierCV(
+                    FrozenEstimator(self._classifier), method="sigmoid", cv=n_splits
+                )
+            except ImportError:  # sklearn < 1.6
+                calibrator = CalibratedClassifierCV(self._classifier, method="sigmoid", cv="prefit")
+            calibrator.fit(X_val, y_val)
+            logger.info("Fitted sigmoid probability calibrator on %d validation rows", len(y_val))
+            return calibrator
+        except Exception:
+            logger.exception("Probability calibration failed; using raw classifier probabilities")
+            return None
 
     # ------------------------------------------------------------------
     # Training
@@ -153,6 +217,9 @@ class XGBoostPredictor(BasePredictor):
 
         self._is_fitted = True
 
+        # --- Probability calibration (on the held-out validation split) ---
+        self._calibrator = self._fit_calibrator(X_val, y_val)
+
         # --- Metrics ---
         train_probs = self._classifier.predict_proba(X_train)
         val_probs = self._classifier.predict_proba(X_val)
@@ -194,6 +261,8 @@ class XGBoostPredictor(BasePredictor):
         joblib.dump(self._classifier, path / "classifier.joblib")
         joblib.dump(self._regressor, path / "regressor.joblib")
         joblib.dump(self._feature_names, path / "feature_names.joblib")
+        if self._calibrator is not None:
+            joblib.dump(self._calibrator, path / "calibrator.joblib")
         logger.info("XGBoost model saved to %s", path)
 
     def load(self, path: Path) -> None:
@@ -202,6 +271,8 @@ class XGBoostPredictor(BasePredictor):
         feature_names_path = path / "feature_names.joblib"
         if feature_names_path.exists():
             self._feature_names = joblib.load(feature_names_path)
+        calibrator_path = path / "calibrator.joblib"
+        self._calibrator = joblib.load(calibrator_path) if calibrator_path.exists() else None
         self._is_fitted = True
         logger.info("XGBoost model loaded from %s", path)
 

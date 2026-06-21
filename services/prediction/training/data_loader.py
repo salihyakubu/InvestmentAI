@@ -98,14 +98,21 @@ class TrainingDataLoader:
         """Prepare sequential training data for LSTM / Transformer models.
 
         Returns X of shape (n_samples, seq_length, n_features) and aligned labels.
+
+        Features are returned RAW (unscaled), with ``scaler=None``. The sequence
+        models own their normalisation: each computes mean/std on the raw training
+        tensor, persists them, and re-applies the *same* statistics at inference.
+        Scaling here as well caused double normalisation -- the model recomputed
+        stats on already z-scored data, then at serve time applied near-identity
+        stats to raw features, so training and serving saw different
+        distributions. Keeping X raw makes a single, model-owned normalisation the
+        source of truth (mirrors ``load_training_data`` for the tree path).
         """
         labels = self._create_labels(close_prices, self.target_horizon_bars)
         valid_len = len(labels)
         feat = features[:valid_len]
 
-        feat_norm, scaler = self._normalize(feat)
-
-        sequences, seq_labels = self._create_sequences(feat_norm, labels, seq_length)
+        sequences, seq_labels = self._create_sequences(feat, labels, seq_length)
 
         logger.info(
             "Prepared %d sequences (seq_len=%d)  class distribution: short=%d flat=%d long=%d",
@@ -120,7 +127,7 @@ class TrainingDataLoader:
             X=sequences,
             y=seq_labels,
             feature_names=feature_names or [f"f{i}" for i in range(features.shape[1])],
-            scaler=scaler,
+            scaler=None,
         )
 
     # ------------------------------------------------------------------
@@ -156,13 +163,11 @@ class TrainingDataLoader:
         sequences = np.lib.stride_tricks.sliding_window_view(features, (seq_length, features.shape[1]))
         sequences = sequences.squeeze(axis=1)  # (n_samples, seq_length, n_features)
 
-        # Align labels with the last timestep of each window
+        # Align each window's label with the forward return that begins at the
+        # window's LAST bar: window j covers bars [j, j+seq_length-1] and its
+        # label is the return realised AFTER bar (j+seq_length-1). The future
+        # part of that return is never inside the window, so there is no
+        # look-ahead leakage.
         seq_labels = labels[seq_length - 1 :]
         min_len = min(len(sequences), len(seq_labels))
         return sequences[:min_len], seq_labels[:min_len]
-
-    @staticmethod
-    def _normalize(X: np.ndarray) -> tuple[np.ndarray, StandardScaler]:
-        scaler = StandardScaler()
-        X_norm = scaler.fit_transform(X)
-        return X_norm, scaler

@@ -8,6 +8,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 from lightgbm import LGBMClassifier, LGBMRegressor, early_stopping, log_evaluation
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, log_loss
 
 from services.prediction.models.base import BasePredictor, PredictionOutput, TrainResult
@@ -15,6 +16,11 @@ from services.prediction.models.base import BasePredictor, PredictionOutput, Tra
 logger = logging.getLogger(__name__)
 
 DIRECTION_MAP = {0: "short", 1: "flat", 2: "long"}
+
+# Minimum validation rows (with all 3 classes present) before we fit a
+# probability calibrator; below this a Platt fit is unstable so we keep raw
+# probabilities rather than emit a miscalibrated confidence.
+_MIN_CALIBRATION_SAMPLES = 30
 
 
 class LightGBMPredictor(BasePredictor):
@@ -70,16 +76,32 @@ class LightGBMPredictor(BasePredictor):
         self._regressor = LGBMRegressor(**default_reg_params)
         self._feature_names = feature_names or []
         self._categorical_features = categorical_features or []
+        self._calibrator: CalibratedClassifierCV | None = None
         self._is_fitted = False
 
     # ------------------------------------------------------------------
     # Prediction
     # ------------------------------------------------------------------
 
+    def _proba(self, features: np.ndarray) -> np.ndarray:
+        """Return (n, 3) class probabilities in [short, flat, long] order.
+
+        Uses the calibrated probabilities when a calibrator was fitted, else the
+        raw classifier softmax. Columns are remapped via the estimator's
+        ``classes_`` so a class absent from the fit data yields a zero column.
+        """
+        estimator = self._calibrator if self._calibrator is not None else self._classifier
+        raw = estimator.predict_proba(features)
+        out = np.zeros((raw.shape[0], 3), dtype=np.float64)
+        for col, cls in enumerate(int(c) for c in estimator.classes_):
+            if 0 <= cls <= 2:
+                out[:, cls] = raw[:, col]
+        return out
+
     def predict(self, features: np.ndarray) -> PredictionOutput:
         if features.ndim == 1:
             features = features.reshape(1, -1)
-        probs = self._classifier.predict_proba(features)[0]
+        probs = self._proba(features)[0]
         direction_idx = int(np.argmax(probs))
         direction = DIRECTION_MAP[direction_idx]
         confidence = float(probs[direction_idx])
@@ -93,7 +115,7 @@ class LightGBMPredictor(BasePredictor):
         )
 
     def predict_batch(self, features: np.ndarray) -> list[PredictionOutput]:
-        probs = self._classifier.predict_proba(features)
+        probs = self._proba(features)
         returns = self._regressor.predict(features)
         outputs: list[PredictionOutput] = []
         for i in range(len(features)):
@@ -107,6 +129,42 @@ class LightGBMPredictor(BasePredictor):
                 )
             )
         return outputs
+
+    def _fit_calibrator(
+        self, X_val: np.ndarray, y_val: np.ndarray
+    ) -> CalibratedClassifierCV | None:
+        """Fit a Platt (sigmoid) calibrator on the validation split so the
+        reported confidence approximates a true probability (the live confidence
+        gate depends on it). Skipped when the validation split lacks all three
+        classes or is too small for a stable fit.
+        """
+        try:
+            y_val = np.asarray(y_val)
+            _, counts = np.unique(y_val, return_counts=True)
+            if len(y_val) < _MIN_CALIBRATION_SAMPLES or len(counts) < 3:
+                logger.info("Skipping probability calibration: insufficient validation coverage")
+                return None
+            # Calibrate the already-fitted classifier without refitting it. cv folds
+            # the validation rows for the sigmoid fit; cap folds at the rarest
+            # class count so StratifiedKFold always has >=1 row per class per fold.
+            n_splits = int(min(5, counts.min()))
+            if n_splits < 2:
+                logger.info("Skipping probability calibration: a class has too few validation rows")
+                return None
+            try:
+                from sklearn.frozen import FrozenEstimator
+
+                calibrator = CalibratedClassifierCV(
+                    FrozenEstimator(self._classifier), method="sigmoid", cv=n_splits
+                )
+            except ImportError:  # sklearn < 1.6
+                calibrator = CalibratedClassifierCV(self._classifier, method="sigmoid", cv="prefit")
+            calibrator.fit(X_val, y_val)
+            logger.info("Fitted sigmoid probability calibrator on %d validation rows", len(y_val))
+            return calibrator
+        except Exception:
+            logger.exception("Probability calibration failed; using raw classifier probabilities")
+            return None
 
     # ------------------------------------------------------------------
     # Training
@@ -157,6 +215,9 @@ class LightGBMPredictor(BasePredictor):
 
         self._is_fitted = True
 
+        # --- Probability calibration (on the held-out validation split) ---
+        self._calibrator = self._fit_calibrator(X_val, y_val)
+
         # --- Metrics ---
         train_probs = self._classifier.predict_proba(X_train)
         val_probs = self._classifier.predict_proba(X_val)
@@ -199,6 +260,8 @@ class LightGBMPredictor(BasePredictor):
         joblib.dump(self._regressor, path / "regressor.joblib")
         joblib.dump(self._feature_names, path / "feature_names.joblib")
         joblib.dump(self._categorical_features, path / "categorical_features.joblib")
+        if self._calibrator is not None:
+            joblib.dump(self._calibrator, path / "calibrator.joblib")
         logger.info("LightGBM model saved to %s", path)
 
     def load(self, path: Path) -> None:
@@ -210,6 +273,8 @@ class LightGBMPredictor(BasePredictor):
         cat_path = path / "categorical_features.joblib"
         if cat_path.exists():
             self._categorical_features = joblib.load(cat_path)
+        calibrator_path = path / "calibrator.joblib"
+        self._calibrator = joblib.load(calibrator_path) if calibrator_path.exists() else None
         self._is_fitted = True
         logger.info("LightGBM model loaded from %s", path)
 
