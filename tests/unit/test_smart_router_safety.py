@@ -62,7 +62,15 @@ class _TripwireLiveBroker(BaseBroker):
 
 
 def _settings(trading_mode: str) -> Settings:
-    return Settings(trading_mode=trading_mode, initial_capital=Decimal("100000"))
+    # Pass an explicit strong JWT secret so live-mode construction satisfies the
+    # settings guard regardless of the ambient environment. Constructor kwargs
+    # take precedence over any .env, so the test is hermetic (CI has no .env;
+    # locally we must not depend on the developer's real secret either).
+    return Settings(
+        trading_mode=trading_mode,
+        initial_capital=Decimal("100000"),
+        jwt_secret="test-secret-not-the-published-default-value",
+    )
 
 
 def _brokers_ccxt_first() -> tuple[_TripwireLiveBroker, PaperBroker, dict]:
