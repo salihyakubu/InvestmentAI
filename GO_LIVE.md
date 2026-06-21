@@ -26,13 +26,31 @@ and Stage 3 (paper soak) pass.**
    - ⚠️ Still TODO at deploy time: put these same 5 secrets in Railway's secret
      store (the local `.env` is not shipped). In live mode the app refuses to
      start with the default `JWT_SECRET` — by design.
-2. Deploy (Railway uses `Dockerfile`; release runs `alembic upgrade head`).
-   Locally: `docker compose up` then `alembic upgrade head`.
-3. Create a login user: `PYTHONPATH=. python scripts/create_user.py you@x.com '<pw>' admin`.
-4. **Smoke test** against the deployed Redis:
-   `PYTHONPATH=. python scripts/smoke_test_pipeline.py` → must print `SMOKE TEST PASSED`.
-5. Sanity: `GET /api/v1/healthz` 200; `POST /api/v1/auth/token` returns a JWT;
-   an authed request succeeds.
+2. **Provision** Railway services: Postgres + Redis. For TimescaleDB hypertables use a
+   TimescaleDB image/template; on vanilla Railway Postgres migration `0002` safely no-ops
+   (hypertables skipped, schema otherwise identical).
+3. **Two app services from this repo** (same `Dockerfile`):
+   - `api` (web) — start = Dockerfile CMD (`uvicorn api.main:app`); healthcheck `/healthz`
+     (already in `railway.toml`); `releaseCommand = alembic upgrade head` runs automatically.
+   - `worker` — override start command to `python -m services.worker` (no healthcheck).
+4. **Env vars** (both services): `DATABASE_URL=${{Postgres.DATABASE_URL}}` (the app converts
+   `postgresql://` → asyncpg itself), `REDIS_URL=${{Redis.REDIS_URL}}`, the 5 rotated secrets
+   (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `BINANCE_API_KEY`, `BINANCE_SECRET_KEY`,
+   `JWT_SECRET`), `ALPACA_BASE_URL=https://paper-api.alpaca.markets`, `TRADING_MODE=paper`,
+   `INITIAL_CAPITAL=100.00`. (`CORS_ALLOW_ORIGINS` if a deployed frontend origin is added.)
+5. Create a login user: `railway run python scripts/create_user.py you@x.com '<pw>' admin`.
+6. **Smoke test** against the deployed Redis:
+   `railway run python scripts/smoke_test_pipeline.py` → must print `SMOKE TEST PASSED`.
+7. Sanity: `GET /healthz` 200; `GET /api/v1/health` → db+redis ok;
+   `POST /api/v1/auth/token` returns a JWT; an authed request succeeds.
+
+> **Deploy dry-run (done 2026-06-21):** the production image was built and exercised locally
+> against TimescaleDB + Redis containers — it builds, runs `alembic upgrade head` (0001+0002,
+> 4 hypertables created), serves, connects DB+Redis, and answers `/healthz` 200,
+> `/api/v1/health` `{database:ok,redis:ok}`, `/api/v1/auth/token` 401 on bad creds. A root
+> `.dockerignore` was added so the image no longer bakes `.env`/`.venv`/`.git` (5.07GB → 2.87GB).
+> Remaining for the operator: create the Railway project, set the env vars above (CLI auth is
+> yours), and trigger the deploy.
 
 ## Stage 2 — Prove the strategy has edge 🔴
 1. Ingest real historical OHLCV for your universe.
