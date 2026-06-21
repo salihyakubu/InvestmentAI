@@ -5,14 +5,13 @@ Revises:
 Create Date: 2026-06-14
 
 Creates the full ORM schema (the single source of truth) via
-``metadata.create_all``. This supersedes
-infrastructure/docker/postgres/init.sql, which is kept only as a local
-TimescaleDB convenience.
+``metadata.create_all``. The old hand-written
+infrastructure/docker/postgres/init.sql has been retired in favour of this
+migration chain.
 
-TimescaleDB hypertable conversions and retention policies (see init.sql) are
-intentionally NOT applied here so this migration stays portable to plain
-PostgreSQL. Add them in a follow-up migration guarded on the timescaledb
-extension when deploying to TimescaleDB.
+TimescaleDB hypertable conversions and retention policies are intentionally NOT
+applied here so this migration stays portable to plain PostgreSQL. They live in
+0002_timescale_hypertables, guarded on the timescaledb extension being available.
 """
 
 from __future__ import annotations
