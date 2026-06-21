@@ -9,10 +9,13 @@ and Stage 3 (paper soak) pass.**
 ---
 
 ## Stage 0 — Code correctness ✅ (done)
-- 88 tests green, `ruff` clean, CI in place.
-- Migration verified on real Postgres; full pipeline verified over real Redis
-  (`scripts/smoke_test_pipeline.py`); models train + predict
-  (`scripts/validate_model.py`); auth path verified on real Postgres.
+- 100 tests green, `ruff` clean, CI in place.
+- Migration verified on real Postgres **and** real TimescaleDB (0002 builds 4 hypertables +
+  retention; no-op on plain Postgres); full pipeline verified over real Redis
+  (`scripts/smoke_test_pipeline.py`); models train + predict (`scripts/validate_model.py`);
+  tree probabilities calibrated; auth path verified on real Postgres.
+- Frontend: login/auth gate in place, FE↔BE paths reconciled, production nginx build verified
+  (tsc strict + vite); login render + auth-redirect confirmed in-browser.
 
 ## Stage 1 — Deploy + smoke test on real infra ⚙️
 1. ✅ **Rotate credentials** (done locally 2026-06-21; old keys revoked at source):

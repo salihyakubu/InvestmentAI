@@ -87,9 +87,18 @@ system — a well-built engine with no fuel line attached.
 > The **tree regressor now trains on real forward returns** (the data loader exposes them and
 > the trainer threads them through), so `expected_return` carries real magnitude. A
 > **min-confidence gate** now abstains (flat) on low-confidence signals, wiring up
-> `settings.min_prediction_confidence`. Still open: probability *calibration* (Platt/isotonic),
-> and the sequence-model double-normalisation + NN regressor (sequence models don't run at
-> inference) — tracked separately.
+> `settings.min_prediction_confidence`.
+>
+> **Update (#12, done):** the tree models now emit **calibrated** probabilities — `train()` fits a
+> Platt (sigmoid) calibrator on the validation split (sklearn `FrozenEstimator`), persists it, and
+> `predict()` routes through it, so the confidence the gate keys on is a real probability.
+> Calibration self-skips when the validation split lacks class coverage. The **sequence-path
+> double-normalisation** is killed at the root: `load_sequence_data` returns RAW features
+> (`scaler=None`) so the model-owned normalisation is the single train/serve transform, and the
+> window/label alignment is confirmed leak-free. Verified by `tests/unit/test_model_calibration.py`
+> and `tests/unit/test_data_loader_sequence.py`. (Sequence models still don't run at inference —
+> torch isn't in this env — so their confidence remains raw softmax; that calibration is the one
+> remaining ML follow-up, gated on torch.)
 
 ### B — Backtest results cannot be trusted
 - **Look-ahead bias:** strategy sees bar *i* (close/high/low), decides, then is **filled at
@@ -150,8 +159,15 @@ system — a well-built engine with no fuel line attached.
 > migration (`0001_baseline`, `create_all` from the ORM — now the single source of truth), and
 > `prepend_sys_path = .` so `alembic upgrade head` can import `core`/`config` on Railway.
 > Verified: alembic discovers the head, all 11 tables compile to PostgreSQL DDL, FK resolves
-> (`tests/unit/test_models_metadata.py`). Deferred: retiring `init.sql` and re-adding Timescale
-> hypertables/retention as a follow-up migration.
+> (`tests/unit/test_models_metadata.py`).
+>
+> **Update (#14, done):** `init.sql` is retired (deleted + compose mount removed); the ORM +
+> Alembic chain is the single source of truth. New migration `0002_timescale` re-adds the
+> hypertable/retention setup, guarded on the timescaledb extension so it no-ops on plain
+> PostgreSQL. Verified on real containers — on `timescale/timescaledb:latest-pg16` it builds 4
+> hypertables (`ohlcv` 5y, `portfolio_snapshots`, `risk_metrics` 3y, `audit_logs` 7y with its PK
+> widened to `(id, timestamp)`) and leaves `predictions` a plain table for the FK; downgrade
+> removes the policies and re-upgrade is idempotent; on `postgres:16` it runs to head as a no-op.
 
 - **No CI/CD** — `ruff`, `mypy --strict`, `pytest` all configured but nothing runs them.
   _(Fixed: see roadmap item 6 / the CI commit.)_
@@ -161,8 +177,16 @@ system — a well-built engine with no fuel line attached.
 
 > **Update (this commit):** the backend now issues tokens — `POST /api/v1/auth/token` verifies
 > credentials (bcrypt) and returns a JWT (`api/routers/auth.py`), verified end-to-end by
-> `tests/integration/test_auth_login.py`. The frontend login page and the FE↔BE path /
-> WS-prefix reconcile still remain (need the JS toolchain).
+> `tests/integration/test_auth_login.py`.
+>
+> **Update (#8, done):** the frontend is complete. Added a `Login` page (POST `/auth/token` →
+> stores the JWT), an auth slice in the store, a `ProtectedRoute` gate, and a header logout.
+> Reconciled the mismatched hooks (`/positions`, `/portfolio/snapshots`, `/risk/metrics/latest`,
+> `/predictions/latest`, `/backtest/run`, `/config/risk-rules`; order payload `order_type`) and
+> pointed the WebSocket at `/api/v1/ws/<channel>`. `Dockerfile.frontend` is now a multi-stage
+> nginx build (SPA fallback + `/api` proxy incl. WS). Verified: prod build (tsc strict + vite)
+> passes; in-browser the login page renders, an unauthenticated route redirects to `/login`, no
+> console errors.
 
 ---
 
@@ -239,7 +263,9 @@ resolves — pin it). _(DB-layer and API-layer coverage have since been added; s
 
 ## Remediation roadmap (checklist)
 
-- [ ] **0. Rotate broker keys + JWT secret** (owner action; brokers + Railway secrets).
+- [x] **0. Rotate broker keys + JWT secret** — done locally and verified (new Alpaca key
+      authenticates against the paper endpoint, JWT is a 64-char non-default secret, paper mode
+      intact). _(Remaining at deploy time: replicate the 5 secrets into Railway's secret store.)_
 - [x] **1. Security quick-wins** — remove `/debug/env`, configurable CORS, JWT live-mode
       guard, `.env` → paper endpoint. _(Done — see Appendix.)_
 - [x] **2. Make it trade end-to-end** — `RiskApprovedEvent` now carries the full sized order
@@ -250,25 +276,28 @@ resolves — pin it). _(DB-layer and API-layer coverage have since been added; s
 - [x] **3. Fix ML serving (direction path)** — trees no longer scale (train==serve); inference
       orders features by persisted `feature_names`; empty-metrics promotion bug fixed via
       `TrainResult.to_metrics()`; the tree regressor now trains on real forward returns.
-      _(Deferred: probability calibration; sequence-path leakage.)_
+      _(Done #12: tree probabilities are Platt-calibrated; sequence-path double-normalisation
+      removed — only torch-model calibration remains, gated on torch.)_
 - [x] **4. Connect risk to the order path** — buying-power + client-order-id idempotency;
       strict order-input validation; positions fed from fills; live equity/PnL → circuit
       breaker via `sync_account()` on a worker timer; the manual order API publishes an
-      `OrderIntentEvent` the execution worker executes. _(Remaining: sync the DB order row's
-      status from fills — reporting only.)_
+      `OrderIntentEvent` the execution worker executes. _(Done #19: `OrderPersistenceService`
+      syncs the DB order row's status + records fills from execution events.)_
 - [x] **5. Trustworthy backtest** — next-bar-open fills (no look-ahead); correct short cash
       signs + signed-equity model; buying-power cap; timestamp alignment; timeframe-aware
       Sharpe/Sortino/annual-return. Verified by `tests/unit/test_backtesting.py`.
-- [~] **6. Productionize** — **done:** CI + lint cleanup; baseline Alembic migration +
-      `Prediction` model + FK fix; non-root Python containers (+ `libgomp1`); backend
-      auth/login endpoint (`POST /auth/token`, bcrypt). **Pending:** frontend prod build +
-      login page + FE/BE API-path reconcile; `init.sql` retirement + Timescale hypertables.
+- [x] **6. Productionize** — CI + lint cleanup; baseline Alembic migration + `Prediction` model
+      + FK fix; non-root Python containers (+ `libgomp1`); backend auth/login endpoint
+      (`POST /auth/token`, bcrypt); **frontend** prod nginx build + login/auth gate + FE/BE
+      API-path reconcile (#8); **`init.sql` retired** + Timescale hypertables/retention migration
+      (#14, verified on real Timescale + plain Postgres).
 - [x] **7. Money-path tests** — DB-backed order/fill persistence tests (SQLite), API-level
       auth-enforcement + order-validation tests (FastAPI TestClient), and the tautological e2e
-      replaced with deterministic cases. Suite: 71 passing.
+      replaced with deterministic cases. Suite: **100 passing**.
 
-**Do not enable live trading until items 0–5 are done and verified.** Today a single flag
-flip could send unbounded, un-risk-checked orders to a real account.
+**Status: items 0–7 done and verified.** Pre-live gating now rests on the operational stages in
+`GO_LIVE.md` (deploy + smoke-test on real infra, prove edge, paper soak) — not on outstanding
+code blockers.
 
 ---
 
