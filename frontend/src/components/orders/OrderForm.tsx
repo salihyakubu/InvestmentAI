@@ -19,9 +19,9 @@ export default function OrderForm() {
       {
         symbol: symbol.toUpperCase(),
         side,
-        type: orderType,
+        order_type: orderType,
         quantity: parseFloat(quantity),
-        ...(orderType === 'limit' && limitPrice
+        ...((orderType === 'limit' || orderType === 'stop_limit') && limitPrice
           ? { limit_price: parseFloat(limitPrice) }
           : {}),
       },

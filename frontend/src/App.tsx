@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
-import Layout from './components/layout/Layout';
+import ProtectedRoute from './components/auth/ProtectedRoute';
+import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Portfolio from './pages/Portfolio';
 import Trading from './pages/Trading';
@@ -11,8 +12,9 @@ import Settings from './pages/Settings';
 
 export default function App() {
   return (
-    <Layout>
-      <Routes>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route element={<ProtectedRoute />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/trading" element={<Trading />} />
@@ -21,7 +23,7 @@ export default function App() {
         <Route path="/backtesting" element={<Backtesting />} />
         <Route path="/audit" element={<AuditLog />} />
         <Route path="/settings" element={<Settings />} />
-      </Routes>
-    </Layout>
+      </Route>
+    </Routes>
   );
 }

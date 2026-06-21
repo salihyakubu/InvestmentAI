@@ -24,16 +24,16 @@ export function usePortfolioSummary() {
 
 export function usePositions() {
   return useQuery<Position[]>({
-    queryKey: ['portfolio', 'positions'],
-    queryFn: () => apiClient.get('/portfolio/positions').then((r) => r.data),
+    queryKey: ['positions'],
+    queryFn: () => apiClient.get('/positions').then((r) => r.data),
     refetchInterval: 5_000,
   });
 }
 
 export function useEquityCurve() {
   return useQuery<{ date: string; equity: number }[]>({
-    queryKey: ['portfolio', 'equity-curve'],
-    queryFn: () => apiClient.get('/portfolio/equity-curve').then((r) => r.data),
+    queryKey: ['portfolio', 'snapshots'],
+    queryFn: () => apiClient.get('/portfolio/snapshots').then((r) => r.data),
     refetchInterval: 30_000,
   });
 }
@@ -56,9 +56,10 @@ export function useSubmitOrder() {
     mutationFn: (order: {
       symbol: string;
       side: 'buy' | 'sell';
-      type: string;
+      order_type: string;
       quantity: number;
       limit_price?: number;
+      stop_price?: number;
     }) => apiClient.post('/orders', order).then((r) => r.data),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['orders'] });
@@ -82,7 +83,7 @@ export function useCancelOrder() {
 export function useRiskMetrics() {
   return useQuery<RiskMetrics>({
     queryKey: ['risk', 'metrics'],
-    queryFn: () => apiClient.get('/risk/metrics').then((r) => r.data),
+    queryFn: () => apiClient.get('/risk/metrics/latest').then((r) => r.data),
     refetchInterval: 10_000,
   });
 }
@@ -93,7 +94,7 @@ export function usePredictions(symbol?: string) {
     queryKey: ['predictions', symbol],
     queryFn: () =>
       apiClient
-        .get('/predictions', { params: symbol ? { symbol } : undefined })
+        .get('/predictions/latest', { params: symbol ? { symbol } : undefined })
         .then((r) => r.data),
     refetchInterval: 15_000,
   });
@@ -149,15 +150,15 @@ export function useAuditLogs(params?: {
 export function useRunBacktest() {
   return useMutation<BacktestResult, Error, BacktestConfig>({
     mutationFn: (config) =>
-      apiClient.post('/backtesting/run', config).then((r) => r.data),
+      apiClient.post('/backtest/run', config).then((r) => r.data),
   });
 }
 
-// Settings
+// Settings (backed by the config router on the API)
 export function useSettings() {
   return useQuery<Record<string, unknown>>({
     queryKey: ['settings'],
-    queryFn: () => apiClient.get('/settings').then((r) => r.data),
+    queryFn: () => apiClient.get('/config/risk-rules').then((r) => r.data),
   });
 }
 
@@ -165,7 +166,7 @@ export function useUpdateSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (settings: Record<string, unknown>) =>
-      apiClient.put('/settings', settings).then((r) => r.data),
+      apiClient.put('/config/risk-rules', settings).then((r) => r.data),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
