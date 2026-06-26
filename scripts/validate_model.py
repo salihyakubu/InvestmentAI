@@ -22,10 +22,20 @@ from backtesting.performance import PerformanceAnalyzer
 from services.prediction.models.xgboost_model import XGBoostPredictor
 from services.prediction.training.data_loader import TrainingDataLoader
 
+# Forward-return horizon for labels AND for the strategy holding period. The two
+# must match: the model predicts the H-bar-ahead direction, so a position is held
+# for H bars.
+HORIZON = 5
 
-def _synthetic_close(n: int = 2000, seed: int = 7) -> np.ndarray:
+
+def _synthetic_close(n: int = 4000, seed: int = 7) -> np.ndarray:
+    # A TRUE zero-drift random walk: there is no signal and no drift to ride, so
+    # the harness must report NO edge on it. (A non-zero mean here would give a
+    # long-biased model a free ride and falsely trip the edge gate -- defeating
+    # the point of the null self-test.) Larger n keeps the non-overlapping
+    # out-of-sample sample big enough that noise can't fluke past the gate.
     rng = np.random.default_rng(seed)
-    return 100.0 * np.cumprod(1 + rng.normal(0.0003, 0.012, n))
+    return 100.0 * np.cumprod(1 + rng.normal(0.0, 0.012, n))
 
 
 def _load_close(argv: list[str]) -> tuple[np.ndarray, str]:
@@ -73,7 +83,7 @@ def main(argv: list[str]) -> int:
     valid = ~np.isnan(X).any(axis=1)
     X, close_v = X[valid], close[valid]
 
-    loader = TrainingDataLoader(target_horizon_bars=5, up_threshold=0.004, down_threshold=-0.004)
+    loader = TrainingDataLoader(target_horizon_bars=HORIZON, up_threshold=0.004, down_threshold=-0.004)
     ds = loader.load_training_data(X, close_v, feature_names=names)
 
     split = int(len(ds.X) * 0.7)
@@ -94,9 +104,15 @@ def main(argv: list[str]) -> int:
     traded = dirs != 0
     hit_rate = float((np.sign(dirs[traded]) == np.sign(r_test[traded])).mean()) if traded.any() else 0.0
 
-    strat_ret = dirs * r_test  # position held over the forward window
+    # Non-overlapping holding periods: each prediction holds for HORIZON bars, so
+    # we step by HORIZON instead of compounding the H-bar forward return at EVERY
+    # bar. Overlapping windows (the naive `dirs * r_test` compounded daily) count
+    # each move ~H times, grossly inflating both total return and Sharpe -- which
+    # would make this go-live gate dangerously optimistic.
+    strat_ret = (dirs * r_test)[::HORIZON]
     equity = np.concatenate([[10_000.0], 10_000.0 * np.cumprod(1 + strat_ret)])
-    m = PerformanceAnalyzer.compute_metrics(equity, [], periods_per_year=252)
+    # ~252/HORIZON independent holding periods per year.
+    m = PerformanceAnalyzer.compute_metrics(equity, [], periods_per_year=252 / HORIZON)
 
     print("\n=== Out-of-sample model validation ===")
     print(f"data source        : {source}")

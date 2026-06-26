@@ -53,13 +53,24 @@ and Stage 3 (paper soak) pass.**
 > yours), and trigger the deploy.
 
 ## Stage 2 — Prove the strategy has edge 🔴
-1. Ingest real historical OHLCV for your universe.
-2. `PYTHONPATH=. DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib python scripts/validate_model.py <prices.csv>`
-   (on Linux/Docker, libgomp1 is already in the image — no DYLD needed).
-3. **Gate:** out-of-sample **hit-rate > 52%** and **Sharpe > ~0.5**, stable across
-   periods. If `VERDICT: NO demonstrable edge`, **stop — do not trade.** No amount
-   of code quality substitutes for a profitable signal. (On random data it
-   correctly reports no edge.)
+1. **Ingest real history into a CSV** (the harness reads a `close` column; provider is
+   auto-selected by symbol, both keyless):
+   - Stock/ETF: `PYTHONPATH=. python scripts/fetch_history.py AAPL --start 2015-01-01 --out aapl.csv`
+   - Crypto: `PYTHONPATH=. python scripts/fetch_history.py BTC/USDT --start 2021-01-01 --out btc.csv`
+2. **Run the edge harness** on each file:
+   `PYTHONPATH=. python scripts/validate_model.py aapl.csv`
+   (prefix `DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib` on macOS; on Linux/Docker
+   libgomp1 is already in the image).
+3. **Gate:** out-of-sample **hit-rate > 52%** AND **Sharpe > 0.5**. If
+   `VERDICT: NO demonstrable edge`, **stop — do not trade.** Notes:
+   - The harness now measures **non-overlapping** holding periods, so Sharpe/return
+     are not inflated by overlapping forward-return windows (an early version reported
+     a fictitious +5588% / Sharpe 2.3 on AAPL; the honest figure is ~+125% / Sharpe ~1.0).
+   - Run it **per symbol** and require the edge to be **stable across symbols/periods**,
+     not one lucky fit. A single-symbol pass still ignores costs/slippage and tunes the
+     label threshold in-sample — treat it as necessary, not sufficient.
+   - Self-test: run with no args (zero-drift random walk) — it must report
+     **NO demonstrable edge**. No amount of code quality substitutes for a real signal.
 
 ## Stage 3 — Paper-trading soak (weeks) ⚙️
 Run the worker in paper mode and watch for **weeks**:
