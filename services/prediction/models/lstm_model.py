@@ -71,7 +71,7 @@ else:
     # Network
     # ------------------------------------------------------------------
 
-    class LSTMNetwork(nn.Module):  # type: ignore[misc]  # torch.nn.Module is untyped (Any) here
+    class LSTMNetwork(nn.Module):
         """Two-layer LSTM with dual heads for classification and regression."""
 
         def __init__(

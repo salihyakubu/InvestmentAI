@@ -65,6 +65,7 @@ class AlpacaBroker(BaseBroker):
         from alpaca.trading.requests import (
             LimitOrderRequest,
             MarketOrderRequest,
+            OrderRequest,
             StopLimitOrderRequest,
             StopOrderRequest,
         )
@@ -78,6 +79,7 @@ class AlpacaBroker(BaseBroker):
         # deduped by Alpaca instead of placing a second live order.
         client_order_id = order.external_id or None
 
+        request: OrderRequest
         if order.order_type == "market":
             request = MarketOrderRequest(
                 symbol=order.symbol,

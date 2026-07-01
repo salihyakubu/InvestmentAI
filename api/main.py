@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import cast
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
@@ -139,6 +138,6 @@ async def metrics() -> str:
     try:
         from prometheus_client import generate_latest
 
-        return cast(str, generate_latest().decode("utf-8"))
+        return generate_latest().decode("utf-8")
     except ImportError:
         return "# prometheus_client not installed\n"

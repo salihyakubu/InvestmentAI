@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -72,7 +73,7 @@ else:
     # Positional encoding
     # ------------------------------------------------------------------
 
-    class PositionalEncoding(nn.Module):  # type: ignore[misc]  # torch.nn.Module is untyped (Any) here
+    class PositionalEncoding(nn.Module):
         """Sinusoidal positional encoding."""
 
         def __init__(self, d_model: int, max_len: int = 5000, dropout: float = 0.1) -> None:
@@ -88,14 +89,16 @@ else:
             self.register_buffer("pe", pe)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            x = x + self.pe[:, : x.size(1), :]
-            return self.dropout(x)
+            # register_buffer types self.pe as Tensor | Module; it is a Tensor.
+            pe = cast(torch.Tensor, self.pe)
+            x = x + pe[:, : x.size(1), :]
+            return cast(torch.Tensor, self.dropout(x))
 
     # ------------------------------------------------------------------
     # Network
     # ------------------------------------------------------------------
 
-    class TransformerNetwork(nn.Module):  # type: ignore[misc]  # torch.nn.Module is untyped (Any) here
+    class TransformerNetwork(nn.Module):
         """Transformer encoder with dual classification/regression heads."""
 
         def __init__(
