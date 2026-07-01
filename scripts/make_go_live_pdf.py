@@ -190,21 +190,21 @@ story.append(callout(
 # ---- Stage 2 ----
 story.append(Paragraph(f"Stage 2 &mdash; Prove the strategy has edge &nbsp; {badge('HARD GATE', RED)}", STAGE))
 story.append(steps([
-    "<b>Ingest real history to a CSV</b> (the harness reads a <font face='Courier'>close</font> column; "
-    "provider auto-selected by symbol, both keyless):<br/>"
+    "<b>Ingest real history for a small universe</b> (harness reads a <font face='Courier'>close</font> "
+    "column; provider auto-selected by symbol, both keyless):<br/>"
     "<font face='Courier'>python scripts/fetch_history.py AAPL --start 2015-01-01 --out aapl.csv</font><br/>"
-    "<font face='Courier'>python scripts/fetch_history.py BTC/USDT --start 2021-01-01 --out btc.csv</font>",
-    "<b>Run the edge harness</b> on each file: "
-    "<font face='Courier'>python scripts/validate_model.py aapl.csv</font> "
+    "... repeat for MSFT, SPY, and/or BTC/USDT.",
+    "<b>Run the gate across the whole universe at once</b> (net of costs):<br/>"
+    "<font face='Courier'>python scripts/validate_model.py aapl.csv msft.csv spy.csv --cost-bps 5</font><br/>"
     "(prefix <font face='Courier'>DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib</font> on macOS; "
     "libgomp1 is already in the Docker image).",
 ]))
 story.append(callout(
-    f"{badge('GATE', RED)} &nbsp; Require out-of-sample <b>hit-rate &gt; 52%</b> AND <b>Sharpe &gt; 0.5</b>. "
-    "If the harness reports <b>NO demonstrable edge</b>, <b>STOP &mdash; do not trade.</b> The harness uses "
-    "non-overlapping holding periods (no inflated Sharpe) and self-tests as NO-edge on a zero-drift random walk. "
-    "Run it per symbol; require edge stable across symbols/periods &mdash; a single-symbol pass ignores "
-    "costs/slippage and is necessary, not sufficient.",
+    f"{badge('GATE', RED)} &nbsp; <b>Per symbol:</b> hit-rate &gt; 52% AND Sharpe &gt; 0.5 AND stability &gt;= 0.75 "
+    "(net-of-cost, non-overlapping holding periods). <b>Overall:</b> a green light needs a majority of "
+    "<b>3+ symbols</b> to pass &mdash; a single-symbol pass prints <i>necessary but NOT sufficient</i>. The null "
+    "self-test (zero-drift random walk, run with no args) must report <b>NO demonstrable edge</b>. Anything "
+    "else means <b>STOP &mdash; do not trade.</b>",
     "#fef2f2", RED))
 
 # ---- Stage 3 ----
