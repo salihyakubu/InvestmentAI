@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 
 @dataclass
@@ -51,17 +52,17 @@ class BaseBroker(ABC):
         ...
 
     @abstractmethod
-    async def get_order_status(self, external_id: str) -> dict:
+    async def get_order_status(self, external_id: str) -> dict[str, Any]:
         """Return current order status from the broker."""
         ...
 
     @abstractmethod
-    async def get_positions(self) -> list[dict]:
+    async def get_positions(self) -> list[dict[str, Any]]:
         """Return all open positions."""
         ...
 
     @abstractmethod
-    async def get_account(self) -> dict:
+    async def get_account(self) -> dict[str, Any]:
         """Return account summary (equity, cash, buying power, etc.)."""
         ...
 

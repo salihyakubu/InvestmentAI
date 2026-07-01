@@ -210,7 +210,7 @@ async def _run() -> None:
 
     risk = next((s for s in services if isinstance(s, RiskManagerService)), None)
     execution = next((s for s in services if isinstance(s, ExecutionEngineService)), None)
-    account_sync_task: asyncio.Task | None = None
+    account_sync_task: asyncio.Task[None] | None = None
     if risk is not None and execution is not None and execution.brokers:
         broker = next(iter(execution.brokers.values()))
 

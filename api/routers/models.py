@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -21,8 +22,8 @@ router = APIRouter(prefix="/models")
 )
 async def list_models(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> list[dict]:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Return all registered ML models (latest version of each)."""
     stmt = select(ModelMetadata).order_by(
         ModelMetadata.model_name, ModelMetadata.version.desc()
@@ -31,7 +32,7 @@ async def list_models(
     rows = result.scalars().all()
 
     # Group by model name and return latest version
-    seen: dict[str, dict] = {}
+    seen: dict[str, dict[str, Any]] = {}
     for row in rows:
         if row.model_name not in seen:
             seen[row.model_name] = {
@@ -53,8 +54,8 @@ async def list_models(
 async def list_model_versions(
     model_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> list[dict]:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Return all versions of a specific model."""
     # First get the model name from the given ID
     stmt = select(ModelMetadata).where(ModelMetadata.id == model_id)
@@ -96,8 +97,8 @@ async def list_model_versions(
 async def get_model_performance(
     model_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return performance metrics for a specific model version."""
     stmt = select(ModelMetadata).where(ModelMetadata.id == model_id)
     result = await db.execute(stmt)
@@ -136,7 +137,7 @@ async def get_model_performance(
 )
 async def trigger_retrain(
     model_id: uuid.UUID,
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> SuccessResponse:
     """Trigger retraining for a specific model.
 

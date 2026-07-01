@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -28,7 +29,7 @@ class BaseOptimizer(ABC):
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
         symbols: list[str],
-        constraints: dict | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> OptimizationResult:
         """Compute optimal portfolio weights.
 

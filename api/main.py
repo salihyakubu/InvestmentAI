@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
@@ -125,7 +126,7 @@ app.include_router(ws_router, prefix=API_V1, tags=["websockets"])
 # Simple root healthcheck (no dependencies, always returns 200)
 # ---------------------------------------------------------------------------
 @app.get("/healthz")
-async def healthz():
+async def healthz() -> dict[str, str]:
     return {"status": "alive"}
 
 
@@ -138,6 +139,6 @@ async def metrics() -> str:
     try:
         from prometheus_client import generate_latest
 
-        return generate_latest().decode("utf-8")
+        return cast(str, generate_latest().decode("utf-8"))
     except ImportError:
         return "# prometheus_client not installed\n"

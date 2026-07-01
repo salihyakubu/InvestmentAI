@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 from scipy.optimize import minimize
@@ -32,7 +33,7 @@ class MeanVarianceOptimizer(BaseOptimizer):
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
         symbols: list[str],
-        constraints: dict | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> OptimizationResult:
         n = len(symbols)
         constraints = constraints or {}
@@ -46,7 +47,7 @@ class MeanVarianceOptimizer(BaseOptimizer):
 
         # Weights must sum to 1.
         eq_constraint = {"type": "eq", "fun": lambda w: np.sum(w) - 1.0}
-        scipy_constraints: list[dict] = [eq_constraint]
+        scipy_constraints: list[dict[str, Any]] = [eq_constraint]
 
         if target_return is not None:
             # Minimise variance for a given return target.

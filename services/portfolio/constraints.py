@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -31,7 +32,7 @@ class PortfolioConstraints:
     # Optional per-symbol overrides: symbol -> (min_weight, max_weight).
     symbol_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
 
-    def to_optimizer_dict(self) -> dict:
+    def to_optimizer_dict(self) -> dict[str, Any]:
         """Return a flat dict consumable by optimizer ``constraints`` param."""
         return {
             "min_weight": self.min_weight,

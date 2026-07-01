@@ -86,8 +86,8 @@ class VaRCalculator:
         if std_return <= 0.0:
             return 0.0
 
-        z_score = stats.norm.ppf(1.0 - confidence)  # negative
-        var_pct = -(mean_return + z_score * std_return)
+        z_score: float = stats.norm.ppf(1.0 - confidence)  # negative
+        var_pct: float = -(mean_return + z_score * std_return)
 
         return max(var_pct, 0.0) * portfolio_value
 

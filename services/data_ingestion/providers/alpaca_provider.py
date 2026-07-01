@@ -172,7 +172,7 @@ class AlpacaDataProvider(BaseDataProvider):
     async def _run_stream(self) -> None:
         """Run the WebSocket event loop in a background task."""
         try:
-            await asyncio.to_thread(self._stream.run)
+            await asyncio.to_thread(self._stream.run)  # type: ignore[union-attr]  # _stream is always set by subscribe_realtime before this task runs
         except asyncio.CancelledError:
             logger.info("alpaca.realtime.cancelled")
         except Exception:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -26,8 +27,8 @@ async def list_audit_logs(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> list[dict]:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Return audit log entries with optional filtering."""
     stmt = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
 
@@ -65,8 +66,8 @@ async def list_audit_logs(
 async def get_decision_trace(
     order_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return the full decision trace for a specific order.
 
     Includes signal generation, risk evaluation, and execution details.

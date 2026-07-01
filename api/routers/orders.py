@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -38,7 +39,7 @@ async def list_orders(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> OrderListResponse:
     """Return a paginated list of orders, optionally filtered."""
     stmt = select(Order).order_by(Order.created_at.desc())
@@ -73,7 +74,7 @@ async def list_orders(
 async def get_order(
     order_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> OrderResponse:
     """Return a single order by its ID."""
     stmt = select(Order).where(Order.id == order_id)
@@ -98,7 +99,7 @@ async def get_order(
 async def create_order(
     payload: OrderCreate,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
     _rate: None = Depends(_order_limiter),
     bus: EventBus | None = Depends(get_event_bus),
 ) -> OrderResponse:
@@ -155,7 +156,7 @@ async def create_order(
 async def cancel_order(
     order_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> None:
     """Cancel a pending or submitted order."""
     stmt = select(Order).where(Order.id == order_id)

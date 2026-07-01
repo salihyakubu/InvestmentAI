@@ -265,8 +265,8 @@ class ContinuousLearningService:
 
             # 4. Update ensemble weights
             all_metrics: dict[str, dict[str, Any]] = {}
-            for mid in self._tracked_predictions:
-                all_metrics[mid] = self._feedback_loop.compute_model_metrics(mid)
+            for mid in self._tracked_predictions:  # type: ignore[assignment]  # mid reused as loop var here binds str keys; mypy fixed its type to int from an earlier slice-index use
+                all_metrics[mid] = self._feedback_loop.compute_model_metrics(mid)  # type: ignore[index, arg-type]  # mid is a str key here (see loop above)
 
             if all_metrics:
                 new_weights = self._feedback_loop.update_ensemble_weights(all_metrics)

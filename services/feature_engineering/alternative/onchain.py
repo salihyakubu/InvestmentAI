@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class OnChainMetrics:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get_active_addresses(self, lookback_days: int = 7) -> dict:
+    async def get_active_addresses(self, lookback_days: int = 7) -> dict[str, Any]:
         """Return daily active-address counts.
 
         In production this would query a blockchain indexer.
@@ -43,7 +44,7 @@ class OnChainMetrics:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
-    async def get_exchange_flows(self) -> dict:
+    async def get_exchange_flows(self) -> dict[str, Any]:
         """Return net exchange inflow/outflow.
 
         Positive net_flow means coins are flowing *into* exchanges
@@ -59,7 +60,7 @@ class OnChainMetrics:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
-    async def get_mvrv_ratio(self) -> dict:
+    async def get_mvrv_ratio(self) -> dict[str, Any]:
         """Return the Market-Value-to-Realised-Value ratio.
 
         MVRV > 3.5 historically indicates overvaluation; < 1.0 indicates

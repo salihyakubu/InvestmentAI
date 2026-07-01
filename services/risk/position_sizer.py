@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 
@@ -15,7 +16,7 @@ class PositionSizer(ABC):
     """Base class for position sizing strategies."""
 
     @abstractmethod
-    def size(self, **kwargs) -> Decimal:
+    def size(self, **kwargs: Any) -> Decimal:
         """Return the dollar amount to allocate to a position."""
 
 
@@ -33,7 +34,7 @@ class FixedFractionalSizer(PositionSizer):
             raise ValueError(f"fraction must be in (0, 1], got {fraction}")
         self.fraction = Decimal(str(fraction))
 
-    def size(self, *, equity: Decimal, **_kwargs) -> Decimal:
+    def size(self, *, equity: Decimal, **_kwargs: Any) -> Decimal:  # type: ignore[override]  # keyword-only params are stricter than the base **kwargs signature
         """Return ``equity * fraction``."""
         return equity * self.fraction
 
@@ -55,14 +56,14 @@ class KellyCriterionSizer(PositionSizer):
             raise ValueError(f"kelly_fraction must be in (0, 1], got {kelly_fraction}")
         self.kelly_fraction = kelly_fraction
 
-    def size(
+    def size(  # type: ignore[override]  # keyword-only params are stricter than the base **kwargs signature
         self,
         *,
         win_rate: float,
         win_loss_ratio: float,
         equity: Decimal,
         max_pct: float = 0.10,
-        **_kwargs,
+        **_kwargs: Any,
     ) -> Decimal:
         """Compute the Kelly-optimal position size.
 
@@ -126,13 +127,13 @@ class VolatilityTargetSizer(PositionSizer):
         self.target_annual_vol = target_annual_vol
         self.trading_days = trading_days
 
-    def size(
+    def size(  # type: ignore[override]  # keyword-only params are stricter than the base **kwargs signature
         self,
         *,
         equity: Decimal,
         asset_daily_vol: float,
         max_pct: float = 0.10,
-        **_kwargs,
+        **_kwargs: Any,
     ) -> Decimal:
         """Return dollar size so position contributes *target_annual_vol*.
 

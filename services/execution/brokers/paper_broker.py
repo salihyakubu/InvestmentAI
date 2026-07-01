@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
@@ -109,7 +110,7 @@ class PaperBroker(BaseBroker):
             return True
         return False
 
-    async def get_order_status(self, external_id: str) -> dict:
+    async def get_order_status(self, external_id: str) -> dict[str, Any]:
         """Return the current status of an order, including fill details.
 
         ``filled_qty`` / ``filled_avg_price`` are what the execution engine's
@@ -137,7 +138,7 @@ class PaperBroker(BaseBroker):
             "filled_avg_price": str(filled_avg_price),
         }
 
-    async def get_positions(self) -> list[dict]:
+    async def get_positions(self) -> list[dict[str, Any]]:
         """Return all non-zero positions."""
         positions = []
         for symbol, qty in self._positions.items():
@@ -152,7 +153,7 @@ class PaperBroker(BaseBroker):
                 })
         return positions
 
-    async def get_account(self) -> dict:
+    async def get_account(self) -> dict[str, Any]:
         """Return simulated account summary."""
         positions_value = sum(
             qty * self._last_prices.get(sym, Decimal("0"))

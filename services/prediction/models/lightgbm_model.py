@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, Literal
 
 import joblib
 import numpy as np
@@ -31,12 +33,12 @@ class LightGBMPredictor(BasePredictor):
 
     def __init__(
         self,
-        classifier_params: dict | None = None,
-        regressor_params: dict | None = None,
+        classifier_params: dict[str, Any] | None = None,
+        regressor_params: dict[str, Any] | None = None,
         feature_names: list[str] | None = None,
         categorical_features: list[str] | None = None,
     ) -> None:
-        default_cls_params: dict = {
+        default_cls_params: dict[str, Any] = {
             "n_estimators": 500,
             "max_depth": 7,
             "learning_rate": 0.05,
@@ -52,7 +54,7 @@ class LightGBMPredictor(BasePredictor):
             "n_jobs": -1,
             "verbose": -1,
         }
-        default_reg_params: dict = {
+        default_reg_params: dict[str, Any] = {
             "n_estimators": 500,
             "max_depth": 6,
             "learning_rate": 0.05,
@@ -181,13 +183,16 @@ class LightGBMPredictor(BasePredictor):
     ) -> TrainResult:
         logger.info("Training LightGBM classifier on %d samples", len(X_train))
 
-        cat_feature_indices = (
+        cat_feature_indices: list[int] | Literal["auto"] = (
             [self._feature_names.index(f) for f in self._categorical_features if f in self._feature_names]
             if self._feature_names and self._categorical_features
             else "auto"
         )
 
-        callbacks = [early_stopping(stopping_rounds=30), log_evaluation(period=0)]
+        callbacks: list[Callable[..., Any]] = [
+            early_stopping(stopping_rounds=30),
+            log_evaluation(period=0),
+        ]
 
         self._classifier.fit(
             X_train,

@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 # ---------------------------------------------------------------------------
 
 
-def sma(series: NDArray, period: int) -> NDArray:
+def sma(series: NDArray[np.float64], period: int) -> NDArray[np.float64]:
     """Simple moving average using a cumulative-sum trick for O(n) speed."""
     out = np.full_like(series, np.nan, dtype=np.float64)
     if len(series) < period:
@@ -26,7 +26,7 @@ def sma(series: NDArray, period: int) -> NDArray:
     return out
 
 
-def ema(series: NDArray, period: int) -> NDArray:
+def ema(series: NDArray[np.float64], period: int) -> NDArray[np.float64]:
     """Exponential moving average (Wilder smoothing multiplier)."""
     out = np.empty_like(series, dtype=np.float64)
     out[:] = np.nan
@@ -48,34 +48,34 @@ def ema(series: NDArray, period: int) -> NDArray:
 
 # Convenience wrappers for commonly-used SMA/EMA periods.
 
-def sma_5(series: NDArray) -> NDArray:
+def sma_5(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return sma(series, 5)
 
-def sma_10(series: NDArray) -> NDArray:
+def sma_10(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return sma(series, 10)
 
-def sma_20(series: NDArray) -> NDArray:
+def sma_20(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return sma(series, 20)
 
-def sma_50(series: NDArray) -> NDArray:
+def sma_50(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return sma(series, 50)
 
-def sma_200(series: NDArray) -> NDArray:
+def sma_200(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return sma(series, 200)
 
-def ema_5(series: NDArray) -> NDArray:
+def ema_5(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return ema(series, 5)
 
-def ema_10(series: NDArray) -> NDArray:
+def ema_10(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return ema(series, 10)
 
-def ema_20(series: NDArray) -> NDArray:
+def ema_20(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return ema(series, 20)
 
-def ema_50(series: NDArray) -> NDArray:
+def ema_50(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return ema(series, 50)
 
-def ema_200(series: NDArray) -> NDArray:
+def ema_200(series: NDArray[np.float64]) -> NDArray[np.float64]:
     return ema(series, 200)
 
 
@@ -85,11 +85,11 @@ def ema_200(series: NDArray) -> NDArray:
 
 
 def macd(
-    close: NDArray,
+    close: NDArray[np.float64],
     fast: int = 12,
     slow: int = 26,
     signal_period: int = 9,
-) -> tuple[NDArray, NDArray, NDArray]:
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     """MACD indicator.
 
     Returns
@@ -109,7 +109,7 @@ def macd(
 # ---------------------------------------------------------------------------
 
 
-def rsi(close: NDArray, period: int = 14) -> NDArray:
+def rsi(close: NDArray[np.float64], period: int = 14) -> NDArray[np.float64]:
     """Relative Strength Index (Wilder smoothing)."""
     out = np.full_like(close, np.nan, dtype=np.float64)
     if len(close) < period + 1:
@@ -146,8 +146,8 @@ def rsi(close: NDArray, period: int = 14) -> NDArray:
 
 
 def bollinger(
-    close: NDArray, period: int = 20, num_std: float = 2.0
-) -> tuple[NDArray, NDArray, NDArray, NDArray, NDArray]:
+    close: NDArray[np.float64], period: int = 20, num_std: float = 2.0
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     """Bollinger Bands.
 
     Returns
@@ -175,7 +175,12 @@ def bollinger(
 # ---------------------------------------------------------------------------
 
 
-def atr(high: NDArray, low: NDArray, close: NDArray, period: int = 14) -> NDArray:
+def atr(
+    high: NDArray[np.float64],
+    low: NDArray[np.float64],
+    close: NDArray[np.float64],
+    period: int = 14,
+) -> NDArray[np.float64]:
     """Average True Range using Wilder smoothing."""
     n = len(close)
     out = np.full(n, np.nan, dtype=np.float64)
@@ -209,12 +214,12 @@ def atr(high: NDArray, low: NDArray, close: NDArray, period: int = 14) -> NDArra
 
 
 def stochastic(
-    high: NDArray,
-    low: NDArray,
-    close: NDArray,
+    high: NDArray[np.float64],
+    low: NDArray[np.float64],
+    close: NDArray[np.float64],
     k_period: int = 14,
     d_period: int = 3,
-) -> tuple[NDArray, NDArray]:
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Stochastic %K and %D."""
     n = len(close)
     k = np.full(n, np.nan, dtype=np.float64)
@@ -234,7 +239,12 @@ def stochastic(
 # ---------------------------------------------------------------------------
 
 
-def williams_r(high: NDArray, low: NDArray, close: NDArray, period: int = 14) -> NDArray:
+def williams_r(
+    high: NDArray[np.float64],
+    low: NDArray[np.float64],
+    close: NDArray[np.float64],
+    period: int = 14,
+) -> NDArray[np.float64]:
     """Williams %R oscillator (-100 to 0)."""
     n = len(close)
     out = np.full(n, np.nan, dtype=np.float64)
@@ -251,7 +261,7 @@ def williams_r(high: NDArray, low: NDArray, close: NDArray, period: int = 14) ->
 # ---------------------------------------------------------------------------
 
 
-def obv(close: NDArray, volume: NDArray) -> NDArray:
+def obv(close: NDArray[np.float64], volume: NDArray[np.float64]) -> NDArray[np.float64]:
     """On-Balance Volume."""
     out = np.empty_like(close, dtype=np.float64)
     out[0] = volume[0]
@@ -265,7 +275,11 @@ def obv(close: NDArray, volume: NDArray) -> NDArray:
 # ---------------------------------------------------------------------------
 
 
-def vwap_deviation(close: NDArray, volume: NDArray, vwap: NDArray) -> NDArray:
+def vwap_deviation(
+    close: NDArray[np.float64],
+    volume: NDArray[np.float64],
+    vwap: NDArray[np.float64],
+) -> NDArray[np.float64]:
     """Percentage deviation of close from VWAP."""
     return np.where(vwap != 0, (close - vwap) / vwap, 0.0)
 
@@ -275,7 +289,7 @@ def vwap_deviation(close: NDArray, volume: NDArray, vwap: NDArray) -> NDArray:
 # ---------------------------------------------------------------------------
 
 
-def volume_sma_ratio(volume: NDArray, period: int = 20) -> NDArray:
+def volume_sma_ratio(volume: NDArray[np.float64], period: int = 20) -> NDArray[np.float64]:
     """Ratio of current volume to its SMA."""
     vol_sma = sma(volume, period)
     return np.where(vol_sma != 0, volume / vol_sma, np.nan)
@@ -286,7 +300,12 @@ def volume_sma_ratio(volume: NDArray, period: int = 20) -> NDArray:
 # ---------------------------------------------------------------------------
 
 
-def adx(high: NDArray, low: NDArray, close: NDArray, period: int = 14) -> NDArray:
+def adx(
+    high: NDArray[np.float64],
+    low: NDArray[np.float64],
+    close: NDArray[np.float64],
+    period: int = 14,
+) -> NDArray[np.float64]:
     """Average Directional Index using Wilder smoothing."""
     n = len(close)
     out = np.full(n, np.nan, dtype=np.float64)
@@ -365,7 +384,12 @@ def adx(high: NDArray, low: NDArray, close: NDArray, period: int = 14) -> NDArra
 # ---------------------------------------------------------------------------
 
 
-def cci(high: NDArray, low: NDArray, close: NDArray, period: int = 20) -> NDArray:
+def cci(
+    high: NDArray[np.float64],
+    low: NDArray[np.float64],
+    close: NDArray[np.float64],
+    period: int = 20,
+) -> NDArray[np.float64]:
     """Commodity Channel Index."""
     tp = (high + low + close) / 3.0
     tp_sma = sma(tp, period)
@@ -386,12 +410,12 @@ def cci(high: NDArray, low: NDArray, close: NDArray, period: int = 20) -> NDArra
 
 
 def mfi(
-    high: NDArray,
-    low: NDArray,
-    close: NDArray,
-    volume: NDArray,
+    high: NDArray[np.float64],
+    low: NDArray[np.float64],
+    close: NDArray[np.float64],
+    volume: NDArray[np.float64],
     period: int = 14,
-) -> NDArray:
+) -> NDArray[np.float64]:
     """Money Flow Index (volume-weighted RSI variant)."""
     n = len(close)
     out = np.full(n, np.nan, dtype=np.float64)
@@ -424,7 +448,7 @@ def mfi(
 # ---------------------------------------------------------------------------
 
 
-def roc(close: NDArray, period: int = 12) -> NDArray:
+def roc(close: NDArray[np.float64], period: int = 12) -> NDArray[np.float64]:
     """Rate of Change (percent)."""
     out = np.full_like(close, np.nan, dtype=np.float64)
     if len(close) <= period:
@@ -439,7 +463,7 @@ def roc(close: NDArray, period: int = 12) -> NDArray:
 # ---------------------------------------------------------------------------
 
 
-def hist_volatility(close: NDArray, period: int) -> NDArray:
+def hist_volatility(close: NDArray[np.float64], period: int) -> NDArray[np.float64]:
     """Annualised historical volatility from log returns.
 
     Annualisation factor assumes 252 trading days.
@@ -457,11 +481,11 @@ def hist_volatility(close: NDArray, period: int) -> NDArray:
     return out
 
 
-def hist_volatility_10(close: NDArray) -> NDArray:
+def hist_volatility_10(close: NDArray[np.float64]) -> NDArray[np.float64]:
     return hist_volatility(close, 10)
 
-def hist_volatility_30(close: NDArray) -> NDArray:
+def hist_volatility_30(close: NDArray[np.float64]) -> NDArray[np.float64]:
     return hist_volatility(close, 30)
 
-def hist_volatility_60(close: NDArray) -> NDArray:
+def hist_volatility_60(close: NDArray[np.float64]) -> NDArray[np.float64]:
     return hist_volatility(close, 60)

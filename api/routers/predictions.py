@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/predictions")
 async def get_latest_predictions(
     symbol: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> list[PredictionSchema]:
     """Return the most recent predictions, optionally filtered by symbol.
 
@@ -41,7 +42,7 @@ async def get_latest_predictions(
 async def get_prediction_history(
     symbol: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> list[PredictionSchema]:
     """Return historical predictions with optional filtering."""
     # TODO: Query predictions table once model is created
@@ -58,7 +59,7 @@ async def get_prediction_history(
 )
 async def get_prediction(
     prediction_id: uuid.UUID,
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> PredictionSchema:
     """Return a single prediction by ID."""
     # TODO: Query predictions table once model is created

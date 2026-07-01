@@ -12,36 +12,41 @@ pattern names to scores.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 import numpy as np
 from numpy.typing import NDArray
+
+FloatArray = NDArray[np.float64]
 
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
 
 
-def _body(open_: NDArray, close: NDArray) -> NDArray:
+def _body(open_: FloatArray, close: FloatArray) -> FloatArray:
     """Absolute body size."""
-    return np.abs(close - open_)
+    return cast(FloatArray, np.abs(close - open_))
 
 
-def _upper_shadow(open_: NDArray, high: NDArray, close: NDArray) -> NDArray:
+def _upper_shadow(open_: FloatArray, high: FloatArray, close: FloatArray) -> FloatArray:
     return high - np.maximum(open_, close)
 
 
-def _lower_shadow(open_: NDArray, low: NDArray, close: NDArray) -> NDArray:
-    return np.minimum(open_, close) - low
+def _lower_shadow(open_: FloatArray, low: FloatArray, close: FloatArray) -> FloatArray:
+    return cast(FloatArray, np.minimum(open_, close) - low)
 
 
-def _range(high: NDArray, low: NDArray) -> NDArray:
+def _range(high: FloatArray, low: FloatArray) -> FloatArray:
     return high - low
 
 
-def _is_bullish(open_: NDArray, close: NDArray) -> NDArray:
+def _is_bullish(open_: FloatArray, close: FloatArray) -> NDArray[np.bool_]:
     return close > open_
 
 
-def _is_bearish(open_: NDArray, close: NDArray) -> NDArray:
+def _is_bearish(open_: FloatArray, close: FloatArray) -> NDArray[np.bool_]:
     return close < open_
 
 
@@ -50,7 +55,7 @@ def _is_bearish(open_: NDArray, close: NDArray) -> NDArray:
 # ---------------------------------------------------------------------------
 
 
-def _doji(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -> float:
+def _doji(open_: FloatArray, high: FloatArray, low: FloatArray, close: FloatArray) -> float:
     """Doji: body is very small relative to the bar range."""
     body = _body(open_, close)
     rng = _range(high, low)
@@ -67,7 +72,7 @@ def _doji(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -> float:
     return 0.0
 
 
-def _hammer(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -> float:
+def _hammer(open_: FloatArray, high: FloatArray, low: FloatArray, close: FloatArray) -> float:
     """Hammer / hanging man.
 
     Bullish when the lower shadow is >= 2x the body and the upper shadow
@@ -84,7 +89,7 @@ def _hammer(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -> floa
     return 0.0
 
 
-def _engulfing(open_: NDArray, _high: NDArray, _low: NDArray, close: NDArray) -> float:
+def _engulfing(open_: FloatArray, _high: FloatArray, _low: FloatArray, close: FloatArray) -> float:
     """Bullish or bearish engulfing (two-bar pattern)."""
     if len(open_) < 2:
         return 0.0
@@ -111,7 +116,7 @@ def _engulfing(open_: NDArray, _high: NDArray, _low: NDArray, close: NDArray) ->
     return 0.0
 
 
-def _morning_star(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -> float:
+def _morning_star(open_: FloatArray, high: FloatArray, low: FloatArray, close: FloatArray) -> float:
     """Morning star (three-bar bullish reversal)."""
     if len(open_) < 3:
         return 0.0
@@ -137,7 +142,7 @@ def _morning_star(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -
     return 0.0
 
 
-def _evening_star(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -> float:
+def _evening_star(open_: FloatArray, high: FloatArray, low: FloatArray, close: FloatArray) -> float:
     """Evening star (three-bar bearish reversal)."""
     if len(open_) < 3:
         return 0.0
@@ -161,7 +166,7 @@ def _evening_star(open_: NDArray, high: NDArray, low: NDArray, close: NDArray) -
 
 
 def _three_white_soldiers(
-    open_: NDArray, high: NDArray, low: NDArray, close: NDArray
+    open_: FloatArray, high: FloatArray, low: FloatArray, close: FloatArray
 ) -> float:
     """Three white soldiers (three consecutive bullish bars with higher closes)."""
     if len(open_) < 3:
@@ -185,7 +190,7 @@ def _three_white_soldiers(
 
 
 def _three_black_crows(
-    open_: NDArray, high: NDArray, low: NDArray, close: NDArray
+    open_: FloatArray, high: FloatArray, low: FloatArray, close: FloatArray
 ) -> float:
     """Three black crows (three consecutive bearish bars with lower closes)."""
     if len(open_) < 3:
@@ -212,7 +217,9 @@ def _three_black_crows(
 # Public API
 # ---------------------------------------------------------------------------
 
-_PATTERN_FUNCS: dict[str, callable] = {
+_PatternFunc = Callable[[FloatArray, FloatArray, FloatArray, FloatArray], float]
+
+_PATTERN_FUNCS: dict[str, _PatternFunc] = {
     "doji": _doji,
     "hammer": _hammer,
     "engulfing": _engulfing,
@@ -224,10 +231,10 @@ _PATTERN_FUNCS: dict[str, callable] = {
 
 
 def detect_patterns(
-    open_: NDArray,
-    high: NDArray,
-    low: NDArray,
-    close: NDArray,
+    open_: FloatArray,
+    high: FloatArray,
+    low: FloatArray,
+    close: FloatArray,
 ) -> dict[str, float]:
     """Evaluate all candlestick patterns on the latest bar(s).
 

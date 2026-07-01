@@ -40,11 +40,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
 
   typecheck:
-    name: Type check (mypy, non-blocking)
+    name: Type check (mypy)
     runs-on: ubuntu-latest
-    # mypy runs in --strict mode and the codebase has pre-existing type debt;
-    # surface it without blocking merges until the debt is paid down.
-    continue-on-error: true
+    # mypy --strict is clean (0 errors) and now a blocking gate: keep it that way.
+    # mypy is pinned (pyproject dev deps) so a future release can't drift CI red.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

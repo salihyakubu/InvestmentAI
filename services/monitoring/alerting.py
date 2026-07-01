@@ -110,7 +110,7 @@ class AlertManager:
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(self._webhook_url, json=payload)
+                resp = await client.post(self._webhook_url, json=payload)  # type: ignore[arg-type]  # only called when _webhook_url is set (guarded by caller at line 87)
                 if resp.status_code != 200:
                     logger.warning(
                         "alert.slack.post_failed",

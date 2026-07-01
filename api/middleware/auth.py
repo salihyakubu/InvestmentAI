@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import bcrypt
 from fastapi import HTTPException, Request, Security, status
@@ -80,7 +80,9 @@ class JWTAuth:
         if extra_claims:
             payload.update(extra_claims)
 
-        return jwt.encode(payload, self._secret, algorithm=self._algorithm)
+        return cast(
+            str, jwt.encode(payload, self._secret, algorithm=self._algorithm)
+        )
 
     def verify_token(self, token: str) -> dict[str, Any] | None:
         """Decode and validate a JWT token.
@@ -94,7 +96,7 @@ class JWTAuth:
             )
             if payload.get("sub") is None:
                 return None
-            return payload
+            return cast("dict[str, Any]", payload)
         except JWTError:
             logger.debug("JWT verification failed", exc_info=True)
             return None

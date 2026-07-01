@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
@@ -32,9 +33,9 @@ class CCXTBroker(BaseBroker):
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._exchange = None
+        self._exchange: Any = None
 
-    async def _get_exchange(self):
+    async def _get_exchange(self) -> Any:
         """Lazy-initialise the async Binance exchange client."""
         if self._exchange is None:
             import ccxt.async_support as ccxt_async
@@ -66,7 +67,7 @@ class CCXTBroker(BaseBroker):
         quantity = float(order.quantity)
         quantity = self._adjust_quantity(symbol, quantity)
 
-        params: dict = {}
+        params: dict[str, Any] = {}
 
         if order.order_type == "market":
             ccxt_type = "market"
@@ -131,7 +132,7 @@ class CCXTBroker(BaseBroker):
             )
             return False
 
-    async def get_order_status(self, external_id: str, symbol: str = "") -> dict:
+    async def get_order_status(self, external_id: str, symbol: str = "") -> dict[str, Any]:
         """Fetch order status from Binance."""
         exchange = await self._get_exchange()
         try:
@@ -157,7 +158,7 @@ class CCXTBroker(BaseBroker):
             )
             raise
 
-    async def get_positions(self) -> list[dict]:
+    async def get_positions(self) -> list[dict[str, Any]]:
         """Return current positions from Binance balances."""
         exchange = await self._get_exchange()
         try:
@@ -178,7 +179,7 @@ class CCXTBroker(BaseBroker):
             logger.error("ccxt_get_positions_failed", error=str(exc))
             raise
 
-    async def get_account(self) -> dict:
+    async def get_account(self) -> dict[str, Any]:
         """Return account summary from Binance."""
         exchange = await self._get_exchange()
         try:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any, cast
 
 import joblib
 import numpy as np
@@ -32,11 +33,11 @@ class XGBoostPredictor(BasePredictor):
 
     def __init__(
         self,
-        classifier_params: dict | None = None,
-        regressor_params: dict | None = None,
+        classifier_params: dict[str, Any] | None = None,
+        regressor_params: dict[str, Any] | None = None,
         feature_names: list[str] | None = None,
     ) -> None:
-        default_cls_params: dict = {
+        default_cls_params: dict[str, Any] = {
             "n_estimators": 500,
             "max_depth": 6,
             "learning_rate": 0.05,
@@ -50,7 +51,7 @@ class XGBoostPredictor(BasePredictor):
             "random_state": 42,
             "n_jobs": -1,
         }
-        default_reg_params: dict = {
+        default_reg_params: dict[str, Any] = {
             "n_estimators": 500,
             "max_depth": 5,
             "learning_rate": 0.05,
@@ -247,7 +248,7 @@ class XGBoostPredictor(BasePredictor):
             epochs_trained=(
                 int(self._classifier.best_iteration)
                 if hasattr(self._classifier, "best_iteration")
-                else self._classifier.n_estimators
+                else cast(int, self._classifier.n_estimators)
             ),
             feature_importance=importance,
         )

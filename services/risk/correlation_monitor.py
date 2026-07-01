@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -72,7 +73,7 @@ class CorrelationMonitor:
         # Handle NaN values (e.g. zero-variance series)
         corr = np.nan_to_num(corr, nan=0.0)
 
-        return corr
+        return cast(np.ndarray, corr)
 
     # ------------------------------------------------------------------
     # Pairwise limit checks

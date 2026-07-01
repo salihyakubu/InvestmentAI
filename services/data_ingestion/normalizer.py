@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
@@ -46,7 +47,7 @@ def normalize_bar(
     asset_class: AssetClass,
     source: str,
     timeframe: str,
-) -> dict:
+) -> dict[str, Any]:
     """Transform a :class:`RawBar` into a dict suitable for DB insertion.
 
     Performs the following:

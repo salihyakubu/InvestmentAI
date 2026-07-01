@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/portfolio")
 )
 async def get_portfolio_summary(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> PortfolioSummary:
     """Return the latest portfolio snapshot as a summary."""
     stmt = (
@@ -62,7 +63,7 @@ async def get_portfolio_summary(
 )
 async def get_allocations(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> list[AllocationSchema]:
     """Return the current asset allocations from the latest snapshot."""
     stmt = (
@@ -97,8 +98,8 @@ async def get_snapshots(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> list[dict]:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     """Return historical portfolio snapshots."""
     stmt = (
         select(PortfolioSnapshot)
@@ -134,7 +135,7 @@ async def get_snapshots(
     summary="Trigger manual rebalance",
 )
 async def trigger_rebalance(
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> SuccessResponse:
     """Trigger a manual portfolio rebalance.
 

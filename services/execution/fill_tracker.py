@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
@@ -41,7 +42,7 @@ class FillTracker:
             lambda: PositionRecord(symbol="")
         )
         # order_id -> list of fill dicts
-        self._fills_by_order: dict[str, list[dict]] = defaultdict(list)
+        self._fills_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     def record_fill(
         self,
@@ -95,8 +96,8 @@ class FillTracker:
 
     def reconcile(
         self,
-        broker_positions: list[dict],
-        db_positions: list[dict] | None = None,
+        broker_positions: list[dict[str, Any]],
+        db_positions: list[dict[str, Any]] | None = None,
     ) -> list[Discrepancy]:
         """Compare broker positions against local records and find mismatches.
 

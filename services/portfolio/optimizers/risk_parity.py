@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 
@@ -32,7 +33,7 @@ class RiskParityOptimizer(BaseOptimizer):
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
         symbols: list[str],
-        constraints: dict | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> OptimizationResult:
         n = len(symbols)
         weights = np.full(n, 1.0 / n)
@@ -94,4 +95,4 @@ class RiskParityOptimizer(BaseOptimizer):
         if portfolio_var < 1e-16:
             return np.zeros_like(weights)
         portfolio_vol = np.sqrt(portfolio_var)
-        return (cov_matrix @ weights) / portfolio_vol
+        return cast(np.ndarray, (cov_matrix @ weights) / portfolio_vol)

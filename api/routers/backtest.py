@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -21,7 +22,7 @@ class BacktestRequest(BaseModel):
     start_date: datetime
     end_date: datetime
     initial_capital: float = Field(default=100.0, gt=0)
-    parameters: dict | None = None
+    parameters: dict[str, Any] | None = None
 
 
 class BacktestStatusResponse(BaseModel):
@@ -42,7 +43,7 @@ class BacktestStatusResponse(BaseModel):
 )
 async def start_backtest(
     params: BacktestRequest,
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> BacktestStatusResponse:
     """Submit a new backtest run.
 
@@ -62,7 +63,7 @@ async def start_backtest(
 )
 async def get_backtest_status(
     backtest_id: uuid.UUID,
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> BacktestStatusResponse:
     """Return the current status of a backtest run."""
     # TODO: Look up backtest job status
@@ -78,8 +79,8 @@ async def get_backtest_status(
 )
 async def get_backtest_results(
     backtest_id: uuid.UUID,
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return the results of a completed backtest.
 
     Includes equity curve, trade log, and performance statistics.
