@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 
 
 def estimated_market_cap(
-    close: NDArray,
+    close: NDArray[np.float64],
     shares_outstanding: float = 1.0,
 ) -> float:
     """Estimate market capitalisation from the latest close price.
@@ -28,7 +28,7 @@ def estimated_market_cap(
 
 
 def price_to_earnings_proxy(
-    close: NDArray,
+    close: NDArray[np.float64],
     trailing_eps: float | None = None,
 ) -> float:
     """Return a P/E ratio estimate.
@@ -42,7 +42,7 @@ def price_to_earnings_proxy(
 
 
 def price_to_book_proxy(
-    close: NDArray,
+    close: NDArray[np.float64],
     book_value_per_share: float | None = None,
 ) -> float:
     """Return a P/B ratio estimate."""
@@ -52,7 +52,7 @@ def price_to_book_proxy(
 
 
 def dividend_yield_proxy(
-    close: NDArray,
+    close: NDArray[np.float64],
     annual_dividend: float | None = None,
 ) -> float:
     """Return estimated dividend yield as a decimal."""
@@ -62,7 +62,7 @@ def dividend_yield_proxy(
 
 
 def earnings_yield(
-    close: NDArray,
+    close: NDArray[np.float64],
     trailing_eps: float | None = None,
 ) -> float:
     """Inverse of P/E (E/P), useful for cross-asset comparison."""
@@ -73,7 +73,7 @@ def earnings_yield(
 
 
 def price_to_sales_proxy(
-    close: NDArray,
+    close: NDArray[np.float64],
     revenue_per_share: float | None = None,
 ) -> float:
     """Price-to-sales ratio estimate."""
@@ -83,7 +83,7 @@ def price_to_sales_proxy(
 
 
 def compute_fundamental_features(
-    close: NDArray,
+    close: NDArray[np.float64],
     *,
     shares_outstanding: float = 1.0,
     trailing_eps: float | None = None,

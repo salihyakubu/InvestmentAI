@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 
 import structlog
 
@@ -178,7 +179,7 @@ class OrderManager:
         # Recompute average fill price.
         total_cost = sum(f.price * f.quantity for f in self._fills[order_id])
         total_qty = sum(f.quantity for f in self._fills[order_id])
-        order.filled_quantity = total_qty
+        order.filled_quantity = cast(Decimal, total_qty)
         order.avg_fill_price = (total_cost / total_qty) if total_qty else None
 
         # Auto-transition to PARTIAL_FILL or FILLED.

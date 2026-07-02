@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
+from sqlalchemy import CursorResult
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config.settings import Settings, get_settings
@@ -85,7 +86,7 @@ class DataIngestionService:
         else:
             crypto_kwargs = {}  # Use unauthenticated public access
 
-        self._providers[AssetClass.CRYPTO] = CCXTDataProvider(**crypto_kwargs)
+        self._providers[AssetClass.CRYPTO] = CCXTDataProvider(**crypto_kwargs)  # type: ignore[arg-type]  # crypto_kwargs only ever holds api_key/secret_key (both str)
         logger.info("ingestion.provider.registered", provider="ccxt_binance")
 
     def get_provider(self, asset_class: AssetClass) -> BaseDataProvider:
@@ -375,7 +376,7 @@ class DataIngestionService:
                 stmt = stmt.on_conflict_do_nothing(
                     index_elements=["time", "symbol", "timeframe"],
                 )
-                result = await session.execute(stmt)
+                result = cast(CursorResult[Any], await session.execute(stmt))
                 await session.commit()
                 inserted = result.rowcount if result.rowcount else 0
                 logger.debug("ingestion.store.inserted", count=inserted)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +23,7 @@ router = APIRouter(prefix="/risk")
 )
 async def get_latest_risk_metrics(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> RiskMetricsSchema:
     """Return the most recent risk metrics snapshot."""
     stmt = (
@@ -51,8 +53,8 @@ async def get_latest_risk_metrics(
 )
 async def get_var(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return the current VaR figures."""
     stmt = (
         select(RiskMetric)
@@ -78,8 +80,8 @@ async def get_var(
 )
 async def get_circuit_breaker_status(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return whether the circuit breaker is currently active."""
     stmt = (
         select(RiskMetric)
@@ -101,7 +103,7 @@ async def get_circuit_breaker_status(
     summary="Manually reset circuit breaker",
 )
 async def reset_circuit_breaker(
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> SuccessResponse:
     """Manually reset the circuit breaker.
 

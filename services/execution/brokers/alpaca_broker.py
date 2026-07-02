@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -38,9 +39,9 @@ class AlpacaBroker(BaseBroker):
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = None
+        self._client: Any = None
 
-    def _get_client(self):
+    def _get_client(self) -> Any:
         """Lazy-initialise the Alpaca TradingClient."""
         if self._client is None:
             from alpaca.trading.client import TradingClient
@@ -64,6 +65,7 @@ class AlpacaBroker(BaseBroker):
         from alpaca.trading.requests import (
             LimitOrderRequest,
             MarketOrderRequest,
+            OrderRequest,
             StopLimitOrderRequest,
             StopOrderRequest,
         )
@@ -77,6 +79,7 @@ class AlpacaBroker(BaseBroker):
         # deduped by Alpaca instead of placing a second live order.
         client_order_id = order.external_id or None
 
+        request: OrderRequest
         if order.order_type == "market":
             request = MarketOrderRequest(
                 symbol=order.symbol,
@@ -154,7 +157,7 @@ class AlpacaBroker(BaseBroker):
         wait=wait_exponential(multiplier=0.5, max=5),
         reraise=True,
     )
-    async def get_order_status(self, external_id: str) -> dict:
+    async def get_order_status(self, external_id: str) -> dict[str, Any]:
         """Fetch order status from Alpaca and map to internal status."""
         client = self._get_client()
         alpaca_order = client.get_order_by_id(external_id)
@@ -176,7 +179,7 @@ class AlpacaBroker(BaseBroker):
         wait=wait_exponential(multiplier=0.5, max=5),
         reraise=True,
     )
-    async def get_positions(self) -> list[dict]:
+    async def get_positions(self) -> list[dict[str, Any]]:
         """Return all current Alpaca positions."""
         client = self._get_client()
         positions = client.get_all_positions()
@@ -196,7 +199,7 @@ class AlpacaBroker(BaseBroker):
         wait=wait_exponential(multiplier=0.5, max=5),
         reraise=True,
     )
-    async def get_account(self) -> dict:
+    async def get_account(self) -> dict[str, Any]:
         """Return Alpaca account summary."""
         client = self._get_client()
         account = client.get_account()

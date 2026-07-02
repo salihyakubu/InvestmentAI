@@ -95,9 +95,9 @@ class AutoRetrainer:
         result, new_model = self._trainer.train_model(
             model_type=model_type,
             X_train=X_train,
-            y_train=y_train,
-            X_val=X_val,
-            y_val=y_val,
+            y_train=y_train,  # type: ignore[arg-type]  # _load_training_data returns all-None or all-set together; X_train guard above rules out None
+            X_val=X_val,  # type: ignore[arg-type]  # see y_train note
+            y_val=y_val,  # type: ignore[arg-type]  # see y_train note
             hyperopt=True,
             n_trials=30,
             feature_names=feature_names,
@@ -201,7 +201,7 @@ class AutoRetrainer:
         if not old_metrics:
             return True
 
-        new_acc = new_metrics.get("val_accuracy", new_metrics.get("accuracy", 0))
-        old_acc = old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0))
+        new_acc: float = new_metrics.get("val_accuracy", new_metrics.get("accuracy", 0))
+        old_acc: float = old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0))
 
         return new_acc >= old_acc

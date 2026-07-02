@@ -24,31 +24,37 @@ except ImportError:
 
 if not TORCH_AVAILABLE:
 
-    class LSTMPredictor(BasePredictor):  # type: ignore[no-redef]
+    class LSTMPredictor(BasePredictor):
         """Stub when PyTorch is not installed."""
 
         model_type: str = "lstm"
         required_features: list[str] = []
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: object) -> None:
             raise ImportError("PyTorch is required for LSTMPredictor but is not installed")
 
-        def predict(self, features):
+        def predict(self, features: np.ndarray) -> PredictionOutput:
             raise ImportError("PyTorch is required")
 
-        def predict_batch(self, features):
+        def predict_batch(self, features: np.ndarray) -> list[PredictionOutput]:
             raise ImportError("PyTorch is required")
 
-        def train(self, X_train, y_train, X_val, y_val):
+        def train(
+            self,
+            X_train: np.ndarray,
+            y_train: np.ndarray,
+            X_val: np.ndarray,
+            y_val: np.ndarray,
+        ) -> TrainResult:
             raise ImportError("PyTorch is required")
 
-        def save(self, path):
+        def save(self, path: Path) -> None:
             raise ImportError("PyTorch is required")
 
-        def load(self, path):
+        def load(self, path: Path) -> None:
             raise ImportError("PyTorch is required")
 
-        def get_feature_importance(self):
+        def get_feature_importance(self) -> dict[str, float]:
             return {}
 
 else:
@@ -118,7 +124,7 @@ else:
     # Predictor
     # ------------------------------------------------------------------
 
-    class LSTMPredictor(BasePredictor):
+    class LSTMPredictor(BasePredictor):  # type: ignore[no-redef]  # defined in both torch branches
         """LSTM-based predictor wrapping :class:`LSTMNetwork`."""
 
         model_type: str = "lstm"
@@ -159,7 +165,8 @@ else:
                 num_layers=self.num_layers,
                 dropout=self.dropout,
             )
-            return net.to(self.device)
+            moved: LSTMNetwork = net.to(self.device)
+            return moved
 
         def predict(self, features: np.ndarray) -> PredictionOutput:
             if features.ndim == 2:
@@ -334,7 +341,8 @@ else:
         def _normalize_input(self, X: np.ndarray) -> np.ndarray:
             if self._feature_mean is None or self._feature_std is None:
                 return X
-            return (X - self._feature_mean) / self._feature_std
+            normalized: np.ndarray = (X - self._feature_mean) / self._feature_std
+            return normalized
 
         def save(self, path: Path) -> None:
             path.mkdir(parents=True, exist_ok=True)

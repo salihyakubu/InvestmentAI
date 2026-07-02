@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/positions")
 )
 async def list_open_positions(
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> list[PositionSchema]:
     """Return all currently open positions."""
     stmt = (
@@ -54,7 +55,7 @@ async def list_open_positions(
 async def list_closed_positions(
     limit: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> list[PositionSchema]:
     """Return recently closed positions."""
     stmt = (
@@ -87,7 +88,7 @@ async def list_closed_positions(
 async def get_position(
     position_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> PositionSchema:
     """Return a single position by ID."""
     stmt = select(Position).where(Position.id == position_id)

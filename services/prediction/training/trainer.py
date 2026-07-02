@@ -105,7 +105,7 @@ class ModelTrainer:
         # (tree models); models without that parameter fall back to labels.
         logger.info("Training %s model", model_type)
         if returns_train is not None and returns_val is not None:
-            result = model.train(
+            result = model.train(  # type: ignore[call-arg]  # tree predictors accept returns_*; base signature is narrower
                 X_train,
                 y_train,
                 X_val,

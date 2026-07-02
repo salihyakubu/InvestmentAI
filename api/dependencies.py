@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
+from typing import Any, cast
 from uuid import UUID
 
+import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,14 +31,14 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-async def get_redis(request: Request):
+async def get_redis(request: Request) -> aioredis.Redis | None:
     """Return the shared Redis client stored in app.state."""
-    return request.app.state.redis
+    return cast("aioredis.Redis | None", request.app.state.redis)
 
 
 async def get_event_bus(request: Request) -> EventBus:
     """Return the shared EventBus stored in app.state."""
-    return request.app.state.event_bus
+    return cast(EventBus, request.app.state.event_bus)
 
 
 async def get_settings() -> Settings:
@@ -47,7 +49,7 @@ async def get_settings() -> Settings:
 async def get_current_user(
     request: Request,
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, Any]:
     """Extract and validate the current user from the JWT bearer token.
 
     Returns a dict with ``user_id`` and ``role`` fields.

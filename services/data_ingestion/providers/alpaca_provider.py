@@ -172,7 +172,7 @@ class AlpacaDataProvider(BaseDataProvider):
     async def _run_stream(self) -> None:
         """Run the WebSocket event loop in a background task."""
         try:
-            await asyncio.to_thread(self._stream.run)
+            await asyncio.to_thread(self._stream.run)  # type: ignore[union-attr]  # _stream is always set by subscribe_realtime before this task runs
         except asyncio.CancelledError:
             logger.info("alpaca.realtime.cancelled")
         except Exception:
@@ -202,14 +202,17 @@ class AlpacaDataProvider(BaseDataProvider):
     async def health_check(self) -> bool:
         try:
             from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestBarRequest
 
             client = StockHistoricalDataClient(
                 api_key=self._api_key,
                 secret_key=self._secret_key,
             )
             # A lightweight call to verify credentials and connectivity.
+            # get_stock_latest_bar takes a request object, not a bare symbol.
+            request = StockLatestBarRequest(symbol_or_symbols="AAPL")
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: client.get_stock_latest_bar("AAPL"))
+            await loop.run_in_executor(None, lambda: client.get_stock_latest_bar(request))
             return True
         except Exception:
             logger.warning("alpaca.health_check.failed", exc_info=True)

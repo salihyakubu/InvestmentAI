@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 import structlog
 
@@ -20,7 +21,7 @@ from core.events.base import Event
 from core.events.streams import ORDER_INTENTS, ORDERS, RISK_APPROVED
 from services.execution.brokers.base import BaseBroker, BrokerOrder
 from services.execution.fill_tracker import FillTracker
-from services.execution.order_manager import OrderError, OrderManager
+from services.execution.order_manager import Order, OrderError, OrderManager
 from services.execution.smart_router import SmartOrderRouter
 
 logger = structlog.get_logger(__name__)
@@ -56,7 +57,7 @@ class ExecutionEngineService:
         self._order_manager = OrderManager()
         self._router = SmartOrderRouter(brokers, settings)
         self._fill_tracker = FillTracker()
-        self._monitor_task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task[None] | None = None
         # order_id -> (broker_name, external_id) for pending tracking.
         self._in_flight: dict[str, tuple[str, str]] = {}
         # Correlation ids of RiskApprovedEvents already handled -- idempotency
@@ -247,12 +248,13 @@ class ExecutionEngineService:
         stop_price: Decimal | None = None,
         reference_price: Decimal | None = None,
         client_order_id: str | None = None,
-    ):
+    ) -> Order | None:
         """Create (or reuse) an order, route it, and submit to the broker."""
         if self._halted:
             logger.warning("order_rejected_trading_halted", symbol=symbol)
             return None
         # Create order if no existing order_id supplied.
+        order: Order | None
         if order_id is None:
             order = self._order_manager.create_order(
                 symbol=symbol,
@@ -423,7 +425,7 @@ class ExecutionEngineService:
         self._halted = False
         logger.info("trading_resumed")
 
-    async def emergency_flatten(self) -> dict:
+    async def emergency_flatten(self) -> dict[str, Any]:
         """Kill switch: halt new orders, cancel open orders, and flatten every
         broker position with market orders. Returns a summary."""
         self._halted = True
@@ -435,7 +437,7 @@ class ExecutionEngineService:
             except Exception as exc:
                 logger.error("flatten_cancel_failed", order_id=order_id, error=str(exc))
 
-        flattened: list[dict] = []
+        flattened: list[dict[str, Any]] = []
         for broker_name, broker in self._brokers.items():
             try:
                 positions = await broker.get_positions()
@@ -467,7 +469,7 @@ class ExecutionEngineService:
         )
         return {"halted": True, "cancelled": cancelled, "flattened": flattened}
 
-    async def reconcile_positions(self, expected: dict[str, Decimal]) -> list[dict]:
+    async def reconcile_positions(self, expected: dict[str, Decimal]) -> list[dict[str, Any]]:
         """Compare *expected* positions (symbol -> signed qty) against the
         broker's actual positions; return discrepancies. The broker is the
         source of truth, so a non-empty result means our books have drifted."""
@@ -482,7 +484,7 @@ class ExecutionEngineService:
             except Exception as exc:
                 logger.error("reconcile_positions_failed", error=str(exc))
 
-        discrepancies: list[dict] = []
+        discrepancies: list[dict[str, Any]] = []
         for sym in sorted(set(expected) | set(actual)):
             exp = Decimal(str(expected.get(sym, 0)))
             act = actual.get(sym, Decimal("0"))

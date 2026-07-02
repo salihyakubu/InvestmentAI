@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Keyword lexicon
@@ -101,7 +102,7 @@ class SentimentAnalyzer:
 
         # Normalise to [-1, 1] using tanh-style squashing.
         if len(tokens) > 0:
-            normalised = score / max(len(tokens) ** 0.5, 1.0)
+            normalised: float = score / max(len(tokens) ** 0.5, 1.0)
             return max(-1.0, min(1.0, normalised))
         return 0.0
 
@@ -116,7 +117,7 @@ class SentimentAnalyzer:
         return sum(scores) / len(scores)
 
     @staticmethod
-    def get_market_sentiment(symbol: str) -> dict:
+    def get_market_sentiment(symbol: str) -> dict[str, Any]:
         """Return a placeholder market-sentiment summary for *symbol*.
 
         In production this would query news APIs, social-media feeds,

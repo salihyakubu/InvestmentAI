@@ -136,7 +136,8 @@ class TrainingDataLoader:
 
     def _forward_returns(self, close_prices: np.ndarray, horizon: int) -> np.ndarray:
         """Forward simple returns over *horizon* bars (len = len(close) - horizon)."""
-        return (close_prices[horizon:] - close_prices[:-horizon]) / close_prices[:-horizon]
+        returns: np.ndarray = (close_prices[horizon:] - close_prices[:-horizon]) / close_prices[:-horizon]
+        return returns
 
     def _labels_from_returns(self, forward_returns: np.ndarray) -> np.ndarray:
         """Map forward returns to 3-class labels: 0 short, 1 flat, 2 long."""

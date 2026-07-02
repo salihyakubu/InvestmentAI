@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 import numpy as np
 from scipy.optimize import minimize
@@ -36,7 +37,7 @@ class BlackLittermanOptimizer(BaseOptimizer):
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
         symbols: list[str],
-        constraints: dict | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> OptimizationResult:
         constraints = constraints or {}
         n = len(symbols)
@@ -122,7 +123,7 @@ class BlackLittermanOptimizer(BaseOptimizer):
         risk_aversion: float = 2.5,
     ) -> np.ndarray:
         """Compute implied equilibrium excess returns: Pi = delta * Sigma * w_mkt."""
-        return risk_aversion * (cov_matrix @ market_weights)
+        return cast(np.ndarray, risk_aversion * (cov_matrix @ market_weights))
 
     def compute_posterior(
         self,

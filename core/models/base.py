@@ -10,6 +10,7 @@ from sqlalchemy import DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import (
     AsyncAttrs,
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -54,11 +55,11 @@ class TimestampMixin:
 # Session factory
 # ---------------------------------------------------------------------------
 
-_engine = None
+_engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def _get_engine():
+def _get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         from config.settings import get_settings

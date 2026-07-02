@@ -11,8 +11,8 @@ from numpy.typing import NDArray
 
 
 def volume_profile(
-    close: NDArray,
-    volume: NDArray,
+    close: NDArray[np.float64],
+    volume: NDArray[np.float64],
     bins: int = 20,
 ) -> dict[str, float]:
     """Build a volume-at-price profile and extract key levels.
@@ -81,7 +81,7 @@ def volume_profile(
 
 
 def price_momentum(
-    close: NDArray,
+    close: NDArray[np.float64],
     periods: list[int] | None = None,
 ) -> dict[str, float]:
     """Compute simple price momentum (percentage return) over multiple windows.
@@ -106,7 +106,7 @@ def price_momentum(
 
 
 def volatility_regime(
-    close: NDArray,
+    close: NDArray[np.float64],
     short_period: int = 10,
     long_period: int = 60,
 ) -> str:

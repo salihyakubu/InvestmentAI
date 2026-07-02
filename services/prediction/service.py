@@ -78,7 +78,7 @@ class PredictionService:
             stream=_FEATURES_STREAM,
             group=_CONSUMER_GROUP,
             consumer="prediction-worker",
-            handler=self.handle_features_ready,
+            handler=self.handle_features_ready,  # type: ignore[arg-type]  # bus routes only FeaturesReadyEvent to this stream
         )
 
     async def stop(self) -> None:

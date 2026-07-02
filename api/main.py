@@ -125,7 +125,7 @@ app.include_router(ws_router, prefix=API_V1, tags=["websockets"])
 # Simple root healthcheck (no dependencies, always returns 200)
 # ---------------------------------------------------------------------------
 @app.get("/healthz")
-async def healthz():
+async def healthz() -> dict[str, str]:
     return {"status": "alive"}
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.dependencies import get_current_user
@@ -17,7 +19,7 @@ router = APIRouter(prefix="/config")
     summary="Get current risk rules",
 )
 async def get_risk_rules(
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> RiskRulesSchema:
     """Return the current risk rule configuration."""
     settings = _get_settings()
@@ -43,7 +45,7 @@ async def get_risk_rules(
 )
 async def update_risk_rules(
     rules: RiskRulesSchema,
-    _user: dict = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> RiskRulesSchema:
     """Update risk rule configuration.
 
@@ -62,8 +64,8 @@ async def update_risk_rules(
     summary="Get current trading mode",
 )
 async def get_trading_mode(
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return the current trading execution mode."""
     settings = _get_settings()
     return {"trading_mode": settings.trading_mode}
@@ -74,9 +76,9 @@ async def get_trading_mode(
     summary="Switch trading mode",
 )
 async def update_trading_mode(
-    mode: dict,
-    _user: dict = Depends(get_current_user),
-) -> dict:
+    mode: dict[str, Any],
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Switch between backtest, paper, and live trading modes.
 
     Requires admin role. Mode changes require service restart.
