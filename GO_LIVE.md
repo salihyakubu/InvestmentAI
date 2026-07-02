@@ -53,13 +53,27 @@ and Stage 3 (paper soak) pass.**
 > yours), and trigger the deploy.
 
 ## Stage 2 — Prove the strategy has edge 🔴
-1. Ingest real historical OHLCV for your universe.
-2. `PYTHONPATH=. DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib python scripts/validate_model.py <prices.csv>`
-   (on Linux/Docker, libgomp1 is already in the image — no DYLD needed).
-3. **Gate:** out-of-sample **hit-rate > 52%** and **Sharpe > ~0.5**, stable across
-   periods. If `VERDICT: NO demonstrable edge`, **stop — do not trade.** No amount
-   of code quality substitutes for a profitable signal. (On random data it
-   correctly reports no edge.)
+1. **Ingest real history for a small universe** (the harness reads a `close` column;
+   provider auto-selected by symbol, both keyless):
+   - `PYTHONPATH=. python scripts/fetch_history.py AAPL --start 2015-01-01 --out aapl.csv`
+   - repeat for a few names (e.g. `MSFT`, `SPY`) and/or `BTC/USDT` for crypto.
+2. **Run the edge gate across the whole universe in one shot:**
+   `PYTHONPATH=. python scripts/validate_model.py aapl.csv msft.csv spy.csv --cost-bps 5`
+   (prefix `DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib` on macOS; libgomp1 is already
+   in the Docker image). The gate is deliberately conservative:
+   - **Net of costs** — returns subtract a round-trip commission+slippage charge
+     (`--cost-bps`, default 5; raise for crypto / illiquid names).
+   - **Non-overlapping** holding periods — no Sharpe inflation from overlapping windows.
+   - **Stability** — the edge must be net-positive in ≥75% of out-of-sample sub-periods,
+     not one lucky stretch.
+3. **Gate — per symbol:** hit-rate > 52% AND Sharpe > 0.5 AND stability ≥ 0.75.
+   **Overall:** the verdict is `EDGE STABLE across k/n symbols` only when a majority of
+   **≥3** symbols pass. A single-symbol run prints `necessary but NOT sufficient` and is
+   **not** a green light. If the verdict is anything else, **stop — do not trade.**
+   Self-test: run with no args (zero-drift random walk) — it must report
+   `NO demonstrable edge`. Verified on real data: AAPL/MSFT/SPY pass net-of-cost
+   (Sharpe ~0.6–1.3, stability 0.75–1.0); the null and random data do not. No amount of
+   code quality substitutes for a real, stable, cost-surviving signal.
 
 ## Stage 3 — Paper-trading soak (weeks) ⚙️
 Run the worker in paper mode and watch for **weeks**:
