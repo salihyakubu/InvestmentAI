@@ -127,9 +127,18 @@ async def _build_services(
     feature_engineering = FeatureEngineeringService(event_bus=event_bus, settings=settings)
 
     # -- Prediction --
+    # The ModelServer bridges the registry to serving; without it the service
+    # has no models and every prediction is hardcoded flat (the registry alone
+    # is not enough -- this wiring is what makes promoted models actually serve).
+    from services.prediction.registry import ModelRegistry
     from services.prediction.service import PredictionService
+    from services.prediction.serving import ModelServer
 
-    prediction = PredictionService(event_bus=event_bus, settings=settings)
+    model_registry = ModelRegistry(artifact_base=Path(settings.model_artifact_path))
+    model_server = ModelServer(registry=model_registry)
+    prediction = PredictionService(
+        event_bus=event_bus, settings=settings, model_server=model_server
+    )
 
     # -- Portfolio Optimizer --
     from services.portfolio.service import PortfolioOptimizerService
@@ -163,15 +172,14 @@ async def _build_services(
     from services.continuous_learning.feedback_loop import TradingFeedbackLoop
     from services.continuous_learning.retrainer import AutoRetrainer
     from services.continuous_learning.service import ContinuousLearningService
-    from services.prediction.registry import ModelRegistry
     from services.prediction.training.trainer import ModelTrainer
 
     trainer = ModelTrainer()
-    registry = ModelRegistry(artifact_base=Path(settings.model_artifact_path))
     evaluator = ModelEvaluator()
     drift_detector = DataDriftDetector()
     feedback_loop = TradingFeedbackLoop()
-    retrainer = AutoRetrainer(trainer=trainer, registry=registry, settings=settings)
+    # Reuse the serving registry: two instances would race on registry.json.
+    retrainer = AutoRetrainer(trainer=trainer, registry=model_registry, settings=settings)
 
     continuous_learning = ContinuousLearningService(
         event_bus=event_bus,
