@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 from pathlib import Path
@@ -56,6 +57,57 @@ def _build_brokers(settings: Settings) -> dict[str, Any]:
             logger.warning("ccxt_broker.init_failed", error=str(exc))
 
     return brokers
+
+
+async def _health_app(
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+) -> None:
+    """Minimal ASGI app exposing /healthz so platform healthchecks (Railway)
+    can verify worker liveness. The worker has no other HTTP surface."""
+    if scope["type"] != "http":
+        return
+    ok = scope.get("path") in ("/", "/healthz")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200 if ok else 404,
+            "headers": [(b"content-type", b"application/json")],
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": b'{"status":"alive","service":"worker"}' if ok else b"{}",
+        }
+    )
+
+
+def _start_health_server() -> asyncio.Task[None] | None:
+    """Serve the liveness endpoint on $PORT when the platform provides one.
+
+    Railway injects PORT and (via railway.toml) healthchecks /healthz; without
+    this the worker deployment could never pass that check. Locally PORT is
+    usually unset and this is a no-op. Failures are non-fatal: liveness
+    reporting must never take down the trading worker itself.
+    """
+    port = os.environ.get("PORT")
+    if not port:
+        return None
+    try:
+        import uvicorn
+
+        config = uvicorn.Config(
+            _health_app, host="0.0.0.0", port=int(port), log_level="warning"
+        )
+        server = uvicorn.Server(config)
+        task: asyncio.Task[None] = asyncio.create_task(server.serve())
+        logger.info("worker.health_server_started", port=port)
+        return task
+    except Exception as exc:
+        logger.warning("worker.health_server_failed", error=str(exc))
+        return None
 
 
 async def _build_services(
@@ -221,11 +273,16 @@ async def _run() -> None:
         account_sync_task = asyncio.create_task(risk.run_account_sync(_equity_provider))
         logger.info("worker.account_sync_started")
 
+    # Liveness endpoint for platform healthchecks (no-op when PORT is unset).
+    health_task = _start_health_server()
+
     # Wait until shutdown signal
     await shutdown_event.wait()
 
     # Graceful shutdown
     logger.info("worker.shutting_down")
+    if health_task is not None:
+        health_task.cancel()
     if account_sync_task is not None:
         account_sync_task.cancel()
     stop_tasks = []

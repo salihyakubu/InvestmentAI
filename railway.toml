@@ -7,4 +7,6 @@ healthcheckPath = "/healthz"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
-releaseCommand = "alembic upgrade head"
+# Railway's release-phase key is preDeployCommand ("releaseCommand" is silently
+# ignored -- the first cloud deploy shipped with no tables because of it).
+preDeployCommand = "alembic upgrade head"
