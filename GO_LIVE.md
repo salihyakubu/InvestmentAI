@@ -59,8 +59,21 @@ and Stage 3 (paper soak) pass.**
 > through the composed Redis. Compose now injects service-name `DATABASE_URL`/`REDIS_URL` so it
 > works out of the box. This stack is soak-ready (Stage 3) locally.
 >
-> Remaining for the operator: the cloud (Railway) variant — create the project, set the env vars
-> above (CLI auth is yours), and trigger the deploy.
+> **Cloud deploy (done 2026-07-19):** Railway project `investai` is live — Postgres + Redis +
+> **api** + **worker**, all provisioned and deployed via CLI (zero dashboard config). The api's
+> pre-deploy phase runs `alembic upgrade head` (0001+0002 confirmed in deploy logs); public URL
+> `https://api-production-bd56.up.railway.app` answers `/healthz` 200, `/api/v1/health`
+> `{database:ok,redis:ok}`, auth 401 fails closed; the worker passes its own `/healthz` liveness
+> endpoint and logs `live_brokers_disabled trading_mode=paper`. Two deploy bugs were found and
+> fixed by the real run: `optuna` missing from requirements.txt (worker crash) and
+> `releaseCommand` being an unknown Railway key (migrations silently skipped — the key is
+> `preDeployCommand`).
+>
+> Remaining for the operator: paste the **5 secrets** into each service's Variables in the
+> Railway dashboard (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `BINANCE_API_KEY`,
+> `BINANCE_SECRET_KEY`, `JWT_SECRET`) — services auto-redeploy — then create a login user:
+> `railway ssh -s api -- python scripts/create_user.py you@x.com '<pw>' admin`
+> (register an SSH key first: `railway ssh keys add`).
 
 ## Stage 2 — Prove the strategy has edge 🔴
 1. **Ingest real history for a small universe** (the harness reads a `close` column;
