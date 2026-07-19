@@ -173,3 +173,20 @@ Run the worker in paper mode and watch for **weeks**:
 - Verified live after activation: market.bars → features.ready → predictions.ready all
   flowing (one cycle per symbol per minute, 24/7 via crypto). Orders correctly gated at 0
   until feature buffers mature (~200 min) and both models agree ≥0.6 calibrated confidence.
+
+## Rehearsal record (2026-07-19) — kill switch + restart drills PASSED
+- **Kill-switch drill (live, cloud paper account):** opened a real position via the manual
+  order path (0.0002 BTC/USDT, filled at $64,560.26 — the live price feed), then
+  `POST /api/v1/admin/control {"action":"flatten"}` → worker received the command in ~1s,
+  closed the position, halted; `resume` lifted the halt. Unauthenticated access 401;
+  non-admin 403 (tested). **The remote kill switch is real**: in an incident, log into
+  /docs → Authorize → POST /api/v1/admin/control with `{"action":"flatten"}`.
+- **Restart drill:** worker bounced via `railway service restart`; the full pipeline
+  resumed at its normal rate (+10 predictions/90s) with no manual intervention.
+- The equity snapshots recorded the drill's round-trip cost (100.0000 → 99.9966, the
+  paper broker's modeled slippage) — the soak audit trail works.
+- **Known trade-off:** `emergency_flatten()` submits closing orders directly to the
+  broker, bypassing DB order bookkeeping — speed over paperwork in an emergency; the
+  worker's `control_flatten_result` log line is the audit record.
+- Remaining rehearsal item: alert delivery — set `ALERT_WEBHOOK_URL` (Slack incoming
+  webhook) on the worker and confirm a test alert arrives.
