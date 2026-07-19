@@ -1,0 +1,13 @@
+# Railway config for the ui service. Deployed with the frontend directory as
+# the upload root: `railway up ./frontend --path-as-root -s ui`.
+# No preDeployCommand here -- migrations belong to the api service only.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
