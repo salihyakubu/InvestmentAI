@@ -160,3 +160,16 @@ Run the worker in paper mode and watch for **weeks**:
 - **Halt + flatten:** call `emergency_flatten()` (or `halt()` to just stop new orders).
 - **Drawdown auto-stop:** the circuit breaker trips at `circuit_breaker_loss_pct`
   (default 7% daily) **once `sync_account()` is feeding it** — verify in Stage 3.
+
+## Soak activation record (2026-07-19)
+- **Bootstrap model deployed**: xgboost+lightgbm v1 trained on real 1-minute history by
+  replaying the live 200-bar feature pipeline exactly (`scripts/train_and_promote.py`);
+  lightgbm 0.505 val accuracy (3-class, random 0.333); promoted in the registry, artifacts
+  ship via the repo, `ModelServer` now wired in the worker (it never was — predictions were
+  hardcoded flat before this).
+- **Worker runs in `eu-west` (Amsterdam)**: Binance geo-blocks US IPs (HTTP 451), so the
+  original `us-west` placement had produced ZERO data since deploy. Do not move the worker
+  back to a US region while Binance is the crypto data source.
+- Verified live after activation: market.bars → features.ready → predictions.ready all
+  flowing (one cycle per symbol per minute, 24/7 via crypto). Orders correctly gated at 0
+  until feature buffers mature (~200 min) and both models agree ≥0.6 calibrated confidence.
