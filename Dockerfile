@@ -20,4 +20,6 @@ USER appuser
 ENV PORT=8080
 EXPOSE 8080
 
-CMD uvicorn api.main:app --host 0.0.0.0 --port $PORT
+# Shell-form CMD so START_CMD can override per service (Railway runs the api and
+# the worker from this same image; the worker sets START_CMD="python -m services.worker").
+CMD ${START_CMD:-uvicorn api.main:app --host 0.0.0.0 --port $PORT}
