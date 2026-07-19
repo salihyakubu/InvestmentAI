@@ -129,6 +129,26 @@ def test_admin_control_publishes_event() -> None:
         app.dependency_overrides.clear()
 
 
+def test_admin_control_accepts_retrain() -> None:
+    """The retrain action publishes to CONTROL for the worker's CL service."""
+    bus = _FakeBus()
+    client = _client_with("admin", bus)
+    try:
+        resp = client.post(
+            "/api/v1/admin/control", json={"action": "retrain", "reason": "manual"}
+        )
+        assert resp.status_code == 202
+        assert resp.json()["action"] == "retrain"
+        assert len(bus.published) == 1
+        stream, event = bus.published[0]
+        assert stream == CONTROL
+        assert event.action == "retrain"
+    finally:
+        from api.main import app
+
+        app.dependency_overrides.clear()
+
+
 def test_non_admin_control_is_forbidden() -> None:
     bus = _FakeBus()
     client = _client_with("viewer", bus)

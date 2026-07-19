@@ -37,6 +37,12 @@ class ModelServer:
     def load_active_models(self) -> dict[str, BasePredictor]:
         """Load all active model versions from the registry.
 
+        Safe to call again on a live server (e.g. hot reload after a
+        ``ModelRetrainedEvent``): the new ensemble is fully built before
+        ``self._models`` / ``self._ensemble`` are swapped in at the very end,
+        and a reload that finds *no* active models keeps the previous ensemble
+        rather than degrading a serving instance to flat predictions.
+
         Returns:
             Mapping of model_type -> loaded predictor.
         """
@@ -61,17 +67,30 @@ class ModelServer:
             except ValueError:
                 logger.warning("No active model for type '%s'", model_type)
 
-        self._models = loaded
-
-        if loaded:
-            self._ensemble = EnsemblePredictor(
-                models=list(loaded.values()),
-                weights=self._model_weights,
-                min_agreement=self._min_agreement,
-            )
-        else:
+        if not loaded:
+            if self._ensemble is not None:
+                # Keep-previous guard: a reload that finds nothing must not
+                # replace a working ensemble with flat predictions.
+                logger.warning(
+                    "Reload found no active models -- keeping previous ensemble (%s)",
+                    list(self._models.keys()),
+                )
+                return self._models
+            self._models = {}
             self._ensemble = None
             logger.warning("No models loaded -- predictions will return flat")
+            return loaded
+
+        ensemble = EnsemblePredictor(
+            models=list(loaded.values()),
+            weights=self._model_weights,
+            min_agreement=self._min_agreement,
+        )
+        # Swap both references only after the ensemble is fully constructed so
+        # concurrent readers (predictions in flight on another thread) never
+        # observe a half-updated models/ensemble pair.
+        self._models = loaded
+        self._ensemble = ensemble
 
         return loaded
 

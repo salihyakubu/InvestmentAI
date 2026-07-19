@@ -10,6 +10,7 @@ import structlog
 
 from config.settings import Settings
 from core.events.base import Event, EventBus
+from core.events.streams import SYSTEM
 from services.monitoring.alerting import AlertManager, Severity
 from services.monitoring.audit import AuditLogger
 from services.monitoring.health import HealthChecker, HealthStatus
@@ -22,7 +23,7 @@ _MARKET_BARS_STREAM = "market.bars"
 _PREDICTIONS_STREAM = "predictions.ready"
 _ORDERS_STREAM = "orders"
 _RISK_STREAM = "risk"
-_SYSTEM_STREAM = "system"
+_SYSTEM_STREAM = SYSTEM
 
 _CONSUMER_GROUP = "monitoring-service"
 _HEALTH_CHECK_INTERVAL = 60  # seconds

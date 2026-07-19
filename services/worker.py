@@ -167,6 +167,7 @@ async def _build_services(
     )
 
     # -- Continuous Learning --
+    from core.models.base import get_async_session_factory
     from services.continuous_learning.drift_detector import DataDriftDetector
     from services.continuous_learning.evaluator import ModelEvaluator
     from services.continuous_learning.feedback_loop import TradingFeedbackLoop
@@ -174,12 +175,21 @@ async def _build_services(
     from services.continuous_learning.service import ContinuousLearningService
     from services.prediction.training.trainer import ModelTrainer
 
+    # One shared session factory for every DB-touching service below; the
+    # lazy fallbacks inside retrainer/CL would otherwise build a second engine.
+    session_factory = get_async_session_factory()
+
     trainer = ModelTrainer()
     evaluator = ModelEvaluator()
     drift_detector = DataDriftDetector()
     feedback_loop = TradingFeedbackLoop()
     # Reuse the serving registry: two instances would race on registry.json.
-    retrainer = AutoRetrainer(trainer=trainer, registry=model_registry, settings=settings)
+    retrainer = AutoRetrainer(
+        trainer=trainer,
+        registry=model_registry,
+        settings=settings,
+        session_factory=session_factory,
+    )
 
     continuous_learning = ContinuousLearningService(
         event_bus=event_bus,
@@ -188,6 +198,7 @@ async def _build_services(
         retrainer=retrainer,
         drift_detector=drift_detector,
         feedback_loop=feedback_loop,
+        session_factory=session_factory,
     )
 
     # -- Monitoring --
@@ -219,11 +230,9 @@ async def _build_services(
     )
 
     # -- Persistence (sync DB rows from event streams for reporting/metrics) --
-    from core.models.base import get_async_session_factory
     from services.persistence.order_sync import OrderPersistenceService
     from services.persistence.prediction_sync import PredictionPersistenceService
 
-    session_factory = get_async_session_factory()
     order_persistence = OrderPersistenceService(
         event_bus=event_bus, session_factory=session_factory
     )

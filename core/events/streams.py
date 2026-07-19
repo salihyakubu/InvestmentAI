@@ -31,3 +31,8 @@ PREDICTIONS = "predictions"
 # This is the remote kill switch -- without it the execution engine's safety
 # primitives are unreachable on a deployed system.
 CONTROL = "control"
+
+# Continuous learning -> (prediction, monitoring): platform-level system events
+# (ModelRetrainedEvent / DriftDetectedEvent). The prediction service listens
+# here to hot-reload newly promoted model versions without a restart.
+SYSTEM = "system"
