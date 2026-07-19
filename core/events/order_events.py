@@ -56,3 +56,15 @@ class OrderIntentEvent(Event):
     order_id: str = ""
     limit_price: float | None = None
     stop_price: float | None = None
+
+
+class TradingControlEvent(Event):
+    """An operator control command for the execution engine (the kill switch).
+
+    Actions: ``halt`` (stop accepting new orders), ``resume`` (lift a halt),
+    ``flatten`` (cancel all open orders, close every position, and halt).
+    Published by the admin API; consumed by the execution engine.
+    """
+
+    action: str
+    reason: str = ""
