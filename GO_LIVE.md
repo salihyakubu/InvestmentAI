@@ -9,7 +9,7 @@ and Stage 3 (paper soak) pass.**
 ---
 
 ## Stage 0 — Code correctness ✅ (done)
-- 100 tests green, `ruff` clean, CI in place.
+- 124 tests green, `ruff` clean, `mypy --strict` clean (now a blocking gate), CI in place.
 - Migration verified on real Postgres **and** real TimescaleDB (0002 builds 4 hypertables +
   retention; no-op on plain Postgres); full pipeline verified over real Redis
   (`scripts/smoke_test_pipeline.py`); models train + predict (`scripts/validate_model.py`);
@@ -49,8 +49,18 @@ and Stage 3 (paper soak) pass.**
 > 4 hypertables created), serves, connects DB+Redis, and answers `/healthz` 200,
 > `/api/v1/health` `{database:ok,redis:ok}`, `/api/v1/auth/token` 401 on bad creds. A root
 > `.dockerignore` was added so the image no longer bakes `.env`/`.venv`/`.git` (5.07GB → 2.87GB).
-> Remaining for the operator: create the Railway project, set the env vars above (CLI auth is
-> yours), and trigger the deploy.
+>
+> **Full-stack compose deploy (done 2026-07-19):** the platform's own `docker compose` stack
+> (TimescaleDB + Redis + api + worker) was brought up end-to-end: migrations applied (0001+0002,
+> 4 hypertables), api answers `/healthz` 200 and `/api/v1/health` `{database:ok,redis:ok}`, the
+> worker logs `all_services_started` / `account_sync_started` / **`live_brokers_disabled
+> trading_mode=paper`** (the safety gate live in a running deployment), a user was created and
+> the JWT auth path enforced (authed 200 / unauthed 401), and the pipeline smoke test **PASSED**
+> through the composed Redis. Compose now injects service-name `DATABASE_URL`/`REDIS_URL` so it
+> works out of the box. This stack is soak-ready (Stage 3) locally.
+>
+> Remaining for the operator: the cloud (Railway) variant — create the project, set the env vars
+> above (CLI auth is yours), and trigger the deploy.
 
 ## Stage 2 — Prove the strategy has edge 🔴
 1. **Ingest real history for a small universe** (the harness reads a `close` column;
@@ -71,9 +81,22 @@ and Stage 3 (paper soak) pass.**
    **≥3** symbols pass. A single-symbol run prints `necessary but NOT sufficient` and is
    **not** a green light. If the verdict is anything else, **stop — do not trade.**
    Self-test: run with no args (zero-drift random walk) — it must report
-   `NO demonstrable edge`. Verified on real data: AAPL/MSFT/SPY pass net-of-cost
-   (Sharpe ~0.6–1.3, stability 0.75–1.0); the null and random data do not. No amount of
-   code quality substitutes for a real, stable, cost-surviving signal.
+   `NO demonstrable edge`. The null and random data correctly report no edge.
+
+> **Edge validation (run 2026-07-18):** the gate was run across a **diverse 10-symbol
+> universe** (AAPL, MSFT, NVDA, GOOGL, JPM, JNJ, XOM, PG, KO, SPY) over **two
+> non-overlapping out-of-sample windows** — 2010→2026 (test ≈2021–26, incl. the 2022
+> bear) and 2004→2019 (test ≈2015–19). Net of 5 bps: **7/10 pass** in the recent window
+> and **9/10** in the earlier one, clearing the ≥3-symbol majority gate in both.
+>
+> Read it honestly: this is a **momentum signal** (all features are trend/momentum). It
+> wins on trending names in each regime and fails on whatever is *not* trending (energy
+> 2015–19; defensives MSFT/PG/JNJ 2021–26), with **large drawdowns** (NVDA −55/−66%,
+> GOOGL −19/−43%). That is real, cross-period *factor* exposure — not a magic signal, and
+> not universal alpha. It is **necessary, not sufficient**: costs are modelled optimistically
+> (5 bps, low for a micro account), and the risk engine (position sizing + 7%-daily circuit
+> breaker) is what makes those drawdowns survivable — its **live behaviour is only proven in
+> the Stage 3 paper soak**, which remains the real gate before any capital.
 
 ## Stage 3 — Paper-trading soak (weeks) ⚙️
 Run the worker in paper mode and watch for **weeks**:
@@ -91,16 +114,17 @@ Run the worker in paper mode and watch for **weeks**:
 
 ---
 
-## Operational glue still required (deferred, tracked)
-These are wired in code but need final integration/verification:
-- **Risk equity/PnL feed**: have the worker call `risk.sync_account(broker.get_account()["equity"])`
-  on a timer (e.g. every 30–60s) and `risk.reset_daily()` at session open. The method is
-  tested; the periodic call is deploy glue.
-- **Manual order API → live execution** (#11): the `POST /orders` endpoint persists a PENDING
-  order; wiring it to the worker's execution needs an async order-intent consumer.
-- **Frontend** (#8): login page + prod build + FE↔BE path reconcile (UI is otherwise unusable).
-- **ML** (#12): probability calibration; sequence-model leakage fix.
-- **Timescale** (#14): re-add hypertables/retention as a guarded follow-up migration.
+## Operational glue — status
+- **Risk equity/PnL feed**: ✅ the worker runs `risk.run_account_sync(equity_provider)` on a
+  timer (`services/worker.py`), feeding the drawdown monitor / circuit breaker. Small remainder:
+  a `risk.reset_daily()` call at session open (verify during the Stage 3 soak).
+- **Manual order API → live execution** (#11): ✅ `POST /orders` publishes an `OrderIntentEvent`
+  the execution worker consumes (`_handle_order_intent`); fills sync back to the DB order row.
+- **Frontend** (#8): ✅ login/auth gate + production nginx build + FE↔BE path reconcile.
+- **ML** (#12): ✅ tree-probability calibration + sequence double-normalisation fix. (Torch
+  sequence-model calibration still deferred — gated on torch in the deploy image.)
+- **Timescale** (#14): ✅ hypertables + retention as a guarded migration (`0002`, verified on
+  real TimescaleDB and no-op on plain Postgres).
 
 ## Emergency procedures
 - **Halt + flatten:** call `emergency_flatten()` (or `halt()` to just stop new orders).
