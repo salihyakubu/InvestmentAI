@@ -1,5 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from './client';
+import {
+  normalizeEquityPoint,
+  normalizeOrder,
+  normalizePortfolioSummary,
+  normalizePosition,
+  normalizeRiskMetrics,
+} from './normalize';
 import type {
   PortfolioSummary,
   Position,
@@ -17,7 +24,10 @@ import type {
 export function usePortfolioSummary() {
   return useQuery<PortfolioSummary>({
     queryKey: ['portfolio', 'summary'],
-    queryFn: () => apiClient.get('/portfolio/summary').then((r) => r.data),
+    queryFn: () =>
+      apiClient
+        .get('/portfolio/summary')
+        .then((r) => normalizePortfolioSummary(r.data)),
     refetchInterval: 5_000,
   });
 }
@@ -25,7 +35,10 @@ export function usePortfolioSummary() {
 export function usePositions() {
   return useQuery<Position[]>({
     queryKey: ['positions'],
-    queryFn: () => apiClient.get('/positions').then((r) => r.data),
+    queryFn: () =>
+      apiClient
+        .get('/positions')
+        .then((r) => (Array.isArray(r.data) ? r.data : []).map(normalizePosition)),
     refetchInterval: 5_000,
   });
 }
@@ -33,7 +46,10 @@ export function usePositions() {
 export function useEquityCurve() {
   return useQuery<{ date: string; equity: number }[]>({
     queryKey: ['portfolio', 'snapshots'],
-    queryFn: () => apiClient.get('/portfolio/snapshots').then((r) => r.data),
+    queryFn: () =>
+      apiClient
+        .get('/portfolio/snapshots')
+        .then((r) => (Array.isArray(r.data) ? r.data : []).map(normalizeEquityPoint)),
     refetchInterval: 30_000,
   });
 }
@@ -45,7 +61,8 @@ export function useOrders(status?: string) {
     queryFn: () =>
       apiClient
         .get('/orders', { params: status ? { status } : undefined })
-        .then((r) => r.data),
+        // The API returns a paginated envelope {items, total, page, page_size}.
+        .then((r) => (r.data?.items ?? []).map(normalizeOrder)),
     refetchInterval: 3_000,
   });
 }
@@ -83,7 +100,10 @@ export function useCancelOrder() {
 export function useRiskMetrics() {
   return useQuery<RiskMetrics>({
     queryKey: ['risk', 'metrics'],
-    queryFn: () => apiClient.get('/risk/metrics/latest').then((r) => r.data),
+    queryFn: () =>
+      apiClient
+        .get('/risk/metrics/latest')
+        .then((r) => normalizeRiskMetrics(r.data)),
     refetchInterval: 10_000,
   });
 }
