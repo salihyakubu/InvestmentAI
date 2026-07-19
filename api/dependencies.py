@@ -9,6 +9,7 @@ from uuid import UUID
 
 import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.middleware.auth import JWTAuth
@@ -17,6 +18,11 @@ from config.settings import get_settings as _get_settings
 from core.events.base import EventBus
 
 logger = logging.getLogger(__name__)
+
+# Declared (rather than hand-parsed) so the bearer scheme lands in the OpenAPI
+# spec and Swagger UI renders its Authorize button. auto_error=False keeps the
+# 401 shape ours instead of FastAPI's default 403.
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
@@ -47,7 +53,7 @@ async def get_settings() -> Settings:
 
 
 async def get_current_user(
-    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
     """Extract and validate the current user from the JWT bearer token.
@@ -55,15 +61,14 @@ async def get_current_user(
     Returns a dict with ``user_id`` and ``role`` fields.
     Raises 401 if the token is missing or invalid.
     """
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = auth_header.removeprefix("Bearer ").strip()
+    token = credentials.credentials.strip()
     jwt_auth = JWTAuth(
         secret=settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
