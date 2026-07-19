@@ -69,11 +69,22 @@ and Stage 3 (paper soak) pass.**
 > `releaseCommand` being an unknown Railway key (migrations silently skipped — the key is
 > `preDeployCommand`).
 >
-> Remaining for the operator: paste the **5 secrets** into each service's Variables in the
-> Railway dashboard (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `BINANCE_API_KEY`,
-> `BINANCE_SECRET_KEY`, `JWT_SECRET`) — services auto-redeploy — then create a login user:
-> `railway ssh -s api -- python scripts/create_user.py you@x.com '<pw>' admin`
-> (register an SSH key first: `railway ssh keys add`).
+> **Stage 1 SIGN-OFF (2026-07-19):** secrets loaded on both services and verified by name;
+> both deployments green; api logs clean (JWT-default warning **gone**, DB+Redis connected);
+> public URL answers `/healthz` 200, `/api/v1/health` `{database:ok,redis:ok}`, auth 401
+> fails closed; the pipeline smoke test **PASSED against the cloud Redis**. The worker owns
+> the single Alpaca data websocket (stop any local worker running the same keys — Alpaca
+> allows one concurrent stream per account, and two workers fight for it).
+>
+> ⚠️ **Railway UI trap (learned the hard way):** the dashboard's *Raw Editor* REPLACES the
+> entire variable set with the pasted text — a partial paste deletes every other variable
+> (it wiped `DATABASE_URL`/`REDIS_URL`/`START_CMD` and broke 3 deploys in seconds). Prefer
+> `railway variables --set` from the CLI, which merges. If you use the Raw Editor, always
+> edit the complete set.
+>
+> Remaining for the operator: create your login user —
+> `railway ssh keys add` then
+> `railway ssh -s api -- python scripts/create_user.py you@x.com '<pw>' admin`.
 
 ## Stage 2 — Prove the strategy has edge 🔴
 1. **Ingest real history for a small universe** (the harness reads a `close` column;
