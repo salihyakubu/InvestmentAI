@@ -60,6 +60,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.redis = redis_client
     app.state.event_bus = event_bus
 
+    # Bridge event-bus streams to WebSocket clients (live dashboard updates).
+    if event_bus is not None:
+        try:
+            from api.websockets.fanout import start_fanout
+
+            await start_fanout(event_bus)
+        except Exception as exc:
+            logger.warning("WebSocket fanout not started: %s", exc)
+
     # Database session factory
     try:
         app.state.db_session_factory = get_async_session_factory()
