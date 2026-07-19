@@ -237,10 +237,10 @@ story.append(bullets([
 ]))
 story.append(Spacer(1, 6))
 story.append(callout(
-    "<b>Operational glue to wire at deploy:</b> have the worker call "
-    "<font face='Courier'>risk.sync_account(broker.get_account()['equity'])</font> on a 30&ndash;60s timer and "
-    "<font face='Courier'>risk.reset_daily()</font> at session open. The methods are tested; "
-    "the periodic call is deploy glue.",
+    "<b>Operational glue:</b> the worker already runs "
+    "<font face='Courier'>risk.run_account_sync(...)</font> on a timer (feeding the drawdown "
+    "monitor / circuit breaker) and the manual-order path is wired end-to-end. Small remainder: "
+    "a <font face='Courier'>risk.reset_daily()</font> call at session open, to verify in the Stage 3 soak.",
     "#f9fafb", GREY))
 
 
