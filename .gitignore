@@ -37,10 +37,8 @@ htmlcov/
 .mypy_cache/
 
 # Model artifacts (large files)
-model_artifacts/**/*.pt
-model_artifacts/**/*.pkl
-model_artifacts/**/*.joblib
-!model_artifacts/.gitkeep
+# Promoted model artifacts SHIP VIA THE REPO: Railway containers have no
+# volumes, so the serving registry must travel with the deploy.
 
 # Node
 node_modules/
