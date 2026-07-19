@@ -26,3 +26,8 @@ ORDER_INTENTS = "order.intents"
 
 # Prediction -> Portfolio: model predictions ready for optimisation.
 PREDICTIONS = "predictions"
+
+# API (admin) -> Execution: operator control commands (halt / resume / flatten).
+# This is the remote kill switch -- without it the execution engine's safety
+# primitives are unreachable on a deployed system.
+CONTROL = "control"

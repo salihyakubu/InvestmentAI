@@ -18,7 +18,7 @@ from core.events import (
     OrderRejectedEvent,
 )
 from core.events.base import Event
-from core.events.streams import ORDER_INTENTS, ORDERS, RISK_APPROVED
+from core.events.streams import CONTROL, ORDER_INTENTS, ORDERS, RISK_APPROVED
 from services.execution.brokers.base import BaseBroker, BrokerOrder
 from services.execution.fill_tracker import FillTracker
 from services.execution.order_manager import Order, OrderError, OrderManager
@@ -83,6 +83,22 @@ class ExecutionEngineService:
             group=_CONSUMER_GROUP,
             consumer="exec-intents-1",
             handler=self._handle_order_intent,
+        )
+        # Remote kill switch: operator halt / resume / flatten commands.
+        await self._event_bus.subscribe(
+            stream=CONTROL,
+            group=_CONSUMER_GROUP,
+            consumer="exec-control-1",
+            handler=self._handle_control,
+        )
+        # Feed live prices into simulated brokers so paper fills happen at real
+        # market prices and pending limit/stop orders can actually trigger.
+        # ("market.prices" literal is owned by data ingestion; kept in sync.)
+        await self._event_bus.subscribe(
+            stream="market.prices",
+            group=_CONSUMER_GROUP,
+            consumer="exec-prices-1",
+            handler=self._handle_price_update,
         )
         self._monitor_task = asyncio.create_task(self._monitor_pending_orders())
         logger.info("execution_engine_started")
@@ -190,6 +206,46 @@ class ExecutionEngineService:
         except Exception as exc:
             logger.warning("buying_power_check_failed", error=str(exc))
             return None
+
+    async def _handle_control(self, event: Event) -> None:
+        """Operator control commands (the remote kill switch)."""
+        if event.event_type != "TradingControlEvent":
+            return
+        action = getattr(event, "action", "") or event.payload.get("action", "")
+        reason = getattr(event, "reason", "") or event.payload.get("reason", "")
+        logger.warning("control_command_received", action=action, reason=reason)
+        if action == "halt":
+            self.halt()
+        elif action == "resume":
+            self.resume()
+        elif action == "flatten":
+            result = await self.emergency_flatten()
+            logger.warning("control_flatten_result", **result)
+        else:
+            logger.warning("control_unknown_action", action=action)
+
+    async def _handle_price_update(self, event: Event) -> None:
+        """Feed PriceUpdateEvents into simulated brokers.
+
+        The paper broker fills market orders at its last known price and
+        triggers pending limit/stop orders on price updates -- without this
+        feed, paper fills would execute against missing prices and resting
+        orders would never trigger.
+        """
+        if event.event_type != "PriceUpdateEvent":
+            return
+        symbol = getattr(event, "symbol", "") or event.payload.get("symbol", "")
+        price_raw = getattr(event, "price", None) or event.payload.get("price")
+        if not symbol or price_raw is None:
+            return
+        try:
+            price = Decimal(str(price_raw))
+        except InvalidOperation:
+            return
+        for broker in self._brokers.values():
+            update = getattr(broker, "update_price", None)
+            if update is not None and not broker.supports_live:
+                update(symbol, price)
 
     async def _handle_order_intent(self, event: Event) -> None:
         """Handle a manual OrderIntentEvent: create + submit the order.
