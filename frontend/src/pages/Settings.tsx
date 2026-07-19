@@ -1,220 +1,100 @@
-import { useState } from 'react';
 import clsx from 'clsx';
-import { useAppStore } from '../store';
+import { useSettings, useTradingMode } from '../api/hooks';
+import { num } from '../api/normalize';
 
+/**
+ * Settings is intentionally READ-ONLY.
+ *
+ * Trading mode, risk limits, symbols, and credentials are deployment
+ * configuration (environment variables on the server), not browser state: a
+ * compromised session must never be able to flip a paper system to live, relax
+ * a risk limit, or exfiltrate a key. This page shows the platform's REAL
+ * configuration as reported by the backend.
+ */
 export default function Settings() {
-  const { tradingMode, setTradingMode } = useAppStore();
+  const { data: tradingMode = 'paper' } = useTradingMode();
+  const { data: rules } = useSettings();
 
-  const [riskParams, setRiskParams] = useState({
-    max_position_size: 10,
-    max_portfolio_risk: 5,
-    max_drawdown_limit: 15,
-    var_limit: 50000,
-    daily_loss_limit: 10000,
-  });
+  const pct = (v: unknown) => `${(num(v) * 100).toFixed(1)}%`;
 
-  const [activeSymbols, setActiveSymbols] = useState(
-    'AAPL, GOOGL, MSFT, AMZN, TSLA, META, NVDA',
-  );
-
-  const [apiKeyName, setApiKeyName] = useState('');
-  const [saved, setSaved] = useState(false);
-
-  const handleSave = () => {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+  const riskRows: { label: string; value: string }[] = rules
+    ? [
+        { label: 'Max position size', value: pct(rules.max_position_pct) },
+        { label: 'Max sector exposure', value: pct(rules.max_sector_pct) },
+        { label: 'Max asset-class exposure', value: pct(rules.max_asset_class_pct) },
+        { label: 'Max single order', value: pct(rules.max_single_order_pct) },
+        { label: 'Max daily drawdown', value: pct(rules.max_daily_drawdown_pct) },
+        { label: 'Max total drawdown', value: pct(rules.max_total_drawdown_pct) },
+        { label: 'Max pairwise correlation', value: num(rules.max_pairwise_correlation).toFixed(2) },
+        { label: 'Max open positions', value: String(num(rules.max_portfolio_positions)) },
+        { label: 'Max portfolio VaR (95%)', value: pct(rules.max_portfolio_var_95) },
+        { label: 'Circuit breaker daily loss', value: pct(rules.circuit_breaker_loss_pct) },
+        {
+          label: 'Circuit breaker cooldown',
+          value: `${num(rules.circuit_breaker_cooldown_minutes)} min`,
+        },
+      ]
+    : [];
 
   return (
     <div className="space-y-6 max-w-4xl">
       <h1 className="text-2xl font-bold text-white">Settings</h1>
 
-      {/* Trading Mode */}
+      {/* Trading Mode -- read-only, reported by the backend */}
       <div className="card">
         <div className="card-header">Trading Mode</div>
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => setTradingMode('paper')}
+          <span
             className={clsx(
-              'px-6 py-3 rounded-lg font-bold text-sm transition-colors',
-              tradingMode === 'paper'
-                ? 'bg-yellow-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
-            )}
-          >
-            Paper Trading
-          </button>
-          <button
-            onClick={() => setTradingMode('live')}
-            className={clsx(
-              'px-6 py-3 rounded-lg font-bold text-sm transition-colors',
+              'px-4 py-2 rounded-full text-sm font-bold uppercase tracking-wider',
               tradingMode === 'live'
-                ? 'bg-red-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700',
+                ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
             )}
           >
-            Live Trading
-          </button>
-        </div>
-        {tradingMode === 'live' && (
-          <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-            <p className="text-sm text-red-400 font-medium">
-              WARNING: Live trading uses real funds. Ensure all risk parameters
-              are properly configured.
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Risk Parameters */}
-      <div className="card">
-        <div className="card-header">Risk Parameters</div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1 uppercase">
-              Max Position Size (%)
-            </label>
-            <input
-              type="number"
-              value={riskParams.max_position_size}
-              onChange={(e) =>
-                setRiskParams({
-                  ...riskParams,
-                  max_position_size: parseFloat(e.target.value),
-                })
-              }
-              className="input-field w-full font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1 uppercase">
-              Max Portfolio Risk (%)
-            </label>
-            <input
-              type="number"
-              value={riskParams.max_portfolio_risk}
-              onChange={(e) =>
-                setRiskParams({
-                  ...riskParams,
-                  max_portfolio_risk: parseFloat(e.target.value),
-                })
-              }
-              className="input-field w-full font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1 uppercase">
-              Max Drawdown Limit (%)
-            </label>
-            <input
-              type="number"
-              value={riskParams.max_drawdown_limit}
-              onChange={(e) =>
-                setRiskParams({
-                  ...riskParams,
-                  max_drawdown_limit: parseFloat(e.target.value),
-                })
-              }
-              className="input-field w-full font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1 uppercase">
-              VaR Limit ($)
-            </label>
-            <input
-              type="number"
-              value={riskParams.var_limit}
-              onChange={(e) =>
-                setRiskParams({
-                  ...riskParams,
-                  var_limit: parseFloat(e.target.value),
-                })
-              }
-              className="input-field w-full font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1 uppercase">
-              Daily Loss Limit ($)
-            </label>
-            <input
-              type="number"
-              value={riskParams.daily_loss_limit}
-              onChange={(e) =>
-                setRiskParams({
-                  ...riskParams,
-                  daily_loss_limit: parseFloat(e.target.value),
-                })
-              }
-              className="input-field w-full font-mono"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Active Symbols */}
-      <div className="card">
-        <div className="card-header">Active Symbols</div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1 uppercase">
-            Comma-separated symbols
-          </label>
-          <input
-            type="text"
-            value={activeSymbols}
-            onChange={(e) => setActiveSymbols(e.target.value)}
-            className="input-field w-full font-mono"
-            placeholder="AAPL, GOOGL, MSFT"
-          />
-          <p className="text-xs text-gray-500 mt-2">
-            These symbols will be actively monitored and traded by the AI models.
+            {tradingMode}
+          </span>
+          <p className="text-sm text-gray-400">
+            Set by the deployment&rsquo;s <code className="font-mono">TRADING_MODE</code>{' '}
+            environment variable. By design it cannot be changed from the
+            browser &mdash; switching to live requires a deliberate redeploy.
           </p>
         </div>
       </div>
 
-      {/* API Keys */}
+      {/* Risk Parameters -- the risk engine's real limits */}
       <div className="card">
-        <div className="card-header">API Key Management</div>
-        <div className="space-y-3">
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={apiKeyName}
-              onChange={(e) => setApiKeyName(e.target.value)}
-              placeholder="Key name (e.g., Alpaca, Polygon)"
-              className="input-field flex-1"
-            />
-            <button className="btn-primary text-sm">Add Key</button>
-          </div>
-          <div className="bg-gray-900 rounded-lg p-3 border border-gray-800">
-            <div className="flex items-center justify-between py-2">
-              <div>
-                <span className="text-sm text-gray-300">Alpaca</span>
-                <span className="text-xs text-green-400 ml-2">Connected</span>
+        <div className="card-header">Risk Parameters (enforced by the risk engine)</div>
+        {rules ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+            {riskRows.map((row) => (
+              <div
+                key={row.label}
+                className="flex items-center justify-between py-2 border-b border-gray-800"
+              >
+                <span className="text-sm text-gray-400">{row.label}</span>
+                <span className="text-sm font-mono text-white">{row.value}</span>
               </div>
-              <button className="text-xs text-red-400 hover:text-red-300">
-                Revoke
-              </button>
-            </div>
-            <div className="flex items-center justify-between py-2 border-t border-gray-800">
-              <div>
-                <span className="text-sm text-gray-300">Polygon.io</span>
-                <span className="text-xs text-green-400 ml-2">Connected</span>
-              </div>
-              <button className="text-xs text-red-400 hover:text-red-300">
-                Revoke
-              </button>
-            </div>
+            ))}
           </div>
-        </div>
+        ) : (
+          <p className="text-sm text-gray-500">Loading risk configuration…</p>
+        )}
+        <p className="text-xs text-gray-500 mt-3">
+          Limits are deployment configuration; every order is checked against
+          them server-side before it can reach a broker.
+        </p>
       </div>
 
-      {/* Save Button */}
-      <div className="flex justify-end">
-        <button onClick={handleSave} className="btn-primary px-8">
-          {saved ? 'Saved!' : 'Save Settings'}
-        </button>
+      {/* Credentials -- never handled by the UI */}
+      <div className="card">
+        <div className="card-header">Broker &amp; Data Credentials</div>
+        <p className="text-sm text-gray-400">
+          API keys (Alpaca, Binance) are configured as environment variables on
+          the deployment and are never entered, stored, or displayed in this
+          interface. To rotate a key: revoke it at the broker, update the
+          deployment&rsquo;s variables, and redeploy.
+        </p>
       </div>
     </div>
   );

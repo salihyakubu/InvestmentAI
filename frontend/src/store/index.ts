@@ -12,10 +12,6 @@ interface AppState {
   markAlertRead: (id: string) => void;
   clearAlerts: () => void;
 
-  // Trading mode
-  tradingMode: 'paper' | 'live';
-  setTradingMode: (mode: 'paper' | 'live') => void;
-
   // Connection status
   connected: boolean;
   setConnected: (status: boolean) => void;
@@ -59,9 +55,6 @@ export const useAppStore = create<AppState>((set) => ({
       ),
     })),
   clearAlerts: () => set({ alerts: [] }),
-
-  tradingMode: 'paper',
-  setTradingMode: (mode) => set({ tradingMode: mode }),
 
   connected: false,
   setConnected: (status) => set({ connected: status }),
