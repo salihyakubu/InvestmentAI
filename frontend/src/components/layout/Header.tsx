@@ -2,11 +2,13 @@ import { Bell, LogOut, Wifi, WifiOff } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
 import { useAppStore } from '../../store';
-import { usePortfolioSummary } from '../../api/hooks';
+import { usePortfolioSummary, useTradingMode } from '../../api/hooks';
 
 export default function Header() {
   const navigate = useNavigate();
-  const { tradingMode, connected, alerts, logout } = useAppStore();
+  const { connected, alerts, logout } = useAppStore();
+  // The badge reflects the BACKEND's real mode -- never a client-side toggle.
+  const { data: tradingMode = 'paper' } = useTradingMode();
   const { data: portfolio } = usePortfolioSummary();
   const unreadCount = alerts.filter((a) => !a.read).length;
 

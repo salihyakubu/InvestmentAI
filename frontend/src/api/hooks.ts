@@ -174,6 +174,20 @@ export function useRunBacktest() {
   });
 }
 
+// Trading mode -- the BACKEND's real mode (set by the deployment's
+// TRADING_MODE env var). The UI can only display it, never change it: a
+// compromised browser session must not be able to flip a paper system live.
+export function useTradingMode() {
+  return useQuery<'paper' | 'live' | 'backtest'>({
+    queryKey: ['config', 'trading-mode'],
+    queryFn: () =>
+      apiClient
+        .get('/config/trading-mode')
+        .then((r) => r.data?.trading_mode ?? 'paper'),
+    refetchInterval: 30_000,
+  });
+}
+
 // Settings (backed by the config router on the API)
 export function useSettings() {
   return useQuery<Record<string, unknown>>({
