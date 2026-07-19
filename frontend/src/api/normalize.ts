@@ -12,6 +12,7 @@
 
 import type {
   EquityPoint,
+  ModelInfo,
   Order,
   PortfolioSummary,
   Position,
@@ -114,6 +115,29 @@ export function normalizeRiskMetrics(raw: Raw): RiskMetrics {
     position_concentration:
       (raw.position_concentration as RiskMetrics['position_concentration']) ??
       {},
+  };
+}
+
+export function normalizeModelInfo(raw: Raw): ModelInfo {
+  // The API exposes registry metadata (model_name, validation_metrics{...});
+  // the UI's richer fields (precision/recall/f1/sharpe) default to 0 until the
+  // backend computes them from live prediction outcomes.
+  const metrics = (raw.validation_metrics ?? {}) as Raw;
+  return {
+    id: str(raw.id, str(raw.model_name)),
+    name: str(raw.model_name, 'model'),
+    type: str(raw.model_type, str(raw.model_name)),
+    version: String(raw.version ?? ''),
+    status: raw.is_active ? 'active' : 'inactive',
+    accuracy: num(metrics.val_accuracy ?? metrics.accuracy),
+    precision: num(metrics.precision),
+    recall: num(metrics.recall),
+    f1_score: num(metrics.f1_score),
+    sharpe_ratio: num(metrics.sharpe_ratio),
+    last_trained: str(raw.trained_at),
+    feature_importance:
+      (raw.feature_importance as ModelInfo['feature_importance']) ?? {},
+    prediction_count: num(raw.prediction_count),
   };
 }
 
