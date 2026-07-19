@@ -93,7 +93,10 @@ class LightGBMPredictor(BasePredictor):
         ``classes_`` so a class absent from the fit data yields a zero column.
         """
         estimator = self._calibrator if self._calibrator is not None else self._classifier
-        raw = estimator.predict_proba(features)
+        # np.asarray: LGBMClassifier.predict_proba is typed to return a broad
+        # Any | ndarray | list union in newer stubs; normalise to a 2-D ndarray so
+        # .shape and column indexing are valid (runtime no-op when already ndarray).
+        raw = np.asarray(estimator.predict_proba(features))
         out = np.zeros((raw.shape[0], 3), dtype=np.float64)
         for col, cls in enumerate(int(c) for c in estimator.classes_):
             if 0 <= cls <= 2:
