@@ -49,8 +49,18 @@ and Stage 3 (paper soak) pass.**
 > 4 hypertables created), serves, connects DB+Redis, and answers `/healthz` 200,
 > `/api/v1/health` `{database:ok,redis:ok}`, `/api/v1/auth/token` 401 on bad creds. A root
 > `.dockerignore` was added so the image no longer bakes `.env`/`.venv`/`.git` (5.07GB → 2.87GB).
-> Remaining for the operator: create the Railway project, set the env vars above (CLI auth is
-> yours), and trigger the deploy.
+>
+> **Full-stack compose deploy (done 2026-07-19):** the platform's own `docker compose` stack
+> (TimescaleDB + Redis + api + worker) was brought up end-to-end: migrations applied (0001+0002,
+> 4 hypertables), api answers `/healthz` 200 and `/api/v1/health` `{database:ok,redis:ok}`, the
+> worker logs `all_services_started` / `account_sync_started` / **`live_brokers_disabled
+> trading_mode=paper`** (the safety gate live in a running deployment), a user was created and
+> the JWT auth path enforced (authed 200 / unauthed 401), and the pipeline smoke test **PASSED**
+> through the composed Redis. Compose now injects service-name `DATABASE_URL`/`REDIS_URL` so it
+> works out of the box. This stack is soak-ready (Stage 3) locally.
+>
+> Remaining for the operator: the cloud (Railway) variant — create the project, set the env vars
+> above (CLI auth is yours), and trigger the deploy.
 
 ## Stage 2 — Prove the strategy has edge 🔴
 1. **Ingest real history for a small universe** (the harness reads a `close` column;
