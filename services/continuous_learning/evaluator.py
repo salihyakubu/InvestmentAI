@@ -10,6 +10,18 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Retention cap per model: at soak cadence (~10-17k predictions/day) unbounded
+# in-memory history OOMs the container. With eviction, the 30-day report
+# lookback effectively becomes "last N predictions" once the cap is reached;
+# longer windows must read the DB predictions table instead.
+_MAX_PREDICTIONS_PER_MODEL = 20_000
+
+# Flat deadband for directional accuracy. The outcome resolver
+# (services.continuous_learning.service, _ACTUAL_RETURN_THRESHOLD) is the
+# source of truth: it labels |actual_return| <= 0.0005 as flat, so the
+# evaluator must score against the same boundary.
+_FLAT_RETURN_DEADBAND = 0.0005
+
 
 @dataclass
 class PerformanceReport:
@@ -54,7 +66,8 @@ class ModelEvaluator:
         confidence: float,
     ) -> None:
         """Store a prediction for later evaluation."""
-        self._predictions.setdefault(model_id, []).append(
+        preds = self._predictions.setdefault(model_id, [])
+        preds.append(
             {
                 "prediction_id": prediction_id,
                 "symbol": symbol,
@@ -63,6 +76,13 @@ class ModelEvaluator:
                 "timestamp": datetime.now(UTC),
             }
         )
+        # Evict oldest overflow and drop their outcomes so _outcomes stays
+        # exactly in sync with retained predictions (both stay bounded).
+        if len(preds) > _MAX_PREDICTIONS_PER_MODEL:
+            overflow = len(preds) - _MAX_PREDICTIONS_PER_MODEL
+            for evicted in preds[:overflow]:
+                self._outcomes.pop(evicted["prediction_id"], None)
+            del preds[:overflow]
 
     def record_outcome(
         self,
@@ -145,7 +165,10 @@ class ModelEvaluator:
             for m in matched
             if (m["predicted"] in ("long", "up") and m.get("actual_return", 0) > 0)
             or (m["predicted"] in ("short", "down") and m.get("actual_return", 0) < 0)
-            or (m["predicted"] in ("flat", "neutral") and abs(m.get("actual_return", 0)) < 0.001)
+            or (
+                m["predicted"] in ("flat", "neutral")
+                and abs(m.get("actual_return", 0)) <= _FLAT_RETURN_DEADBAND
+            )
         )
         directional_accuracy = directional_matches / len(matched) if matched else 0.0
 

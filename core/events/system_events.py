@@ -21,6 +21,8 @@ class DriftDetectedEvent(Event):
     drift_type: str  # 'data', 'concept', 'prediction'
     score: float
     threshold: float
+    # Which model drifted; empty for platform-wide (data) drift.
+    model_id: str = ""
 
 
 class LiquidationTriggeredEvent(Event):

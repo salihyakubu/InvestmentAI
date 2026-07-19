@@ -39,6 +39,34 @@ _OUTCOME_HORIZON = timedelta(minutes=5)
 _OUTCOME_GRACE = timedelta(minutes=1)
 _OUTCOME_RESOLUTION_INTERVAL = 600  # seconds
 
+# Bounded bar lookups. t0 must fall within a short window before the
+# prediction (covers CCXT poll jitter + pipeline latency); t5 comes from the
+# BAR GRID (t0 bar time + horizon) with a short slack for late bars. An
+# unbounded lookup would score a prediction near session close against the
+# NEXT session's first bar (an overnight gap recorded as a 5-minute outcome).
+_T0_LOOKBACK = timedelta(minutes=10)
+_T5_SLACK = timedelta(minutes=3)
+
+# With bounded lookups, some records (e.g. end-of-session stock predictions)
+# can never resolve; drop them after this age instead of re-querying forever.
+_UNRESOLVABLE_AFTER = timedelta(minutes=60)
+
+# Per-model cap on RESOLVED records retained for drift detection; oldest
+# resolved records beyond the cap are pruned so tracking memory is bounded.
+_MAX_RESOLVED_PER_MODEL = 20_000
+
+# Predictions consumed more than 2x the horizon after creation are backlog
+# replays -- their outcome window has already passed, so tracking them would
+# score stale predictions against unrelated bars.
+_STALE_EVENT_CUTOFF = 2 * _OUTCOME_HORIZON
+
+# Drift detection runs over a rolling window of the most recent resolved
+# records, split at the midpoint (recent ~1000 vs prior ~1000). At the old
+# >=100 gate the fixed 5pp accuracy-drop threshold was a ~0.5-sigma event
+# (~31% false fire); ~1000 per half brings the false rate to ~1.3%.
+_DRIFT_MIN_RESOLVED = 1000
+_DRIFT_WINDOW = 2000
+
 # Realised-direction deadband. The serving path derives the *predicted*
 # direction from calibrated class probabilities (the 30/70 logic), which has
 # no analogue for a realised price move. We instead classify the realised
@@ -171,7 +199,7 @@ class ContinuousLearningService:
     # ------------------------------------------------------------------
 
     async def handle_order_filled(self, event: Event) -> None:
-        """Record a filled order outcome in the feedback loop.
+        """Observe a filled order (log only for now).
 
         The orders stream carries the full order lifecycle (created / filled /
         rejected / cancelled); only fills represent an outcome, so everything
@@ -182,18 +210,11 @@ class ContinuousLearningService:
 
         order_id = getattr(event, "order_id", event.payload.get("order_id", ""))
         fill_price = getattr(event, "fill_price", event.payload.get("fill_price", 0.0))
-        fill_quantity = getattr(event, "fill_quantity", event.payload.get("fill_quantity", 0.0))
-        commission = getattr(event, "commission", event.payload.get("commission", 0.0))
 
-        # Use order_id as prediction_id linkage (simplified; production would
-        # maintain an order->prediction mapping).
-        trade_pnl = fill_price * fill_quantity - commission
-        self._feedback_loop.record_outcome(
-            prediction_id=order_id,
-            actual_return=0.0,  # Updated later when position is closed
-            trade_pnl=trade_pnl,
-        )
-
+        # No feedback-loop record here: fill_price * quantity is NOTIONAL, not
+        # P&L, and order_id never matches a registered prediction_id. Real
+        # P&L attribution needs an order->prediction map (deliberately not
+        # built yet).
         logger.debug(
             "continuous_learning.order_filled",
             order_id=order_id,
@@ -207,6 +228,21 @@ class ContinuousLearningService:
         direction = getattr(event, "direction", event.payload.get("direction", ""))
         confidence = getattr(event, "confidence", event.payload.get("confidence", 0.0))
         prediction_id = event.event_id
+
+        # Score against the event's CREATION time, not consumption time --
+        # under backlog replay the two differ by minutes and t0 would land on
+        # the wrong bars. Events past their outcome window are not tracked.
+        event_time = event.timestamp or datetime.now(UTC)
+        if event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=UTC)
+        if datetime.now(UTC) - event_time > _STALE_EVENT_CUTOFF:
+            logger.debug(
+                "continuous_learning.stale_prediction_skipped",
+                model_id=model_id,
+                symbol=symbol,
+                event_timestamp=event_time.isoformat(),
+            )
+            return
 
         self._evaluator.record_prediction(
             prediction_id=prediction_id,
@@ -224,7 +260,7 @@ class ContinuousLearningService:
                 "symbol": symbol,
                 "predicted": direction,
                 "confidence": confidence,
-                "timestamp": datetime.now(UTC),
+                "timestamp": event_time,
             }
         )
 
@@ -295,27 +331,58 @@ class ContinuousLearningService:
         """Resolve real outcomes for tracked predictions past the horizon.
 
         For every tracked prediction without an ``actual`` and older than
-        HORIZON + GRACE, look up the 1m ohlcv close at (or just before) the
-        prediction time and at (or just after) prediction time + HORIZON,
-        compute the realised return, classify its direction, and feed the
-        outcome to the evaluator and the feedback loop.
+        HORIZON + GRACE, look up the 1m ohlcv bar at (or just before) the
+        prediction time and the bar-grid bar one HORIZON later, compute the
+        realised return, classify its direction, and feed the outcome to the
+        evaluator and the feedback loop. Afterwards, prune records that keep
+        the tracked set bounded: unresolved records past _UNRESOLVABLE_AFTER
+        and resolved records beyond _MAX_RESOLVED_PER_MODEL.
         """
-        cutoff = datetime.now(UTC) - (_OUTCOME_HORIZON + _OUTCOME_GRACE)
+        now = datetime.now(UTC)
+        matured_cutoff = now - (_OUTCOME_HORIZON + _OUTCOME_GRACE)
+        expiry_cutoff = now - _UNRESOLVABLE_AFTER
         resolved = 0
+        expired = 0
 
         factory = self._get_session_factory()
         async with factory() as session:
-            for records in self._tracked_predictions.values():
+            # Snapshot the dict: handle_prediction can insert a NEW model_id
+            # key during the awaits below (first prediction after a hot
+            # reload), which would raise RuntimeError on a live view.
+            for records in list(self._tracked_predictions.values()):
                 for record in records:
                     if "actual" in record:
                         continue
+                    if record["timestamp"] <= expiry_cutoff:
+                        continue  # dropped in the prune pass below
                     if not record.get("symbol"):
-                        continue  # legacy record without a symbol; unresolvable
-                    if record["timestamp"] > cutoff:
+                        continue  # no symbol; unresolvable, expires above
+                    if record["timestamp"] > matured_cutoff:
                         continue  # not matured yet
                     if await self._resolve_record(session, record):
                         resolved += 1
 
+        # Prune pass (no awaits, so atomic w.r.t. the event loop): drop
+        # expired unresolved records and cap resolved history per model,
+        # keeping arrival order for the drift midpoint split.
+        for model_id, records in list(self._tracked_predictions.items()):
+            overflow = sum(1 for r in records if "actual" in r) - _MAX_RESOLVED_PER_MODEL
+            kept: list[dict[str, Any]] = []
+            for record in records:
+                if "actual" in record:
+                    if overflow > 0:
+                        overflow -= 1
+                        continue  # oldest resolved beyond the cap
+                elif record["timestamp"] <= expiry_cutoff:
+                    expired += 1
+                    continue
+                kept.append(record)
+            self._tracked_predictions[model_id] = kept
+
+        if expired:
+            logger.debug(
+                "continuous_learning.unresolvable_expired", count=expired
+            )
         if resolved:
             logger.info("continuous_learning.outcomes_resolved", count=resolved)
 
@@ -326,12 +393,24 @@ class ContinuousLearningService:
         symbol: str = record["symbol"]
         ts: datetime = record["timestamp"]
 
-        close_t0 = await self._lookup_close(session, symbol, ts, after=False)
-        close_t5 = await self._lookup_close(
-            session, symbol, ts + _OUTCOME_HORIZON, after=True
+        # t0: newest bar in the bounded window before the prediction.
+        t0_bar = await self._lookup_bar(
+            session, symbol, ts - _T0_LOOKBACK, ts, latest=True
         )
-        if close_t0 is None or close_t5 is None or close_t0 <= 0:
-            return False  # bars not (yet) available; retry next pass
+        if t0_bar is None:
+            return False  # no bar near the prediction; retry until expiry
+        t0_time, close_t0 = t0_bar
+
+        # t5: first bar on the bar grid at t0 + horizon (plus slack). Missing
+        # means the session closed / feed halted -- unresolvable, NOT scored
+        # against whatever bar comes next.
+        target = t0_time + _OUTCOME_HORIZON
+        t5_bar = await self._lookup_bar(
+            session, symbol, target, target + _T5_SLACK, latest=False
+        )
+        if t5_bar is None or close_t0 <= 0:
+            return False
+        _, close_t5 = t5_bar
 
         actual_return = (close_t5 - close_t0) / close_t0
         # See _ACTUAL_RETURN_THRESHOLD for why realised direction uses a
@@ -347,7 +426,18 @@ class ContinuousLearningService:
         record["actual_return"] = actual_return
         prediction_id: str = record["prediction_id"]
         self._evaluator.record_outcome(prediction_id, actual_direction, actual_return)
-        self._feedback_loop.record_outcome(prediction_id, actual_return, trade_pnl=0.0)
+
+        # The feedback loop gets the DIRECTION-SIGNED return (what the model's
+        # call would have earned), otherwise its Sharpe measures market drift
+        # rather than model skill.
+        predicted = record.get("predicted", "")
+        if predicted == "long":
+            signed_return = actual_return
+        elif predicted == "short":
+            signed_return = -actual_return
+        else:
+            signed_return = 0.0
+        self._feedback_loop.record_outcome(prediction_id, signed_return, trade_pnl=0.0)
 
         logger.debug(
             "continuous_learning.outcome_resolved",
@@ -359,20 +449,35 @@ class ContinuousLearningService:
         return True
 
     @staticmethod
-    async def _lookup_close(
-        session: AsyncSession, symbol: str, ts: datetime, *, after: bool
-    ) -> float | None:
-        """Return the 1m close at-or-just-after (or at-or-just-before) *ts*."""
-        stmt = select(OHLCVRecord.close).where(
-            OHLCVRecord.symbol == symbol,
-            OHLCVRecord.timeframe == "1m",
+    async def _lookup_bar(
+        session: AsyncSession,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        latest: bool,
+    ) -> tuple[datetime, float] | None:
+        """Return (time, close) of a 1m bar with time in [start, end].
+
+        ``latest`` picks the newest bar in the window, else the oldest;
+        returns ``None`` when the window contains no bar.
+        """
+        stmt = (
+            select(OHLCVRecord.time, OHLCVRecord.close)
+            .where(
+                OHLCVRecord.symbol == symbol,
+                OHLCVRecord.timeframe == "1m",
+                OHLCVRecord.time >= start,
+                OHLCVRecord.time <= end,
+            )
+            .order_by(OHLCVRecord.time.desc() if latest else OHLCVRecord.time.asc())
+            .limit(1)
         )
-        if after:
-            stmt = stmt.where(OHLCVRecord.time >= ts).order_by(OHLCVRecord.time.asc())
-        else:
-            stmt = stmt.where(OHLCVRecord.time <= ts).order_by(OHLCVRecord.time.desc())
-        close = (await session.execute(stmt.limit(1))).scalar_one_or_none()
-        return None if close is None else float(close)
+        row = (await session.execute(stmt)).first()
+        if row is None:
+            return None
+        bar_time, close = row
+        return bar_time, float(close)
 
     async def _run_evaluation_cycle(self) -> None:
         """Execute one full evaluation cycle."""
@@ -395,7 +500,11 @@ class ContinuousLearningService:
             predictions = [
                 p for p in self._tracked_predictions.get(model_id, []) if "actual" in p
             ]
-            if len(predictions) >= 100:
+            if len(predictions) >= _DRIFT_MIN_RESOLVED:
+                # Rolling window: recent half vs prior half of the newest
+                # _DRIFT_WINDOW records; all-history halves would numb the
+                # comparison as history accumulates.
+                predictions = predictions[-_DRIFT_WINDOW:]
                 midpoint = len(predictions) // 2
                 older = predictions[:midpoint]
                 recent = predictions[midpoint:]
@@ -419,6 +528,7 @@ class ContinuousLearningService:
                         drift_type="prediction",
                         score=drift_report.drift_score,
                         threshold=drift_report.threshold,
+                        model_id=model_id,
                     )
                     await self._event_bus.publish(_SYSTEM_STREAM, drift_event)
 

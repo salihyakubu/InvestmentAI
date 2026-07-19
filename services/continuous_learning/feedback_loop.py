@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,6 +10,15 @@ import numpy as np
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Outcomes older than this are dead weight: compute_model_metrics already
+# ignores them, so they are pruned on each metrics pass to bound _outcomes
+# (this also clears orphaned entries whose ids never matched a prediction).
+_OUTCOME_RETENTION_DAYS = 30
+
+# Cap per-model prediction-id history; oldest ids fall off the deque. Matches
+# the evaluator's retention so both stay bounded at soak cadence.
+_MAX_PREDICTIONS_PER_MODEL = 20_000
 
 
 class TradingFeedbackLoop:
@@ -22,8 +31,10 @@ class TradingFeedbackLoop:
     def __init__(self) -> None:
         # prediction_id -> outcome record
         self._outcomes: dict[str, dict[str, Any]] = {}
-        # model_id -> list of prediction_ids
-        self._model_predictions: dict[str, list[str]] = defaultdict(list)
+        # model_id -> bounded history of prediction_ids (oldest evicted first)
+        self._model_predictions: dict[str, deque[str]] = defaultdict(
+            lambda: deque(maxlen=_MAX_PREDICTIONS_PER_MODEL)
+        )
 
     # ------------------------------------------------------------------
     # Recording
@@ -73,8 +84,17 @@ class TradingFeedbackLoop:
             Dictionary with total_pnl, avg_return, win_rate, sharpe estimate,
             and sample_size.
         """
+        # Prune outcomes past the retention horizon before scanning; windows
+        # wider than _OUTCOME_RETENTION_DAYS are therefore capped at retention.
+        retention_cutoff = datetime.now(UTC) - timedelta(days=_OUTCOME_RETENTION_DAYS)
+        stale = [
+            pid for pid, o in self._outcomes.items() if o["recorded_at"] < retention_cutoff
+        ]
+        for pid in stale:
+            del self._outcomes[pid]
+
         cutoff = datetime.now(UTC) - timedelta(days=window_days)
-        pred_ids = self._model_predictions.get(model_id, [])
+        pred_ids = self._model_predictions.get(model_id, deque())
 
         pnl_values: list[float] = []
         returns: list[float] = []

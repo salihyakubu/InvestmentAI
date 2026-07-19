@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -57,7 +58,9 @@ class PredictionService:
         self._event_bus = event_bus
         self._settings = settings
         self._model_server = model_server
-        self._prediction_history: list[Prediction] = []
+        # Bounded audit buffer: the only consumer reads the last 100, so an
+        # unbounded list would just leak memory over a long soak.
+        self._prediction_history: deque[Prediction] = deque(maxlen=1000)
         self._running = False
         # Minimum confidence to emit a non-flat (tradeable) signal; below this the
         # prediction abstains (flat). Wires up settings.min_prediction_confidence.
@@ -255,4 +258,4 @@ class PredictionService:
     @property
     def recent_predictions(self) -> list[Prediction]:
         """Return the last 100 predictions."""
-        return self._prediction_history[-100:]
+        return list(self._prediction_history)[-100:]

@@ -127,8 +127,11 @@ class AutoRetrainer:
         if X_train is None or y_train is None or X_val is None or y_val is None:
             return {"skipped": True, "reason": "no_training_data"}
 
-        # Train new model
-        result, new_model = self._trainer.train_model(
+        # Train new model. Training is CPU-bound and can run for minutes; on
+        # the event loop it starves every Redis consumer, so push it to a
+        # thread (to_thread forwards kwargs).
+        result, new_model = await asyncio.to_thread(
+            self._trainer.train_model,
             model_type=model_type,
             X_train=X_train,
             y_train=y_train,

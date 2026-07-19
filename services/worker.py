@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -260,7 +262,10 @@ async def _run() -> None:
     settings = get_settings()
     event_bus = EventBus(redis_url=settings.redis_url)
 
-    logger.info("worker.initializing", redis_url=settings.redis_url)
+    # Log only host:port -- the full URL embeds the Redis password, and log
+    # stores are far more widely readable than the secret store.
+    redis_host = urlsplit(settings.redis_url).netloc.rsplit("@", 1)[-1]
+    logger.info("worker.initializing", redis_host=redis_host)
 
     services = await _build_services(event_bus, settings)
 
@@ -348,6 +353,12 @@ async def _run() -> None:
 
 def main() -> None:
     """Synchronous entry point."""
+    level = getattr(logging, get_settings().log_level.upper(), logging.INFO)
+    # Configure BOTH logging stacks: structlog carries most worker services,
+    # but prediction/portfolio/execution use stdlib logging, whose default
+    # WARNING threshold was silently hiding their INFO lines (e.g. the
+    # hot-reload confirmation) from production logs.
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s %(message)s")
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -355,7 +366,7 @@ def main() -> None:
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.dev.ConsoleRenderer(),
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(0),
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
