@@ -199,7 +199,11 @@ async def _build_services(
 
     metrics = MetricsCollector()
     health_checker = HealthChecker(
-        database_url=settings.database_url,
+        # async_database_url, not the raw URL: Railway supplies postgresql://,
+        # whose default SQLAlchemy dialect is psycopg2 (not installed) -- the
+        # async probe needs the +asyncpg scheme or it crashes and fires false
+        # "database Unhealthy" criticals every cycle.
+        database_url=settings.async_database_url,
         redis_url=settings.redis_url,
     )
     alert_manager = AlertManager(webhook_url=None)  # Set via env in production
