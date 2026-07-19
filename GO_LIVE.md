@@ -225,3 +225,55 @@ Honest caveats, recorded so the numbers are not over-read:
   refreshes xgboost only; lightgbm retrains require per-member iteration (follow-up).
 - Outcome tracking is in-memory: a worker restart clears unresolved predictions
   (they re-accumulate within minutes; the `predictions` DB table is unaffected).
+
+## Soak-hardening record (2026-07-19) — adversarial audit + fixes
+
+A 4-dimension adversarial audit (memory growth, outcome correctness, drift wiring,
+live health) of the new learning loop produced 30 findings; the load-bearing ones
+were fixed the same evening:
+
+- **Autonomous trade path was DEAD (critical):** the portfolio optimizer subscribed
+  to stream `predictions` while predictions publish on `predictions.ready`, and
+  nothing ever called `optimize()`/`trigger_rebalance()`. The flat equity and zero
+  positions of the soak were a dead wire, not conservative gating. Now: correct
+  stream, a rebalance trigger (long-only, confidence ≥ 0.6, 120 s freshness,
+  300 s cooldown), reference prices from `market.prices`, and explicit weight-0
+  exits for symbols that stop qualifying. **The AI can now open paper positions
+  autonomously**; risk sizing/limits and the kill switch govern it.
+- **Retraining froze the worker (high, observed live):** the 19:32Z retrain ran
+  synchronously on the event loop for ~60 s — every Redis consumer timed out and
+  Railway dropped 682 log lines. Training now runs in a worker thread.
+- **Memory retention (critical):** the learning stack quadruple-stored every
+  prediction in unbounded structures (~15-30 MB/day; OOM risk mid-soak) — all
+  four stores now capped/pruned (20 k records per model, 30-day feedback prune,
+  1 k prediction history) with drift/evaluation semantics preserved.
+- **Redis streams capped (critical):** events were XADD'd with no MAXLEN and acks
+  never delete — Redis itself would fill within weeks and stall all publishing.
+  All publishes now cap at ~100 k entries per stream.
+- **Outcome windows bounded (high):** a stock prediction near session close was
+  scored against the NEXT session's first bar (overnight gap recorded as a
+  5-minute outcome). Lookups are now bar-grid-bounded (t0 within 10 min back,
+  t+5 m within 3 min slack); unresolvable records expire after 60 min. Tracking
+  now uses event creation time and skips stale backlog (> 10 min old).
+- **Drift statistics fixed (medium):** the ≥100-record gate made the 5 pp drift
+  threshold a coin flip (~31 % false fire) — now ≥1000 resolved records over a
+  rolling 2000-record window (~1 %). `DriftDetectedEvent` now carries `model_id`.
+- **Feedback loop de-garbaged (medium):** returns are now signed by the predicted
+  direction (Sharpe measures skill, not market drift) and the notional-as-PnL
+  order-fill write was removed.
+- **Log hygiene:** worker no longer logs the full Redis URL (password) at startup;
+  log level is settings-driven (INFO default — DEBUG tripped Railway's 500
+  logs/sec drop limit); stdlib-logging INFO lines (e.g. hot-reload confirmation)
+  are now visible in production.
+
+**Operator actions arising:**
+- **Rotate the Redis password** (Railway → Redis service): the old value is baked
+  into historical deploy logs.
+- `ALERT_WEBHOOK_URL` still unset — alert-delivery rehearsal remains open.
+
+**Known gaps accepted for now (documented, not hidden):** feature-drift detection
+(`DataDriftDetector.detect_feature_drift`) remains unwired (needs per-symbol
+reference distributions; pooled shortcuts would false-alarm nightly); learning
+state is in-memory and resets on deploy; no consumer-group XAUTOCLAIM reclaim
+(at-most-once delivery on crash mid-handler); lightgbm auto-retrain pending the
+ensemble-member fix (separate session).

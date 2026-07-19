@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # Type alias for async event handler callbacks.
 EventHandler = Callable[["Event"], Awaitable[None]]
 
+# Approximate per-stream cap for XADD MAXLEN. Consumer-group acks never delete
+# entries, so without a cap streams grow until Redis OOMs. 100k covers ~5-8
+# days of the busiest stream — far above worst-case consumer lag.
+STREAM_MAXLEN = 100_000
+
 
 class Event(BaseModel):
     """Base event that flows through the platform event bus."""
@@ -82,7 +87,9 @@ class EventBus:
         """
         r = await self._get_redis()
         data = {"event": event.model_dump_json()}
-        message_id: str = await r.xadd(stream, data)
+        message_id: str = await r.xadd(
+            stream, data, maxlen=STREAM_MAXLEN, approximate=True
+        )
         logger.debug("Published %s to %s (msg=%s)", event.event_type, stream, message_id)
         return message_id
 

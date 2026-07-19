@@ -218,11 +218,12 @@ class MonitoringService:
         if event_type == "DriftDetectedEvent":
             drift_type = getattr(event, "drift_type", event.payload.get("drift_type", ""))
             score = getattr(event, "score", event.payload.get("score", 0))
+            model_id = getattr(event, "model_id", event.payload.get("model_id", ""))
             await self._alert_manager.send_alert(
                 severity=Severity.WARNING,
                 title="Model Drift Detected",
                 message=f"{drift_type} drift detected with score {score:.4f}",
-                details={"drift_type": drift_type, "score": score},
+                details={"drift_type": drift_type, "score": score, "model_id": model_id},
             )
 
     # ------------------------------------------------------------------

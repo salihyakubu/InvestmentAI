@@ -24,7 +24,12 @@ ORDERS = "orders"
 # API -> Execution: a manual order request for the worker to execute.
 ORDER_INTENTS = "order.intents"
 
-# Prediction -> Portfolio: model predictions ready for optimisation.
+# Prediction -> Portfolio: model predictions ready for optimisation. This is
+# the stream the prediction service actually publishes on.
+PREDICTIONS_READY = "predictions.ready"
+
+# Legacy prediction stream name; superseded by PREDICTIONS_READY. Kept so any
+# out-of-tree consumer groups keep resolving -- do not point new code here.
 PREDICTIONS = "predictions"
 
 # API (admin) -> Execution: operator control commands (halt / resume / flatten).

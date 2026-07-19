@@ -34,6 +34,11 @@ _CONSUMER_GROUP = "execution-engine"
 # Polling interval for pending order monitoring (seconds).
 _POLL_INTERVAL = 2.0
 
+# CONTROL-stream actions owned by other services (each consumer group sees
+# every control event); logged at debug so a valid request is not misread as
+# a failure. "retrain" belongs to the continuous-learning service.
+_FOREIGN_CONTROL_ACTIONS = frozenset({"retrain"})
+
 
 class ExecutionEngineService:
     """Top-level execution service.
@@ -221,6 +226,8 @@ class ExecutionEngineService:
         elif action == "flatten":
             result = await self.emergency_flatten()
             logger.warning("control_flatten_result", **result)
+        elif action in _FOREIGN_CONTROL_ACTIONS:
+            logger.debug("control_foreign_action", action=action)
         else:
             logger.warning("control_unknown_action", action=action)
 
