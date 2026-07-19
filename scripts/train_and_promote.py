@@ -38,17 +38,18 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
 
 from core.enums import TimeFrame
-from services.feature_engineering.feature_store import FeatureStore
+from services.prediction.training.dataset_builder import (
+    HORIZON,
+    MIN_VAL_ACCURACY,
+    WINDOW,  # noqa: F401  # re-exported: window size is part of this script's documented contract
+    bars_matrix,
+    build_dataset,
+)
 
 CRYPTO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT", "DOT/USDT"]
 STOCK_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
-
-WINDOW = 200          # live feature buffer size (feature_engineering/service.py)
-HORIZON = 5           # label horizon in bars == prediction service semantics
-MIN_VAL_ACCURACY = 0.34  # must beat the 1/3 random baseline out of sample
 
 
 async def _fetch_crypto(symbol: str, days: int) -> list[Any]:
@@ -75,63 +76,16 @@ async def _fetch_stock(symbol: str) -> list[Any]:
     )
 
 
-def _bars_matrix(bars: list[Any]) -> dict[str, np.ndarray]:
-    return {
-        "open": np.array([b.open for b in bars], dtype=np.float64),
-        "high": np.array([b.high for b in bars], dtype=np.float64),
-        "low": np.array([b.low for b in bars], dtype=np.float64),
-        "close": np.array([b.close for b in bars], dtype=np.float64),
-        "volume": np.array([b.volume for b in bars], dtype=np.float64),
-    }
-
-
-def _replay_features(
-    symbol: str, cols: dict[str, np.ndarray], stride: int, store: FeatureStore
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Rolling 200-bar replay of the live feature computation.
-
-    Returns (X, close_at_window_end, feature_names). Stride = HORIZON keeps the
-    forward-return labels non-overlapping. Windowed replay (not full-history
-    indicators) is mandatory: obv / volume-profile depend on the window itself
-    and ema/macd/rsi/atr/adx are path-dependent, so only this reproduces the
-    numbers the worker computes live.
-    """
-    n = len(cols["close"])
-    names: list[str] | None = None
-    rows: list[list[float]] = []
-    closes: list[float] = []
-    for end_i in range(WINDOW, n + 1, stride):
-        window = {k: v[end_i - WINDOW : end_i] for k, v in cols.items()}
-        feats = store.compute_all_features(symbol, pl.DataFrame(window))
-        if names is None:
-            names = sorted(feats)
-        rows.append([float(feats.get(k, 0.0)) for k in names])
-        closes.append(float(window["close"][-1]))
-    if names is None:
-        return np.empty((0, 0)), np.empty(0), []
-    return np.asarray(rows, dtype=np.float64), np.asarray(closes), names
-
-
-def _forward_returns(closes: np.ndarray, horizon: int) -> np.ndarray:
-    return (closes[horizon:] - closes[:-horizon]) / closes[:-horizon]
-
-
 async def _build_dataset(
     crypto_days: int, stride: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
-    """Fetch, replay features, label, and split -> pooled train/val arrays."""
-    store = FeatureStore(db_session=None, redis=None)
-    per_symbol: list[tuple[str, np.ndarray, np.ndarray]] = []
-    names: list[str] = []
+    """Fetch real bars, then delegate replay/label/split to the shared builder."""
+    per_symbol_cols: dict[str, dict[str, np.ndarray]] = {}
 
     for sym in CRYPTO_SYMBOLS:
         bars = await _fetch_crypto(sym, crypto_days)
         print(f"  {sym}: {len(bars)} 1m bars")
-        if len(bars) < WINDOW + HORIZON * 3:
-            continue
-        X, closes, n = _replay_features(sym, _bars_matrix(bars), stride, store)
-        names = names or n
-        per_symbol.append((sym, X, closes))
+        per_symbol_cols[sym] = bars_matrix(bars)
 
     for sym in STOCK_SYMBOLS:
         try:
@@ -140,40 +94,12 @@ async def _build_dataset(
             print(f"  {sym}: fetch failed ({exc}); skipping")
             continue
         print(f"  {sym}: {len(bars)} 1m bars")
-        if len(bars) < WINDOW + HORIZON * 3:
-            continue
-        X, closes, n = _replay_features(sym, _bars_matrix(bars), stride, store)
-        names = names or n
-        per_symbol.append((sym, X, closes))
+        per_symbol_cols[sym] = bars_matrix(bars)
 
-    if not per_symbol:
-        raise SystemExit("no symbol produced data -- aborting")
-
-    # Pooled, data-driven label thresholds for the 5-minute horizon.
-    pooled = np.concatenate([_forward_returns(c, HORIZON) for _, _, c in per_symbol])
-    lo, hi = np.percentile(pooled, [30, 70])
-    print(f"  label thresholds (5-bar fwd return): short<={lo:.5f}  long>={hi:.5f}")
-
-    tr_X, tr_y, tr_r, va_X, va_y, va_r = [], [], [], [], [], []
-    for _sym, X, closes in per_symbol:
-        r = _forward_returns(closes, HORIZON)
-        Xs = X[: len(r)]
-        y = np.ones(len(r), dtype=np.int64)
-        y[r <= lo] = 0
-        y[r >= hi] = 2
-        split = int(len(Xs) * 0.8)  # chronological within each symbol
-        tr_X.append(Xs[:split])
-        tr_y.append(y[:split])
-        tr_r.append(r[:split])
-        va_X.append(Xs[split:])
-        va_y.append(y[split:])
-        va_r.append(r[split:])
-
-    return (
-        np.concatenate(tr_X), np.concatenate(tr_y), np.concatenate(tr_r),
-        np.concatenate(va_X), np.concatenate(va_y), np.concatenate(va_r),
-        names,
-    )
+    try:
+        return build_dataset(per_symbol_cols, stride=stride)
+    except ValueError as exc:
+        raise SystemExit(f"{exc} -- aborting") from exc
 
 
 def _write_db_metadata(rows: list[dict[str, Any]]) -> None:
@@ -228,6 +154,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--write-db", action="store_true",
                         help="mirror metadata into model_metadata via DATABASE_URL")
     args = parser.parse_args(argv[1:])
+
+    # Surface the shared dataset builder's label-threshold line on stdout.
+    import logging
+
+    logging.basicConfig(format="%(message)s")
+    logging.getLogger("services.prediction.training.dataset_builder").setLevel(logging.INFO)
 
     print("[1/5] Fetching real 1-minute history + replaying live features ...")
     tr_X, tr_y, tr_r, va_X, va_y, va_r, names = asyncio.run(

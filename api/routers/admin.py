@@ -23,7 +23,7 @@ router = APIRouter()
 
 
 class ControlRequest(BaseModel):
-    action: Literal["halt", "resume", "flatten"]
+    action: Literal["halt", "resume", "flatten", "retrain"]
     reason: str = ""
 
 
@@ -40,8 +40,10 @@ async def trading_control(
     """Publish an operator control command to the execution engine.
 
     ``halt`` stops new orders; ``resume`` lifts a halt; ``flatten`` cancels all
-    open orders, closes every position, and halts. Asynchronous: 202 means the
-    command was published -- confirm the effect via worker logs / positions.
+    open orders, closes every position, and halts. ``retrain`` triggers an
+    immediate evaluation/retrain cycle in the worker's continuous-learning
+    service. Asynchronous: 202 means the command was published -- confirm the
+    effect via worker logs / positions.
     """
     if user.get("role") != "admin":
         raise HTTPException(

@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     # ML
     model_artifact_path: str = "model_artifacts"
     retrain_interval_hours: int = 168
+    # How many days of 1m bars the AutoRetrainer loads for a retraining run.
+    retrain_lookback_days: int = 7
     min_prediction_confidence: float = 0.6
     ensemble_min_agreement: int = 3
 

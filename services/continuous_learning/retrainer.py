@@ -2,17 +2,39 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
 import structlog
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
+from core.models.market_data import OHLCVRecord
+from core.models.ml_models import ModelMetadata as DBModelMetadata
 from services.prediction.registry import ModelRegistry
+from services.prediction.training.dataset_builder import (
+    MIN_VAL_ACCURACY,
+    bars_matrix,
+    build_dataset,
+)
 from services.prediction.training.trainer import ModelTrainer
 
 logger = structlog.get_logger(__name__)
+
+_TrainingData = tuple[
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    list[str] | None,
+]
+
+_NO_DATA: _TrainingData = (None, None, None, None, None, None, None)
 
 
 class AutoRetrainer:
@@ -28,14 +50,24 @@ class AutoRetrainer:
         trainer: ModelTrainer,
         registry: ModelRegistry,
         settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._trainer = trainer
         self._registry = registry
         self._settings = settings
+        # Resolved lazily so constructing the retrainer never requires a DB.
+        self._session_factory = session_factory
         # model_id -> datetime of last successful retrain
         self._last_trained: dict[str, datetime] = {}
         # model_id -> drift detected flag
         self._drift_flags: dict[str, bool] = {}
+
+    def _get_session_factory(self) -> async_sessionmaker[AsyncSession]:
+        if self._session_factory is None:
+            from core.models.base import get_async_session_factory
+
+            self._session_factory = get_async_session_factory()
+        return self._session_factory
 
     # ------------------------------------------------------------------
     # Should retrain?
@@ -86,21 +118,27 @@ class AutoRetrainer:
             logger.warning("retrainer.retrain.unknown_model", model_id=model_id)
             return {"skipped": True, "reason": "unknown_model"}
 
-        # Load training data
-        X_train, y_train, X_val, y_val, feature_names = self._load_training_data(model_id)
-        if X_train is None:
+        # Load training data (recent 1m bars -> serve-time feature replay)
+        (
+            X_train, y_train, returns_train,
+            X_val, y_val, returns_val,
+            feature_names,
+        ) = await self._load_training_data(model_id)
+        if X_train is None or y_train is None or X_val is None or y_val is None:
             return {"skipped": True, "reason": "no_training_data"}
 
         # Train new model
         result, new_model = self._trainer.train_model(
             model_type=model_type,
             X_train=X_train,
-            y_train=y_train,  # type: ignore[arg-type]  # _load_training_data returns all-None or all-set together; X_train guard above rules out None
-            X_val=X_val,  # type: ignore[arg-type]  # see y_train note
-            y_val=y_val,  # type: ignore[arg-type]  # see y_train note
+            y_train=y_train,
+            X_val=X_val,
+            y_val=y_val,
             hyperopt=True,
             n_trials=30,
             feature_names=feature_names,
+            returns_train=returns_train,
+            returns_val=returns_val,
         )
 
         new_metrics = result.to_metrics()
@@ -128,6 +166,10 @@ class AutoRetrainer:
             metrics=new_metrics,
         )
         self._registry.promote(new_model_id, version)
+
+        # Mirror into the DB model_metadata table (backs GET /api/v1/models).
+        # Best-effort: a DB hiccup must not undo a successful retrain+promote.
+        await self._mirror_metadata_to_db(model_type, version, new_metrics)
 
         self._last_trained[model_id] = datetime.now(UTC)
         self._drift_flags[model_id] = False
@@ -160,48 +202,133 @@ class AutoRetrainer:
                 return known
         return None
 
-    def _load_training_data(
-        self, model_id: str
-    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, list[str] | None]:
-        """Load training data for the given model.
+    async def _load_training_data(self, model_id: str) -> _TrainingData:
+        """Build a training dataset from recent 1-minute bars in the DB.
 
-        In production this would pull from the feature store / database.
-        Returns ``(X_train, y_train, X_val, y_val, feature_names)`` or
-        all ``None`` if data is unavailable.
+        Loads ``settings.retrain_lookback_days`` of 1m OHLCV history, then
+        replays the live feature pipeline over it via the shared
+        ``dataset_builder`` (the same code path the bootstrap training script
+        uses, so retrained models see serve-time feature semantics).
+
+        Returns ``(X_train, y_train, returns_train, X_val, y_val, returns_val,
+        feature_names)`` or all ``None`` if data is unavailable.
         """
         try:
-            data = self._trainer.data_loader.load_training_data(
-                features=np.empty((0, 0)),
-                close_prices=np.empty(0),
+            cutoff = datetime.now(UTC) - timedelta(days=self._settings.retrain_lookback_days)
+            stmt = (
+                select(
+                    OHLCVRecord.time,
+                    OHLCVRecord.symbol,
+                    OHLCVRecord.open,
+                    OHLCVRecord.high,
+                    OHLCVRecord.low,
+                    OHLCVRecord.close,
+                    OHLCVRecord.volume,
+                )
+                .where(OHLCVRecord.timeframe == "1m", OHLCVRecord.time >= cutoff)
+                .order_by(OHLCVRecord.symbol, OHLCVRecord.time)
             )
-            if data.X.size == 0:
-                return None, None, None, None, None
+            factory = self._get_session_factory()
+            async with factory() as session:
+                rows = (await session.execute(stmt)).all()
 
-            split = int(len(data.X) * 0.8)
-            return (
-                data.X[:split],
-                data.y[:split],
-                data.X[split:],
-                data.y[split:],
-                data.feature_names,
-            )
+            if not rows:
+                logger.info("retrainer.load_data.empty", model_id=model_id)
+                return _NO_DATA
+
+            per_symbol_rows: dict[str, list[Any]] = {}
+            for row in rows:
+                per_symbol_rows.setdefault(row.symbol, []).append(row)
+            per_symbol_cols = {
+                sym: bars_matrix(sym_rows) for sym, sym_rows in per_symbol_rows.items()
+            }
+
+            # The rolling feature replay is CPU-bound; keep the event loop free.
+            return await asyncio.to_thread(build_dataset, per_symbol_cols)
+        except ValueError as exc:  # no symbol had enough bars -> skip, not error
+            logger.info("retrainer.load_data.insufficient", model_id=model_id, reason=str(exc))
+            return _NO_DATA
         except Exception:
             logger.exception("retrainer.load_data.error", model_id=model_id)
-            return None, None, None, None, None
+            return _NO_DATA
+
+    async def _mirror_metadata_to_db(
+        self, model_type: str, version: int, metrics: dict[str, Any]
+    ) -> None:
+        """Upsert the promoted version into ``model_metadata`` (best-effort).
+
+        GET /api/v1/models reads from the DB table, not the filesystem
+        registry, so without this mirror retrained versions would be invisible
+        to the API. Failure is logged but never propagated: the filesystem
+        registry is the serving source of truth.
+        """
+        try:
+            artifact_path = ""
+            for entry in self._registry.list_versions(model_type):
+                if entry.version == version:
+                    artifact_path = entry.artifact_path
+                    break
+
+            now = datetime.now(UTC)
+            factory = self._get_session_factory()
+            async with factory() as session:
+                # Deactivate prior versions of this model name.
+                await session.execute(
+                    update(DBModelMetadata)
+                    .where(DBModelMetadata.model_name == model_type)
+                    .values(is_active=False)
+                )
+                existing = (
+                    await session.execute(
+                        select(DBModelMetadata).where(
+                            DBModelMetadata.model_name == model_type,
+                            DBModelMetadata.version == version,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is not None:
+                    existing.validation_metrics = metrics
+                    existing.artifact_path = artifact_path
+                    existing.trained_at = now
+                    existing.is_active = True
+                else:
+                    session.add(
+                        DBModelMetadata(
+                            model_name=model_type,
+                            model_type=model_type,
+                            version=version,
+                            hyperparameters={"retrained": True},
+                            validation_metrics=metrics,
+                            artifact_path=artifact_path,
+                            trained_at=now,
+                            is_active=True,
+                            created_at=now,
+                        )
+                    )
+                await session.commit()
+            logger.info("retrainer.db_mirror.ok", model_name=model_type, version=version)
+        except Exception:
+            logger.exception(
+                "retrainer.db_mirror.failed", model_name=model_type, version=version
+            )
 
     @staticmethod
     def _validate_new_model(
         new_metrics: dict[str, Any],
         old_metrics: dict[str, Any],
     ) -> bool:
-        """Return ``True`` if the new model is at least as good as the old one.
+        """Return ``True`` if the challenger may replace the champion.
 
-        Compares validation accuracy; if unavailable, accepts the new model.
+        The challenger must beat the absolute out-of-sample floor
+        (``MIN_VAL_ACCURACY``, vs the 1/3 random baseline) AND be at least as
+        accurate as the current champion (when one exists).
         """
+        new_acc = float(new_metrics.get("val_accuracy", new_metrics.get("accuracy", 0.0)))
+        if new_acc < MIN_VAL_ACCURACY:
+            return False
+
         if not old_metrics:
             return True
 
-        new_acc: float = new_metrics.get("val_accuracy", new_metrics.get("accuracy", 0))
-        old_acc: float = old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0))
-
+        old_acc = float(old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0.0)))
         return new_acc >= old_acc

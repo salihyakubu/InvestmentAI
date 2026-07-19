@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -10,8 +11,9 @@ from typing import Any
 import numpy as np
 
 from core.enums import SignalDirection
-from core.events.base import EventBus
+from core.events.base import Event, EventBus
 from core.events.signal_events import FeaturesReadyEvent, PredictionReadyEvent
+from core.events.streams import SYSTEM
 from services.prediction.models.base import PredictionOutput
 from services.prediction.registry import ModelMetadata
 from services.prediction.serving import ModelServer
@@ -81,6 +83,16 @@ class PredictionService:
             handler=self.handle_features_ready,  # type: ignore[arg-type]  # bus routes only FeaturesReadyEvent to this stream
         )
 
+        # Hot-reload newly promoted model versions without a worker restart:
+        # the continuous-learning service publishes ModelRetrainedEvent on the
+        # SYSTEM stream after promoting a new version.
+        await self._event_bus.subscribe(
+            stream=SYSTEM,
+            group=_CONSUMER_GROUP,
+            consumer="prediction-reload-1",
+            handler=self.handle_model_retrained,
+        )
+
     async def stop(self) -> None:
         self._running = False
         logger.info("PredictionService stopped")
@@ -120,6 +132,26 @@ class PredictionService:
             )
         except Exception:
             logger.exception("Failed to produce prediction for %s", symbol)
+
+    async def handle_model_retrained(self, event: Event) -> None:
+        """Hot-reload active models when a new version is promoted.
+
+        The SYSTEM stream also carries other platform events (e.g. drift), so
+        anything but a ``ModelRetrainedEvent`` is ignored. Model
+        deserialization blocks, so the reload runs in a thread; the serving
+        layer swaps in the fully-built ensemble as its final step, so
+        predictions keep using the previous ensemble until then.
+        """
+        if event.event_type != "ModelRetrainedEvent":
+            return
+        if self._model_server is None:
+            return
+
+        await asyncio.to_thread(self._model_server.load_active_models)
+        logger.info(
+            "Hot-reloaded models after ModelRetrainedEvent: active=%s",
+            ",".join(self._model_server.active_model_types) or "none",
+        )
 
     # ------------------------------------------------------------------
     # Prediction
