@@ -56,3 +56,7 @@ frontend/.vite/
 # Database
 *.db
 *.sqlite3
+
+# Local AI-agent tooling state (Railway CLI skills etc.)
+.agents/
+.railway-config-pull-*/
