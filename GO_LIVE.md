@@ -190,3 +190,38 @@ Run the worker in paper mode and watch for **weeks**:
   worker's `control_flatten_result` log line is the audit record.
 - Remaining rehearsal item: alert delivery — set `ALERT_WEBHOOK_URL` (Slack incoming
   webhook) on the worker and confirm a test alert arrives.
+
+## Learning-loop rehearsal (2026-07-19) — full cycle observed live, PASSED
+
+The continuous-learning cycle (predict → resolve real outcomes → evaluate → drift →
+retrain → champion/challenger gate → promote → hot-reload → serve) was built (PR #22)
+and then exercised end-to-end on the deployed system:
+
+- **19:32:45Z** `POST /api/v1/admin/control {"action":"retrain"}` accepted (admin JWT).
+- **19:32:45–57Z (12 s)** AutoRetrainer loaded the platform's OWN 1m `ohlcv` rows
+  (collected by the soak itself), replayed the live 200-bar feature pipeline via the
+  shared `dataset_builder`, and trained an xgboost challenger: val_accuracy **0.68**
+  (floor 0.34, champion beaten) → registered + promoted **xgboost v2**, mirrored to
+  `model_metadata` (ML Models page shows v2 active).
+- **19:32:58.0Z** `ModelRetrainedEvent` published on the `system` stream →
+  prediction service hot-reloaded the ensemble (`load_active_models` build-then-swap);
+  the next prediction (BTC/USDT, 19:32:58.6Z) was served by the reloaded ensemble.
+  **Zero downtime, no restart.**
+- **19:37:26Z** first outcome-resolution pass: **19 predictions scored against
+  realised 1m closes** (t0 vs t+5m, ±5bp deadband) — `outcomes_resolved count=19`.
+- **19:38:41Z** second cycle: evaluator reported **live accuracy 0.4737 on
+  sample_size=19 REAL outcomes** (previously impossible — sample_size was always 0),
+  and the interval governor correctly **declined** to retrain (last trained 6 min
+  ago, no drift): the gate works in both directions.
+
+Honest caveats, recorded so the numbers are not over-read:
+- The 0.68 challenger val accuracy comes from ~7 h of self-collected bars with heavy
+  train overfit (train_acc 0.97) — a small, same-regime validation set. The gate
+  decision was legitimate; the number is not evidence of durable edge (Stage 2 is).
+- Drift detection is armed on real actuals but needs ≥100 resolved outcomes per model
+  before it can fire — it engages as the soak accumulates.
+- Known limitation: predictions carry the ensemble id (`ensemble:xgboost,lightgbm`)
+  and `_resolve_model_type` maps it to the FIRST member, so auto-retraining currently
+  refreshes xgboost only; lightgbm retrains require per-member iteration (follow-up).
+- Outcome tracking is in-memory: a worker restart clears unresolved predictions
+  (they re-accumulate within minutes; the `predictions` DB table is unaffected).
