@@ -42,6 +42,10 @@ async def list_models(
                 "version": row.version,
                 "is_active": row.is_active,
                 "trained_at": row.trained_at.isoformat() if row.trained_at else None,
+                # The dashboard's ML page renders these; without them it only
+                # has zeros to show.
+                "validation_metrics": row.validation_metrics or {},
+                "feature_importance": row.feature_importance or {},
             }
 
     return list(seen.values())

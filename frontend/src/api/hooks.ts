@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from './client';
 import {
   normalizeEquityPoint,
+  normalizeModelInfo,
   normalizeOrder,
   normalizePortfolioSummary,
   normalizePosition,
@@ -124,7 +125,10 @@ export function usePredictions(symbol?: string) {
 export function useModels() {
   return useQuery<ModelInfo[]>({
     queryKey: ['models'],
-    queryFn: () => apiClient.get('/models').then((r) => r.data),
+    queryFn: () =>
+      apiClient
+        .get('/models')
+        .then((r) => (Array.isArray(r.data) ? r.data : []).map(normalizeModelInfo)),
   });
 }
 
