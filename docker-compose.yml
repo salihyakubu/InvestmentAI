@@ -78,7 +78,9 @@ services:
       context: ./frontend
       dockerfile: ../infrastructure/docker/Dockerfile.frontend
     ports:
-      - "3000:80"
+      # Host port overridable so the stack coexists with other local projects
+      # (default 3000; e.g. FRONTEND_PORT=3002 docker compose up -d frontend).
+      - "${FRONTEND_PORT:-3000}:80"
     environment:
       BACKEND_URL: http://api:8000
     depends_on:
