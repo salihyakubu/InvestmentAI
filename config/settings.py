@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 1440
     api_rate_limit: int = 100
+    # Slack incoming-webhook for operational alerts (circuit breaker, health).
+    # Empty = alerts go to logs only. Set ALERT_WEBHOOK_URL in the deployment.
+    alert_webhook_url: str = ""
     # CORS: explicit allowlist instead of a wildcard. Override via
     # CORS_ALLOW_ORIGINS (JSON list) per environment / deployed frontend origin.
     cors_allow_origins: list[str] = [

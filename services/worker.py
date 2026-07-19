@@ -206,7 +206,7 @@ async def _build_services(
         database_url=settings.async_database_url,
         redis_url=settings.redis_url,
     )
-    alert_manager = AlertManager(webhook_url=None)  # Set via env in production
+    alert_manager = AlertManager(webhook_url=settings.alert_webhook_url or None)
     audit_logger = AuditLogger()
 
     monitoring = MonitoringService(
@@ -218,12 +218,17 @@ async def _build_services(
         audit_logger=audit_logger,
     )
 
-    # -- Order persistence (sync DB order/fill rows from execution events) --
+    # -- Persistence (sync DB rows from event streams for reporting/metrics) --
     from core.models.base import get_async_session_factory
     from services.persistence.order_sync import OrderPersistenceService
+    from services.persistence.prediction_sync import PredictionPersistenceService
 
+    session_factory = get_async_session_factory()
     order_persistence = OrderPersistenceService(
-        event_bus=event_bus, session_factory=get_async_session_factory()
+        event_bus=event_bus, session_factory=session_factory
+    )
+    prediction_persistence = PredictionPersistenceService(
+        event_bus=event_bus, session_factory=session_factory
     )
 
     return [
@@ -237,6 +242,7 @@ async def _build_services(
         continuous_learning,
         monitoring,
         order_persistence,
+        prediction_persistence,
     ]
 
 
@@ -285,6 +291,27 @@ async def _run() -> None:
         account_sync_task = asyncio.create_task(risk.run_account_sync(_equity_provider))
         logger.info("worker.account_sync_started")
 
+    # Periodic equity snapshots -> portfolio_snapshots (the dashboard's equity
+    # curve and the soak's paper trail; nothing else writes that table).
+    snapshot_task: asyncio.Task[None] | None = None
+    if execution is not None and execution.brokers:
+        from core.models.base import get_async_session_factory
+        from services.persistence.snapshot_writer import PortfolioSnapshotWriter
+
+        snapshot_broker = next(iter(execution.brokers.values()))
+        snapshot_writer = PortfolioSnapshotWriter(
+            session_factory=get_async_session_factory(),
+            trading_mode=settings.trading_mode,
+        )
+        snapshot_task = asyncio.create_task(
+            snapshot_writer.run(
+                account_provider=snapshot_broker.get_account,
+                positions_provider=snapshot_broker.get_positions,
+                interval_seconds=300.0,
+            )
+        )
+        logger.info("worker.snapshot_writer_started")
+
     # Liveness endpoint for platform healthchecks (no-op when PORT is unset).
     health_task = _start_health_server()
 
@@ -295,6 +322,8 @@ async def _run() -> None:
     logger.info("worker.shutting_down")
     if health_task is not None:
         health_task.cancel()
+    if snapshot_task is not None:
+        snapshot_task.cancel()
     if account_sync_task is not None:
         account_sync_task.cancel()
     stop_tasks = []
