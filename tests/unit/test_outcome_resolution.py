@@ -6,6 +6,10 @@ value) and processed every order-lifecycle event as a fill. These tests pin
 the fixes: only ``OrderFilledEvent`` reaches the feedback loop, outcomes are
 resolved from real 1m ohlcv closes, and ``TradingControlEvent(retrain)``
 triggers an immediate evaluation cycle.
+
+Also pins the ensemble retrain contract: ``retrain()`` reports per-member
+results under ``"members"`` and the evaluation cycle publishes one
+``ModelRetrainedEvent`` per promoted member (skipped members publish nothing).
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from core.events.order_events import (
     TradingControlEvent,
 )
 from core.events.streams import CONTROL
+from core.events.system_events import ModelRetrainedEvent
 from core.models.base import AsyncBase
 from core.models.market_data import OHLCVRecord
 from services.continuous_learning.evaluator import ModelEvaluator
@@ -307,3 +312,119 @@ async def test_control_stream_subscription_dispatches_retrain() -> None:
         spy.assert_awaited_once()
     finally:
         await svc.stop()
+
+
+# ---------------------------------------------------------------------------
+# (d) evaluation cycle publishes one ModelRetrainedEvent per promoted member
+# ---------------------------------------------------------------------------
+
+
+def _retraining_service(
+    model_id: str, retrain_result: dict[str, Any]
+) -> tuple[ContinuousLearningService, AsyncMock]:
+    """Service primed to retrain *model_id*, with a spy on event publication."""
+    svc, _bus, _evaluator, _feedback = _make_service()
+    svc._tracked_predictions[model_id] = []
+    svc._retrainer.should_retrain.return_value = True
+    svc._retrainer.retrain = AsyncMock(return_value=retrain_result)
+    publish = AsyncMock()
+    svc._event_bus.publish = publish  # type: ignore[method-assign]
+    return svc, publish
+
+
+def _retrained_events(publish: AsyncMock) -> list[ModelRetrainedEvent]:
+    return [
+        call.args[1]
+        for call in publish.await_args_list
+        if isinstance(call.args[1], ModelRetrainedEvent)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_evaluation_cycle_publishes_event_per_promoted_member() -> None:
+    """An ensemble retrain reports per-member results; every promoted member
+    gets its own ModelRetrainedEvent and skipped members publish nothing."""
+    svc, publish = _retraining_service(
+        "ensemble:xgboost,lightgbm,lstm",
+        {
+            "members": [
+                {
+                    "new_model_id": "xgb-new",
+                    "version": 3,
+                    "metrics": {"val_accuracy": 0.51},
+                    "model_type": "xgboost",
+                },
+                {
+                    "skipped": True,
+                    "reason": "new_model_not_better",
+                    "model_type": "lightgbm",
+                },
+                {
+                    "new_model_id": "lstm-new",
+                    "version": 2,
+                    "metrics": {"val_accuracy": 0.48},
+                    "model_type": "lstm",
+                },
+            ]
+        },
+    )
+
+    await svc._run_evaluation_cycle()
+
+    events = _retrained_events(publish)
+    assert [(e.model_id, e.version) for e in events] == [
+        ("xgb-new", 3),
+        ("lstm-new", 2),
+    ]
+    assert events[0].metrics == {"val_accuracy": 0.51}
+
+
+@pytest.mark.asyncio
+async def test_evaluation_cycle_publishes_single_model_result() -> None:
+    svc, publish = _retraining_service(
+        "xgboost",
+        {
+            "new_model_id": "xgb-new",
+            "version": 5,
+            "metrics": {"val_accuracy": 0.6},
+            "model_type": "xgboost",
+        },
+    )
+
+    await svc._run_evaluation_cycle()
+
+    events = _retrained_events(publish)
+    assert [(e.model_id, e.version) for e in events] == [("xgb-new", 5)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "retrain_result",
+    [
+        {"skipped": True, "reason": "no_training_data"},
+        {
+            "skipped": True,
+            "reason": "no_member_promoted",
+            "members": [
+                {
+                    "skipped": True,
+                    "reason": "new_model_not_better",
+                    "model_type": "xgboost",
+                },
+                {
+                    "skipped": True,
+                    "reason": "new_model_not_better",
+                    "model_type": "lightgbm",
+                },
+            ],
+        },
+    ],
+)
+async def test_evaluation_cycle_skipped_retrain_publishes_nothing(
+    retrain_result: dict[str, Any],
+) -> None:
+    svc, publish = _retraining_service("ensemble:xgboost,lightgbm", retrain_result)
+
+    await svc._run_evaluation_cycle()
+
+    assert _retrained_events(publish) == []

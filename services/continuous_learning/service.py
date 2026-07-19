@@ -432,20 +432,26 @@ class ContinuousLearningService:
             if self._retrainer.should_retrain(model_id):
                 result = await self._retrainer.retrain(model_id)
 
-                if not result.get("skipped"):
+                # Ensemble ids retrain several member models and report them
+                # under "members"; plain ids report a single result. Every
+                # promoted member gets its own ModelRetrainedEvent.
+                for member_result in result.get("members", [result]):
+                    if member_result.get("skipped"):
+                        continue
+
                     retrain_event = ModelRetrainedEvent(
                         source_service="continuous_learning",
-                        model_id=result["new_model_id"],
-                        version=result["version"],
-                        metrics=result["metrics"],
+                        model_id=member_result["new_model_id"],
+                        version=member_result["version"],
+                        metrics=member_result["metrics"],
                     )
                     await self._event_bus.publish(_SYSTEM_STREAM, retrain_event)
 
                     logger.info(
                         "continuous_learning.model_retrained",
                         old_model_id=model_id,
-                        new_model_id=result["new_model_id"],
-                        version=result["version"],
+                        new_model_id=member_result["new_model_id"],
+                        version=member_result["version"],
                     )
 
             # 4. Update ensemble weights
