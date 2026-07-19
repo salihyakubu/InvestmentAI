@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,15 @@ from services.prediction.models.base import BasePredictor, PredictionOutput, Tra
 logger = logging.getLogger(__name__)
 
 DIRECTION_MAP = {0: "short", 1: "flat", 2: "long"}
+
+# Minimum validation rows (with >=2 classes present) before we fit a softmax
+# temperature. Below this the NLL surface is too noisy for a stable fit, so we
+# keep T=1.0 (raw softmax) rather than emit a miscalibrated confidence --
+# mirroring the tree models' calibration skip philosophy.
+_MIN_CALIBRATION_SAMPLES = 30
+_TEMPERATURE_MIN = 0.05
+_TEMPERATURE_MAX = 10.0
+_TEMPERATURE_GRID_STEPS = 500
 
 try:
     import torch
@@ -157,6 +167,8 @@ else:
             self._feature_mean: np.ndarray | None = None
             self._feature_std: np.ndarray | None = None
             self._is_fitted = False
+            # Softmax temperature for confidence calibration (1.0 = raw softmax).
+            self._temperature: float = 1.0
 
         def _build_network(self) -> LSTMNetwork:
             net = LSTMNetwork(
@@ -182,7 +194,7 @@ else:
 
             with torch.no_grad():
                 cls_logits, reg_output = self._network(x)
-                probs = torch.softmax(cls_logits, dim=1).cpu().numpy()
+                probs = torch.softmax(cls_logits / self._temperature, dim=1).cpu().numpy()
                 returns = reg_output.squeeze(-1).cpu().numpy()
 
             outputs: list[PredictionOutput] = []
@@ -313,6 +325,9 @@ else:
 
             self._is_fitted = True
 
+            # --- Temperature calibration (on the held-out validation split) ---
+            self._temperature = self._fit_temperature(X_val_norm, y_val)
+
             train_acc = train_correct / max(train_total, 1)
             val_acc = val_correct / max(val_total, 1)
 
@@ -344,6 +359,64 @@ else:
             normalized: np.ndarray = (X - self._feature_mean) / self._feature_std
             return normalized
 
+        def _fit_temperature(self, X_val_norm: np.ndarray, y_val: np.ndarray) -> float:
+            """Fit a scalar softmax temperature on the validation split.
+
+            The emitted confidence drives the live confidence gate
+            (``min_prediction_confidence``); that gate only protects capital if a
+            reported 0.6 really corresponds to ~60% empirical accuracy. Neural
+            nets are typically over-confident, so we pick the T > 0 minimising the
+            NLL of ``softmax(logits / T)`` via a deterministic grid search over
+            log-spaced candidates. Skipped (T=1.0, raw softmax kept) when the
+            validation split is too small or single-class for a stable fit.
+            """
+            assert self._network is not None
+            y_arr = np.asarray(y_val)
+            if len(y_arr) < _MIN_CALIBRATION_SAMPLES:
+                logger.info(
+                    "Skipping temperature calibration: only %d validation samples (<%d)",
+                    len(y_arr),
+                    _MIN_CALIBRATION_SAMPLES,
+                )
+                return 1.0
+            if len(np.unique(y_arr)) < 2:
+                logger.info("Skipping temperature calibration: validation split has a single class")
+                return 1.0
+
+            self._network.eval()
+            logits_chunks: list[torch.Tensor] = []
+            x_all = torch.tensor(X_val_norm, dtype=torch.float32)
+            with torch.no_grad():
+                for start in range(0, len(x_all), self.batch_size):
+                    end = start + self.batch_size
+                    cls_logits, _ = self._network(x_all[start:end].to(self.device))
+                    logits_chunks.append(cls_logits.detach().cpu())
+            logits = torch.cat(logits_chunks, dim=0)
+            labels = torch.tensor(y_arr, dtype=torch.long)
+
+            # T=1.0 is the baseline: calibration may only improve validation NLL.
+            best_t = 1.0
+            best_nll = float(nn.functional.cross_entropy(logits, labels).item())
+            candidates = torch.logspace(
+                math.log10(_TEMPERATURE_MIN),
+                math.log10(_TEMPERATURE_MAX),
+                steps=_TEMPERATURE_GRID_STEPS,
+            )
+            for candidate in candidates.tolist():
+                t = float(candidate)
+                nll = float(nn.functional.cross_entropy(logits / t, labels).item())
+                if nll < best_nll:
+                    best_nll = nll
+                    best_t = t
+
+            logger.info(
+                "Fitted softmax temperature T=%.4f (val NLL %.4f) on %d validation rows",
+                best_t,
+                best_nll,
+                len(y_arr),
+            )
+            return best_t
+
         def save(self, path: Path) -> None:
             path.mkdir(parents=True, exist_ok=True)
             assert self._network is not None
@@ -357,6 +430,7 @@ else:
                     "sequence_length": self.sequence_length,
                     "feature_mean": self._feature_mean,
                     "feature_std": self._feature_std,
+                    "temperature": self._temperature,
                 },
                 path / "lstm_model.pt",
             )
@@ -371,6 +445,9 @@ else:
             self.sequence_length = checkpoint["sequence_length"]
             self._feature_mean = checkpoint["feature_mean"]
             self._feature_std = checkpoint["feature_std"]
+            # Backwards compatible: artifacts saved before temperature scaling
+            # existed carry no temperature -> keep the raw-softmax default.
+            self._temperature = float(checkpoint.get("temperature", 1.0))
 
             self._network = self._build_network()
             self._network.load_state_dict(checkpoint["state_dict"])

@@ -116,13 +116,19 @@ Run the worker in paper mode and watch for **weeks**:
 
 ## Operational glue — status
 - **Risk equity/PnL feed**: ✅ the worker runs `risk.run_account_sync(equity_provider)` on a
-  timer (`services/worker.py`), feeding the drawdown monitor / circuit breaker. Small remainder:
-  a `risk.reset_daily()` call at session open (verify during the Stage 3 soak).
+  timer (`services/worker.py`), feeding the drawdown monitor / circuit breaker. ✅ The loop now
+  also detects UTC session rollover and calls `risk.reset_daily()` automatically, so the daily
+  drawdown baseline re-bases each day of a multi-day soak (unit-tested).
 - **Manual order API → live execution** (#11): ✅ `POST /orders` publishes an `OrderIntentEvent`
   the execution worker consumes (`_handle_order_intent`); fills sync back to the DB order row.
-- **Frontend** (#8): ✅ login/auth gate + production nginx build + FE↔BE path reconcile.
-- **ML** (#12): ✅ tree-probability calibration + sequence double-normalisation fix. (Torch
-  sequence-model calibration still deferred — gated on torch in the deploy image.)
+- **Frontend** (#8): ✅ login/auth gate + production nginx build + FE↔BE path reconcile;
+  deployed in the compose stack (host port via `FRONTEND_PORT`, default 3000) and verified
+  through the nginx `/api` proxy.
+- **ML** (#12): ✅ tree-probability calibration + sequence double-normalisation fix. ✅ Torch
+  sequence models now calibrate too (temperature scaling fit on the validation split, persisted,
+  T=1.0 backwards-compatible). Deliberate: torch stays OUT of the deploy image
+  (requirements.txt) — sequence models remain inert stubs in prod until they earn their +2GB by
+  passing the same edge validation as the trees.
 - **Timescale** (#14): ✅ hypertables + retention as a guarded migration (`0002`, verified on
   real TimescaleDB and no-op on plain Postgres).
 

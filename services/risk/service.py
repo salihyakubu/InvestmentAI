@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -44,6 +45,11 @@ logger = logging.getLogger(__name__)
 
 # Minimum trade size (USD) below which a rebalance weight delta is ignored.
 _MIN_TRADE_NOTIONAL = 1.0
+
+
+def _utc_today() -> date:
+    """Current UTC calendar date (module-level so tests can monkeypatch it)."""
+    return datetime.now(UTC).date()
 
 
 # ------------------------------------------------------------------
@@ -502,10 +508,22 @@ class RiskManagerService:
     ) -> None:
         """Background loop: periodically pull live equity via *account_provider*
         and feed it into the risk engine, so the drawdown monitor and circuit
-        breaker track real capital. Runs until cancelled."""
+        breaker track real capital. Also rolls the daily risk session over when
+        the UTC calendar date advances, so multi-day runs reset the daily
+        drawdown baseline and circuit breaker. Runs until cancelled."""
+        last_seen_date = _utc_today()
         while True:
             try:
                 await asyncio.sleep(interval_seconds)
+                today = _utc_today()
+                if today > last_seen_date:
+                    self.reset_daily()
+                    logger.info(
+                        "risk.daily_reset: UTC session rolled over from %s to %s",
+                        last_seen_date,
+                        today,
+                    )
+                    last_seen_date = today
                 equity = await account_provider()
                 if equity is not None:
                     self.sync_account(equity)
