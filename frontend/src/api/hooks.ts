@@ -6,6 +6,7 @@ import {
   normalizeOrder,
   normalizePortfolioSummary,
   normalizePosition,
+  normalizePrediction,
   normalizeRiskMetrics,
 } from './normalize';
 import type {
@@ -116,7 +117,7 @@ export function usePredictions(symbol?: string) {
     queryFn: () =>
       apiClient
         .get('/predictions/latest', { params: symbol ? { symbol } : undefined })
-        .then((r) => r.data),
+        .then((r) => (r.data as unknown[]).map((p) => normalizePrediction(p as Record<string, unknown>))),
     refetchInterval: 15_000,
   });
 }
