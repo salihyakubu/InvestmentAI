@@ -277,3 +277,35 @@ reference distributions; pooled shortcuts would false-alarm nightly); learning
 state is in-memory and resets on deploy; no consumer-group XAUTOCLAIM reclaim
 (at-most-once delivery on crash mid-handler); lightgbm auto-retrain pending the
 ensemble-member fix (separate session).
+
+## Post-hardening drill + overnight endurance (2026-07-19 → 07-20) — PASSED
+
+**Async-retrain drill (19 Jul 20:31:48Z):** `{"action":"retrain"}` triggered on the
+hardened build. Training ran ~14 s in a worker thread while the event loop stayed
+fully live — health beats completed and predictions kept persisting *during*
+training; zero Redis consumer errors (vs. the 60 s freeze + 682 dropped log lines
+in the pre-fix drill). The champion/challenger gate correctly **declined** the
+challenger (val 0.40 ≥ floor 0.34, but < champion 0.505) — the gate now proven in
+both directions live.
+
+**Discovery — cloud-promoted models are ephemeral:** the 19:32Z rehearsal's
+xgboost v2 was promoted on the container filesystem; the next deploy rebuilt from
+the repo and silently reverted serving to v1, while `model_metadata` still says
+v2 is active (the ML Models page overstates). Railway has no volumes. Follow-up
+task filed: persist promoted artifacts durably (DB) + reconcile the mirror at
+worker startup. Until then: **a soak-period deploy discards any cloud-promoted
+model** — retrains re-promote later if still better.
+
+**Overnight endurance (20:30Z → 06:59Z, first ~10.5 h unattended on hardened
+build):** zero errors/exceptions, zero consumer failures, every health beat
+healthy; outcome resolution steady at 45–50 predictions per ~10-min pass;
++3,075 predictions persisted overnight (exact 5/min crypto cadence); ohlcv
+~270 rows/h; snapshots on 5-min cadence; equity 100.00 with zero positions —
+**correct**, since every prediction overnight was `flat` (max confidence 0.765;
+zero long ≥ 0.6 calls). The autonomous trade path is armed and verified by unit
+tests; live it is rightly holding until the ensemble sees an edge.
+
+**Predictions API implemented (PR #26):** `/api/v1/predictions/{latest,history,id}`
+were 501 stubs while the worker had been persisting every prediction — the
+dashboard's prediction views had no data source. Now serving live rows
+(verified: fresh predictions seconds old via the deployed API).
