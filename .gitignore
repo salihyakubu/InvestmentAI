@@ -58,3 +58,6 @@ frontend/.vite/
 # Local AI-agent tooling state (Railway CLI skills etc.)
 .agents/
 .railway-config-pull-*/
+
+# macOS Finder/iCloud duplicate files ("name 2.py") -- broke alembic discovery once already
+* 2.*
