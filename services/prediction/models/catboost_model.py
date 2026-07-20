@@ -1,16 +1,16 @@
-"""XGBoost-based predictor for direction classification and return regression."""
+"""CatBoost-based predictor for direction classification and return regression."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import joblib
 import numpy as np
+from catboost import CatBoostClassifier, CatBoostRegressor
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, log_loss
-from xgboost import XGBClassifier, XGBRegressor
 
 from services.prediction.models.base import (
     BasePredictor,
@@ -25,19 +25,17 @@ from services.prediction.models.base import (
 logger = logging.getLogger(__name__)
 
 DIRECTION_MAP = {0: "short", 1: "flat", 2: "long"}
-DIRECTION_INV = {v: k for k, v in DIRECTION_MAP.items()}
 
 # Minimum validation rows (with all 3 classes present) before we fit a
-# probability calibrator. Below this the calibration fits are unstable, so we
-# fall back to raw classifier probabilities rather than emit a miscalibrated
-# confidence.
+# probability calibrator; below this the calibration fits are unstable so we
+# keep raw probabilities rather than emit a miscalibrated confidence.
 _MIN_CALIBRATION_SAMPLES = 30
 
 
-class XGBoostPredictor(BasePredictor):
-    """Three-class direction classifier + return regressor using XGBoost."""
+class CatBoostPredictor(BasePredictor):
+    """Three-class direction classifier + return regressor using CatBoost."""
 
-    model_type: str = "xgboost"
+    model_type: str = "catboost"
     required_features: list[str] = []
 
     def __init__(
@@ -47,31 +45,35 @@ class XGBoostPredictor(BasePredictor):
         feature_names: list[str] | None = None,
         conformal_alpha: float = 0.10,
     ) -> None:
+        # bootstrap_type="Bayesian" keeps bagging_temperature (a hyperopt
+        # dimension) valid on every platform; allow_writing_files=False stops
+        # CatBoost from dropping a catboost_info/ directory into the CWD, and
+        # verbose=False silences its per-iteration stdout.
         default_cls_params: dict[str, Any] = {
-            "n_estimators": 500,
-            "max_depth": 6,
+            "iterations": 500,
+            "depth": 6,
             "learning_rate": 0.05,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "min_child_weight": 3,
-            "objective": "multi:softprob",
-            "num_class": 3,
-            "eval_metric": "mlogloss",
-            "tree_method": "hist",
-            "random_state": 42,
-            "n_jobs": -1,
+            "l2_leaf_reg": 3.0,
+            "bootstrap_type": "Bayesian",
+            "bagging_temperature": 1.0,
+            "loss_function": "MultiClass",
+            "eval_metric": "MultiClass",
+            "random_seed": 42,
+            "allow_writing_files": False,
+            "verbose": False,
         }
         default_reg_params: dict[str, Any] = {
-            "n_estimators": 500,
-            "max_depth": 5,
+            "iterations": 500,
+            "depth": 6,
             "learning_rate": 0.05,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "objective": "reg:squarederror",
-            "eval_metric": "rmse",
-            "tree_method": "hist",
-            "random_state": 42,
-            "n_jobs": -1,
+            "l2_leaf_reg": 3.0,
+            "bootstrap_type": "Bayesian",
+            "bagging_temperature": 1.0,
+            "loss_function": "RMSE",
+            "eval_metric": "RMSE",
+            "random_seed": 42,
+            "allow_writing_files": False,
+            "verbose": False,
         }
 
         if classifier_params:
@@ -79,8 +81,8 @@ class XGBoostPredictor(BasePredictor):
         if regressor_params:
             default_reg_params.update(regressor_params)
 
-        self._classifier = XGBClassifier(**default_cls_params)
-        self._regressor = XGBRegressor(**default_reg_params)
+        self._classifier = CatBoostClassifier(**default_cls_params)
+        self._regressor = CatBoostRegressor(**default_reg_params)
         self._feature_names = feature_names or []
         self._calibrator: CalibratedClassifierCV | None = None
         self._calibration_method: str = "none"  # "isotonic" | "sigmoid" | "none"
@@ -99,21 +101,19 @@ class XGBoostPredictor(BasePredictor):
 
         Uses the calibrated probabilities when a calibrator was fitted, else the
         raw classifier softmax. Columns are remapped via the estimator's
-        ``classes_`` so a class absent from the fit data yields a zero column
-        rather than a silently shifted distribution.
+        ``classes_`` so a class absent from the fit data yields a zero column.
         """
         estimator = self._calibrator if self._calibrator is not None else self._classifier
         return probabilities_in_class_order(estimator, features)
 
     def predict(self, features: np.ndarray) -> PredictionOutput:
-        """Predict for a single flat feature vector (1-D or 2-D with one row)."""
         if features.ndim == 1:
             features = features.reshape(1, -1)
         probs = self._proba(features)[0]
         direction_idx = int(np.argmax(probs))
         direction = DIRECTION_MAP[direction_idx]
         confidence = float(probs[direction_idx])
-        expected_return = float(self._regressor.predict(features)[0])
+        expected_return = float(np.asarray(self._regressor.predict(features)).ravel()[0])
         prob_map = {DIRECTION_MAP[i]: float(p) for i, p in enumerate(probs)}
 
         return PredictionOutput(
@@ -125,9 +125,8 @@ class XGBoostPredictor(BasePredictor):
         )
 
     def predict_batch(self, features: np.ndarray) -> list[PredictionOutput]:
-        """Predict for a batch of flat feature vectors."""
         probs = self._proba(features)
-        returns = self._regressor.predict(features)
+        returns = np.asarray(self._regressor.predict(features)).ravel()
         outputs: list[PredictionOutput] = []
         for i in range(len(features)):
             direction_idx = int(np.argmax(probs[i]))
@@ -148,16 +147,13 @@ class XGBoostPredictor(BasePredictor):
     ) -> CalibratedClassifierCV | None:
         """Fit isotonic AND sigmoid calibrators; keep the lower-Brier one.
 
-        The emitted confidence drives the live confidence gate
-        (``min_prediction_confidence``); that gate only protects capital if a
-        reported 0.6 really corresponds to ~60% empirical accuracy. Tree
-        classifiers are typically over-confident, so we map raw scores to
-        calibrated posteriors. Both candidates are fitted on the validation
-        split and the one with the lower multi-class Brier score (mean over
-        one-vs-rest) wins; the chosen method and both scores are recorded on
-        ``self`` for :class:`TrainResult` and persistence. Skipped (raw
-        probabilities used) when the validation split lacks all three classes
-        or is too small for a stable fit.
+        The reported confidence must approximate a true probability (the live
+        confidence gate depends on it). Both candidates are fitted on the
+        validation split and the one with the lower multi-class Brier score
+        (mean over one-vs-rest) wins; the chosen method and both scores are
+        recorded on ``self`` for :class:`TrainResult` and persistence. Skipped
+        when the validation split lacks all three classes or is too small for
+        a stable fit.
         """
         self._calibration_method = "none"
         self._brier_isotonic = None
@@ -207,20 +203,13 @@ class XGBoostPredictor(BasePredictor):
         returns_train: np.ndarray | None = None,
         returns_val: np.ndarray | None = None,
     ) -> TrainResult:
-        """Train classifier and regressor with early stopping.
+        logger.info("Training CatBoost classifier on %d samples", len(X_train))
 
-        *y_train* / *y_val* are expected to contain integer class labels
-        (0=short, 1=flat, 2=long).  The regressor is trained on the same
-        features with continuous returns stored as float values; when
-        integer labels are provided, returns are approximated from the
-        label mapping (-1%, 0%, +1%).
-        """
-        # --- Classifier ---
-        logger.info("Training XGBoost classifier on %d samples", len(X_train))
         self._classifier.fit(
             X_train,
             y_train,
-            eval_set=[(X_val, y_val)],
+            eval_set=(X_val, y_val),
+            early_stopping_rounds=30,
             verbose=False,
         )
 
@@ -236,7 +225,8 @@ class XGBoostPredictor(BasePredictor):
         self._regressor.fit(
             X_train,
             y_train_returns,
-            eval_set=[(X_val, y_val_returns)],
+            eval_set=(X_val, y_val_returns),
+            early_stopping_rounds=30,
             verbose=False,
         )
 
@@ -266,20 +256,21 @@ class XGBoostPredictor(BasePredictor):
         importance = self.get_feature_importance()
 
         logger.info(
-            "XGBoost training complete  train_acc=%.4f  val_acc=%.4f",
+            "CatBoost training complete  train_acc=%.4f  val_acc=%.4f",
             train_accuracy,
             val_accuracy,
         )
 
+        best_iteration = self._classifier.get_best_iteration()
         return TrainResult(
             train_loss=train_loss,
             val_loss=val_loss,
             train_accuracy=train_accuracy,
             val_accuracy=val_accuracy,
             epochs_trained=(
-                int(self._classifier.best_iteration)
-                if hasattr(self._classifier, "best_iteration")
-                else cast(int, self._classifier.n_estimators)
+                int(best_iteration)
+                if best_iteration is not None
+                else int(self._classifier.tree_count_)
             ),
             feature_importance=importance,
             chosen_calibration=self._calibration_method,
@@ -308,7 +299,7 @@ class XGBoostPredictor(BasePredictor):
         )
         if self._conformal is not None:
             joblib.dump(self._conformal.to_dict(), path / "conformal.joblib")
-        logger.info("XGBoost model saved to %s", path)
+        logger.info("CatBoost model saved to %s", path)
 
     def load(self, path: Path) -> None:
         self._classifier = joblib.load(path / "classifier.joblib")
@@ -336,7 +327,7 @@ class XGBoostPredictor(BasePredictor):
             else None  # old artifact: no conformal state, non-blocking downstream
         )
         self._is_fitted = True
-        logger.info("XGBoost model loaded from %s", path)
+        logger.info("CatBoost model loaded from %s", path)
 
     # ------------------------------------------------------------------
     # Feature importance
@@ -345,6 +336,6 @@ class XGBoostPredictor(BasePredictor):
     def get_feature_importance(self) -> dict[str, float]:
         if not self._is_fitted:
             return {}
-        importances = self._classifier.feature_importances_
+        importances = np.asarray(self._classifier.feature_importances_, dtype=np.float64)
         names = self._feature_names or [f"f{i}" for i in range(len(importances))]
         return {name: float(imp) for name, imp in zip(names, importances)}

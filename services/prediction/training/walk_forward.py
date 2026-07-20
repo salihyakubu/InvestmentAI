@@ -1,16 +1,99 @@
-"""Walk-forward validation for time-series models."""
+"""Walk-forward validation for time-series models.
+
+Contains :class:`WalkForwardValidator` (expanding / rolling walk-forward
+evaluation that retrains a model per fold) and :func:`purged_chrono_folds`
+(pure index-generation for purged, embargoed chronological K-fold CV — the
+split primitive consumed by hyperparameter search).
+"""
 
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from services.prediction.models.base import BasePredictor, TrainResult
+from services.prediction.training.dataset_builder import HORIZON
 
 logger = logging.getLogger(__name__)
+
+
+def default_embargo(stride: int = HORIZON) -> int:
+    """Default embargo (in replay steps) for :func:`purged_chrono_folds`.
+
+    ``ceil(HORIZON / stride) + 1``: each sample is a replay step advancing
+    ``stride`` bars, and its label is realized over the ``HORIZON``-bar
+    forward horizon, i.e. it overlaps ``ceil(HORIZON / stride)`` subsequent
+    replay steps; the +1 covers the boundary step. At the dataset builder's
+    default ``stride == HORIZON`` this evaluates to 2.
+
+    Caveat: ``build_dataset``'s returns/labels are measured over ``HORIZON``
+    *replay steps* (``forward_returns`` on the replay-step closes; the
+    triple-barrier time barrier sits ``HORIZON`` replay steps ahead), which is
+    ``HORIZON`` steps in sample units regardless of stride. This formula
+    matches that span exactly at ``stride == 1``; for coarser strides pass
+    ``embargo=HORIZON + 1`` explicitly to fully cover the label span.
+    """
+    return math.ceil(HORIZON / stride) + 1
+
+
+def purged_chrono_folds(
+    n_samples: int, n_folds: int, embargo: int | None = None
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Purged, embargoed chronological K-fold split (Lopez de Prado).
+
+    Samples ``0..n_samples-1`` are assumed chronologically ordered replay
+    steps whose labels look up to the label horizon *forward* in time. Plain
+    K-fold leaks: a training sample just before the validation block has a
+    label window reaching into the block (it is partly "graded" on validation
+    data), and one just after starts inside the span over which the last
+    validation labels are still being realized (serial correlation flows the
+    other way). Both are removed by excluding every training sample within
+    ``embargo`` steps of the validation block on either side — purging before
+    it, embargo after it.
+
+    Args:
+        n_samples: total number of chronologically ordered samples.
+        n_folds: number of contiguous validation blocks (>= 2). Blocks are
+            ``np.array_split(np.arange(n_samples), n_folds)`` — chronological
+            and near-equal sized.
+        embargo: exclusion radius in samples (replay steps). ``None`` uses
+            :func:`default_embargo` — see its docstring for the formula and
+            the stride caveat.
+
+    Returns:
+        List of ``(train_idx, val_idx)`` int64 index-array pairs, one per
+        fold, in chronological fold order. ``train_idx`` is sorted ascending
+        and never overlaps ``[val_idx[0] - embargo, val_idx[-1] + embargo]``.
+
+    Raises:
+        ValueError: on invalid arguments, or if the embargo is so wide that a
+            fold would have an empty training set.
+    """
+    if n_folds < 2:
+        raise ValueError(f"n_folds must be >= 2, got {n_folds}")
+    if n_samples < n_folds:
+        raise ValueError(f"n_samples={n_samples} < n_folds={n_folds}")
+    emb = default_embargo() if embargo is None else embargo
+    if emb < 0:
+        raise ValueError(f"embargo must be >= 0, got {emb}")
+
+    folds: list[tuple[np.ndarray, np.ndarray]] = []
+    for block in np.array_split(np.arange(n_samples, dtype=np.int64), n_folds):
+        lo, hi = int(block[0]), int(block[-1])
+        before = np.arange(0, max(lo - emb, 0), dtype=np.int64)
+        after = np.arange(min(hi + emb + 1, n_samples), n_samples, dtype=np.int64)
+        train_idx = np.concatenate([before, after])
+        if train_idx.size == 0:
+            raise ValueError(
+                f"embargo={emb} leaves no training samples for the fold spanning "
+                f"[{lo}, {hi}] (n_samples={n_samples}, n_folds={n_folds})"
+            )
+        folds.append((train_idx, block))
+    return folds
 
 
 @dataclass

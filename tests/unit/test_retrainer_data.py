@@ -116,10 +116,10 @@ async def test_load_training_data_builds_arrays_from_db(
     await _seed_bars(factory, "BTC/USDT", n, seed=7)
     # Below the min-bars threshold -> skipped by the dataset builder.
     await _seed_bars(factory, "TINY/USDT", 50, seed=8)
-    # Outside the 7-day lookback window -> excluded by the query.
+    # Outside the configured lookback window -> excluded by the query.
     await _seed_bars(
         factory, "OLD/USDT", n, seed=9,
-        end=datetime.now(UTC) - timedelta(days=10),
+        end=datetime.now(UTC) - timedelta(days=mock_settings.retrain_lookback_days + 3),
     )
     # Wrong timeframe -> excluded by the query.
     await _seed_bars(factory, "BTC/USDT", 250, seed=10, timeframe="1d")

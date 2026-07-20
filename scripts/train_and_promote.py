@@ -15,15 +15,19 @@ empty and the prediction service emits only flat. This script:
    ``FeatureStore.compute_all_features`` over the trailing 200-bar window --
    the same code, window size, and therefore the same values the worker will
    feed the model at serve time (vwap excluded for cross-provider uniformity).
-3. Labels with 5-bar (= 5-minute) forward returns using DATA-DRIVEN thresholds
-   (pooled 30th/70th percentiles) -- fixed daily-scale thresholds would label
-   nearly everything flat at this cadence.
-4. Trains XGBoost + LightGBM through the platform's own ModelTrainer (with
-   real forward returns for the regressors and probability calibration),
-   using a chronological per-symbol 80/20 split.
-5. Gates on out-of-sample accuracy, then registers + promotes both models in
-   the filesystem ModelRegistry the worker serves from, and smoke-checks the
-   actual serving path (ModelServer -> ensemble -> prediction).
+3. Labels per symbol with triple-barrier first-touch labels (volatility-scaled
+   price barriers, time barrier = the 5-bar-horizon close; the dataset
+   builder's default) while the regressors keep the real 5-step forward
+   returns.
+4. Trains XGBoost + LightGBM + CatBoost through the platform's own
+   ModelTrainer (real forward returns for the regressors, isotonic-vs-sigmoid
+   probability calibration, split-conformal state), with hyperopt scored by
+   mean accuracy over purged, embargoed chronological CV folds.
+5. Gates on out-of-sample accuracy AND a train/val overfit gap limit, then
+   registers + promotes the models in the filesystem ModelRegistry the worker
+   serves from, writes the per-symbol ``feature_reference.npz`` the
+   continuous-learning feature-drift check reads, and smoke-checks the actual
+   serving path (ModelServer -> ensemble -> prediction).
 6. Optionally mirrors metadata into the DB ``model_metadata`` table (which
    backs GET /api/v1/models) when DATABASE_URL is set and --write-db is given.
 """
@@ -42,14 +46,34 @@ import numpy as np
 from core.enums import TimeFrame
 from services.prediction.training.dataset_builder import (
     HORIZON,
+    MIN_BARS,
     MIN_VAL_ACCURACY,
-    WINDOW,  # noqa: F401  # re-exported: window size is part of this script's documented contract
+    WINDOW,
     bars_matrix,
     build_dataset,
 )
+from services.prediction.training.walk_forward import purged_chrono_folds
 
 CRYPTO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT", "DOT/USDT"]
 STOCK_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+
+# The models to bootstrap-train and (gate permitting) promote for serving.
+MODEL_TYPES = ("xgboost", "lightgbm", "catboost")
+
+# Purged chronological CV folds for hyperopt. 3 folds is enough at bootstrap
+# data scale; more folds would shrink each fold's training side below what the
+# tree models need to differentiate hyperparameters.
+CV_FOLDS = 3
+
+# OVERFIT GUARD: maximum tolerated train_accuracy - val_accuracy gap.
+# Promoted-champion metrics live in the registry and later retrains only have
+# to beat them, so a memorizing model must not pass merely by beating the
+# MIN_VAL_ACCURACY floor -- it would poison the champion baseline.
+MAX_TRAIN_VAL_GAP = 0.35
+
+# Written next to the registry; the continuous-learning service reads it for
+# per-symbol feature (data) drift checks. Absence just skips those checks.
+FEATURE_REFERENCE_FILENAME = "feature_reference.npz"
 
 
 async def _fetch_crypto(symbol: str, days: int) -> list[Any]:
@@ -78,8 +102,15 @@ async def _fetch_stock(symbol: str) -> list[Any]:
 
 async def _build_dataset(
     crypto_days: int, stride: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
-    """Fetch real bars, then delegate replay/label/split to the shared builder."""
+) -> tuple[
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]],
+    dict[str, dict[str, np.ndarray]],
+]:
+    """Fetch real bars, then delegate replay/label/split to the shared builder.
+
+    Also returns the raw per-symbol OHLCV columns so the caller can slice the
+    pooled validation rows back into per-symbol blocks (feature reference).
+    """
     per_symbol_cols: dict[str, dict[str, np.ndarray]] = {}
 
     for sym in CRYPTO_SYMBOLS:
@@ -97,9 +128,89 @@ async def _build_dataset(
         per_symbol_cols[sym] = bars_matrix(bars)
 
     try:
-        return build_dataset(per_symbol_cols, stride=stride)
+        return build_dataset(per_symbol_cols, stride=stride), per_symbol_cols
     except ValueError as exc:
         raise SystemExit(f"{exc} -- aborting") from exc
+
+
+def gate_failures(results: dict[str, Any]) -> list[str]:
+    """Out-of-sample gate: accuracy floor + overfit guard.
+
+    Each entry of *results* maps model_type -> TrainResult (anything exposing
+    ``train_accuracy`` / ``val_accuracy``). Returns human-readable failure
+    strings; empty means every model may be promoted.
+    """
+    failures: list[str] = []
+    for model_type, result in results.items():
+        if result.val_accuracy < MIN_VAL_ACCURACY:
+            failures.append(
+                f"{model_type}: val_accuracy {result.val_accuracy:.4f} "
+                f"< floor {MIN_VAL_ACCURACY}"
+            )
+        gap = result.train_accuracy - result.val_accuracy
+        if gap > MAX_TRAIN_VAL_GAP:
+            failures.append(
+                f"{model_type}: train-val accuracy gap {gap:.4f} "
+                f"> {MAX_TRAIN_VAL_GAP} (memorizing, not learning)"
+            )
+    return failures
+
+
+def per_symbol_val_rows(
+    per_symbol_cols: dict[str, dict[str, np.ndarray]],
+    va_X: np.ndarray,
+    stride: int,
+) -> dict[str, np.ndarray]:
+    """Slice the pooled validation feature rows back into per-symbol blocks.
+
+    Mirrors ``build_dataset``'s row arithmetic exactly: symbols iterate in
+    insertion order, those under ``MIN_BARS`` are skipped, each contributes
+    ``max(n_replay_steps - HORIZON, 0)`` labeled rows split 80/20
+    chronologically, and the validation tails are concatenated in symbol
+    order. Symbols with zero validation rows are omitted.
+
+    Raises:
+        ValueError: if the reconstructed row count does not equal
+            ``len(va_X)`` (dataset-builder contract drift) -- better no
+            feature reference than a misaligned one.
+    """
+    out: dict[str, np.ndarray] = {}
+    offset = 0
+    for sym, cols in per_symbol_cols.items():
+        n_bars = len(cols["close"])
+        if n_bars < MIN_BARS:
+            continue
+        n_steps = (n_bars - WINDOW) // stride + 1
+        n_labeled = max(n_steps - HORIZON, 0)
+        n_val = n_labeled - int(n_labeled * 0.8)
+        if n_val > 0:
+            out[sym] = np.asarray(va_X[offset : offset + n_val], dtype=np.float32)
+        offset += n_val
+    if offset != len(va_X):
+        raise ValueError(
+            f"per-symbol row reconstruction produced {offset} rows, "
+            f"but the pooled validation split has {len(va_X)}"
+        )
+    return out
+
+
+def write_feature_reference(
+    artifact_dir: Path,
+    feature_names: list[str],
+    rows_by_symbol: dict[str, np.ndarray],
+) -> Path:
+    """Write the per-symbol feature-reference archive for drift detection.
+
+    Schema (continuous-learning contract): ``feature_names`` = 1-D str array
+    in the dataset builder's sorted-name order; one 2-D float array per symbol
+    keyed by the raw symbol string (slashes round-trip through np.savez),
+    columns aligned with ``feature_names``.
+    """
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = artifact_dir / FEATURE_REFERENCE_FILENAME
+    arrays: dict[str, Any] = {"feature_names": np.array(feature_names), **rows_by_symbol}
+    np.savez(path, **arrays)
+    return path
 
 
 def _write_db_metadata(rows: list[dict[str, Any]]) -> None:
@@ -161,8 +272,8 @@ def main(argv: list[str]) -> int:
     logging.basicConfig(format="%(message)s")
     logging.getLogger("services.prediction.training.dataset_builder").setLevel(logging.INFO)
 
-    print("[1/5] Fetching real 1-minute history + replaying live features ...")
-    tr_X, tr_y, tr_r, va_X, va_y, va_r, names = asyncio.run(
+    print("[1/6] Fetching real 1-minute history + replaying live features ...")
+    (tr_X, tr_y, tr_r, va_X, va_y, va_r, names), per_symbol_cols = asyncio.run(
         _build_dataset(args.crypto_days, args.stride)
     )
     print(f"      train rows: {len(tr_X)}  val rows: {len(va_X)}  features: {len(names)}")
@@ -170,32 +281,49 @@ def main(argv: list[str]) -> int:
         u, c = np.unique(arr, return_counts=True)
         print(f"      {name} class counts: {dict(zip(u.tolist(), c.tolist()))}")
 
-    print(f"[2/5] Training xgboost + lightgbm (hyperopt trials={args.trials}) ...")
+    # Purged chronological CV folds over the TRAIN split for hyperopt: each
+    # trial is scored by mean accuracy across folds instead of one temporal
+    # slice. embargo = HORIZON + 1 covers the label span in replay-step units
+    # at any stride (see walk_forward.default_embargo's caveat).
+    cv_folds = None
+    if args.trials > 0:
+        try:
+            cv_folds = purged_chrono_folds(len(tr_X), CV_FOLDS, embargo=HORIZON + 1)
+            print(f"      hyperopt CV: {CV_FOLDS} purged folds (embargo={HORIZON + 1})")
+        except ValueError as exc:
+            print(f"      purged CV unavailable ({exc}); hyperopt uses the single split")
+
+    print(f"[2/6] Training {' + '.join(MODEL_TYPES)} (hyperopt trials={args.trials}) ...")
     from services.prediction.registry import ModelRegistry
     from services.prediction.training.trainer import ModelTrainer
 
     trainer = ModelTrainer()
     trained: dict[str, Any] = {}
-    for model_type in ("xgboost", "lightgbm"):
+    for model_type in MODEL_TYPES:
         result, model = trainer.train_model(
             model_type=model_type,
             X_train=tr_X, y_train=tr_y, X_val=va_X, y_val=va_y,
             hyperopt=args.trials > 0, n_trials=args.trials,
             feature_names=names,
             returns_train=tr_r, returns_val=va_r,
+            cv_folds=cv_folds,
         )
         print(f"      {model_type}: val_accuracy={result.val_accuracy:.4f} "
-              f"val_loss={result.val_loss:.4f}")
+              f"val_loss={result.val_loss:.4f} "
+              f"train-val gap={result.train_accuracy - result.val_accuracy:.4f}")
         trained[model_type] = (result, model)
 
-    print("[3/5] Out-of-sample gate ...")
-    failures = [t for t, (res, _) in trained.items() if res.val_accuracy < MIN_VAL_ACCURACY]
+    print("[3/6] Out-of-sample gate (accuracy floor + overfit guard) ...")
+    failures = gate_failures({t: res for t, (res, _) in trained.items()})
     if failures:
-        print(f"GATE FAILED: {failures} below {MIN_VAL_ACCURACY} val accuracy -> NOT promoting")
+        for f in failures:
+            print(f"      GATE FAILED: {f}")
+        print("      -> NOT promoting")
         return 1
-    print(f"      both models beat the {MIN_VAL_ACCURACY} floor (random = 0.333)")
+    print(f"      all models beat the {MIN_VAL_ACCURACY} floor (random = 0.333) "
+          f"within the {MAX_TRAIN_VAL_GAP} overfit gap")
 
-    print("[4/5] Registering + promoting in the serving registry ...")
+    print("[4/6] Registering + promoting in the serving registry ...")
     registry = ModelRegistry(artifact_base=Path(args.artifacts))
     db_rows: list[dict[str, Any]] = []
     for model_type, (result, model) in trained.items():
@@ -213,7 +341,18 @@ def main(argv: list[str]) -> int:
             "artifact_path": str(Path(args.artifacts) / model_type / f"v{version}"),
         })
 
-    print("[5/5] Serving-path smoke check (ModelServer -> ensemble) ...")
+    print("[5/6] Writing the per-symbol feature reference for drift detection ...")
+    try:
+        rows_by_symbol = per_symbol_val_rows(per_symbol_cols, va_X, args.stride)
+        ref_path = write_feature_reference(Path(args.artifacts), names, rows_by_symbol)
+        counts = {sym: len(rows) for sym, rows in rows_by_symbol.items()}
+        print(f"      {ref_path}: {counts}")
+    except ValueError as exc:
+        # A misaligned reference would fire bogus drift alerts; absence merely
+        # skips the feature-drift check (the service logs that once at info).
+        print(f"      SKIPPED: {exc}")
+
+    print("[6/6] Serving-path smoke check (ModelServer -> ensemble) ...")
     from services.prediction.serving import ModelServer
 
     server = ModelServer(registry=registry)

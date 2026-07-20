@@ -133,6 +133,7 @@ class ModelRegistry:
 
     def _load_model(self, meta: ModelMetadata) -> BasePredictor:
         """Instantiate and load a model from its saved artefacts."""
+        from services.prediction.models.catboost_model import CatBoostPredictor
         from services.prediction.models.lightgbm_model import LightGBMPredictor
         from services.prediction.models.lstm_model import LSTMPredictor
         from services.prediction.models.transformer_model import TransformerPredictor
@@ -141,6 +142,7 @@ class ModelRegistry:
         model_classes: dict[str, type[BasePredictor]] = {
             "xgboost": XGBoostPredictor,
             "lightgbm": LightGBMPredictor,
+            "catboost": CatBoostPredictor,
             "lstm": LSTMPredictor,
             "transformer": TransformerPredictor,
         }
