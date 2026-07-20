@@ -16,6 +16,7 @@ import type {
   Order,
   PortfolioSummary,
   Position,
+  Prediction,
   RiskMetrics,
 } from '../types';
 
@@ -138,6 +139,33 @@ export function normalizeModelInfo(raw: Raw): ModelInfo {
     feature_importance:
       (raw.feature_importance as ModelInfo['feature_importance']) ?? {},
     prediction_count: num(raw.prediction_count),
+  };
+}
+
+/** API direction vocabulary (long/short/flat) -> UI signal (buy/sell/hold). */
+const DIRECTION_TO_SIGNAL: Record<string, Prediction['signal']> = {
+  long: 'buy',
+  short: 'sell',
+  flat: 'hold',
+};
+
+export function normalizePrediction(raw: Raw): Prediction {
+  // The API speaks the trading vocabulary (direction/expected_return); the UI
+  // components were written against signal/predicted_return. Anything
+  // unrecognized degrades to 'hold' -- an unknown direction must never crash
+  // the dashboard (undefined.icon did exactly that when this endpoint first
+  // returned real rows).
+  return {
+    id: str(raw.id, `${str(raw.symbol)}-${str(raw.timestamp)}`),
+    symbol: str(raw.symbol),
+    model_id: str(raw.model_id),
+    model_name: str(raw.model_id, 'model'),
+    signal: DIRECTION_TO_SIGNAL[str(raw.direction)] ?? 'hold',
+    confidence: num(raw.confidence),
+    predicted_return: num(raw.expected_return),
+    horizon: '5m',
+    features: (raw.features as Record<string, number>) ?? {},
+    timestamp: str(raw.timestamp),
   };
 }
 
