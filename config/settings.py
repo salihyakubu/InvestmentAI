@@ -58,7 +58,10 @@ class Settings(BaseSettings):
     model_artifact_path: str = "model_artifacts"
     retrain_interval_hours: int = 168
     # How many days of 1m bars the AutoRetrainer loads for a retraining run.
-    retrain_lookback_days: int = 7
+    # 30 days assumes scripts/backfill_history.py has seeded deep history;
+    # the rolling feature replay over ~216k crypto bars runs in a worker
+    # thread (minutes), so the event loop is unaffected.
+    retrain_lookback_days: int = 30
     min_prediction_confidence: float = 0.6
     ensemble_min_agreement: int = 3
 

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 
 from services.prediction.models.base import BasePredictor, TrainResult
+from services.prediction.models.catboost_model import CatBoostPredictor
 from services.prediction.models.lightgbm_model import LightGBMPredictor
 from services.prediction.models.xgboost_model import XGBoostPredictor
 from services.prediction.training.data_loader import TrainingDataLoader
@@ -22,6 +24,7 @@ def _get_model_classes() -> dict[str, type[BasePredictor]]:
     classes: dict[str, type[BasePredictor]] = {
         "xgboost": XGBoostPredictor,
         "lightgbm": LightGBMPredictor,
+        "catboost": CatBoostPredictor,
     }
     try:
         from services.prediction.models.lstm_model import LSTMPredictor
@@ -68,17 +71,28 @@ class ModelTrainer:
         feature_names: list[str] | None = None,
         returns_train: np.ndarray | None = None,
         returns_val: np.ndarray | None = None,
+        cv_folds: Sequence[tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> tuple[TrainResult, BasePredictor]:
         """Train a single model, optionally preceded by hyperopt.
 
         Args:
-            model_type: one of ``xgboost``, ``lightgbm``, ``lstm``, ``transformer``.
+            model_type: one of ``xgboost``, ``lightgbm``, ``catboost``,
+                ``lstm``, ``transformer``.
             X_train / y_train: training data.
             X_val / y_val: validation data.
             hyperopt: whether to run Bayesian hyperparameter optimisation first.
             n_trials: number of optuna trials if *hyperopt* is ``True``.
             extra_params: additional params merged into the model constructor.
             feature_names: optional feature name list (tree models only).
+            returns_train / returns_val: real forward returns for the tree
+                models' return regressors (labels are used as a fallback).
+            cv_folds: optional purged chronological CV folds -- ``(train_idx,
+                val_idx)`` index pairs into *X_train* (see
+                ``walk_forward.purged_chrono_folds``). When given, hyperopt
+                scores each trial by the MEAN validation accuracy across these
+                folds instead of the single train/val split, which stops the
+                search from overfitting its hyperparameters to one temporal
+                slice. The final fit still uses the full train/val split.
 
         Returns:
             ``(TrainResult, trained_model)``
@@ -92,7 +106,7 @@ class ModelTrainer:
         if hyperopt:
             logger.info("Running hyperparameter optimisation for %s (%d trials)", model_type, n_trials)
             optimizer = HyperOptimizer(model_type=model_type, n_trials=n_trials)
-            best_params = optimizer.optimize(X_train, y_train, X_val, y_val)
+            best_params = optimizer.optimize(X_train, y_train, X_val, y_val, folds=cv_folds)
             params.update(best_params)
 
         if extra_params:
@@ -133,7 +147,10 @@ class ModelTrainer:
         seq_length_lstm: int = 60,
         seq_length_transformer: int = 120,
     ) -> dict[str, tuple[TrainResult, BasePredictor]]:
-        """Train all four model types on the same underlying data.
+        """Train every registered model type on the same underlying data.
+
+        Tree models (xgboost, lightgbm, catboost) train on flat feature rows;
+        LSTM / Transformer train on sequence windows when torch is available.
 
         Returns:
             Mapping of model_type -> (TrainResult, trained model).
@@ -146,7 +163,7 @@ class ModelTrainer:
         X_train_flat, X_val_flat = flat_data.X[:split_idx], flat_data.X[split_idx:]
         y_train_flat, y_val_flat = flat_data.y[:split_idx], flat_data.y[split_idx:]
 
-        for model_type in ("xgboost", "lightgbm"):
+        for model_type in ("xgboost", "lightgbm", "catboost"):
             try:
                 result, model = self.train_model(
                     model_type=model_type,
@@ -208,6 +225,12 @@ class ModelTrainer:
             )
         elif model_type == "lightgbm":
             return LightGBMPredictor(
+                classifier_params=params,
+                regressor_params=params,
+                feature_names=feature_names,
+            )
+        elif model_type == "catboost":
+            return CatBoostPredictor(
                 classifier_params=params,
                 regressor_params=params,
                 feature_names=feature_names,

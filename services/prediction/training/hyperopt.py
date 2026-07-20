@@ -1,8 +1,22 @@
-"""Hyperparameter optimisation via Optuna for each model type."""
+"""Hyperparameter optimisation via Optuna for each model type.
+
+Two objective modes:
+
+- Single split (default): minimise ``model.train(...).val_loss`` on the given
+  train/val split -- the original behaviour.
+- Purged CV: when the caller passes ``folds`` (``(train_idx, val_idx)`` index
+  pairs into the training arrays, produced by
+  ``walk_forward.purged_chrono_folds``), each trial is scored by the MEAN
+  validation accuracy across those purged, embargoed chronological folds and
+  the study maximises it. This stops the search from overfitting its
+  hyperparameters to a single temporal slice while keeping the outer
+  validation split untouched for the champion/challenger gate.
+"""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -48,6 +62,18 @@ def _lightgbm_space(trial: optuna.Trial) -> dict[str, Any]:
     }
 
 
+def _catboost_space(trial: optuna.Trial) -> dict[str, Any]:
+    # Symmetric (oblivious) trees: depth capped at 10 and iterations at 500 to
+    # keep per-trial cost comparable to the xgboost space.
+    return {
+        "iterations": trial.suggest_int("iterations", 100, 500),
+        "depth": trial.suggest_int("depth", 4, 10),
+        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-2, 10.0, log=True),
+        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
+    }
+
+
 def _lstm_space(trial: optuna.Trial) -> dict[str, Any]:
     return {
         "hidden_size": trial.suggest_categorical("hidden_size", [64, 128, 256]),
@@ -73,6 +99,7 @@ def _transformer_space(trial: optuna.Trial) -> dict[str, Any]:
 _SEARCH_SPACES: dict[str, Any] = {
     "xgboost": _xgboost_space,
     "lightgbm": _lightgbm_space,
+    "catboost": _catboost_space,
     "lstm": _lstm_space,
     "transformer": _transformer_space,
 }
@@ -98,15 +125,21 @@ class HyperOptimizer:
         y_train: np.ndarray,
         X_val: np.ndarray,
         y_val: np.ndarray,
+        folds: Sequence[tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> dict[str, Any]:
         """Run hyperparameter search and return the best parameter dict.
 
-        The objective minimises validation loss returned by
-        ``model.train(...).val_loss``.
+        Without *folds*, the objective minimises the validation loss returned
+        by ``model.train(...).val_loss`` on the single given split. With
+        *folds* -- ``(train_idx, val_idx)`` index pairs into *X_train* /
+        *y_train* from ``walk_forward.purged_chrono_folds`` -- each trial
+        trains one fresh model per fold and the study MAXIMISES the mean
+        validation accuracy across folds; *X_val* / *y_val* are left untouched
+        so the outer split stays a clean gate for the final fit.
         """
         space_fn = _SEARCH_SPACES[self.model_type]
 
-        def objective(trial: optuna.Trial) -> float:
+        def objective_single(trial: optuna.Trial) -> float:
             params = space_fn(trial)
             model = self._create_model(params)
             try:
@@ -116,16 +149,38 @@ class HyperOptimizer:
                 logger.exception("Trial %d failed", trial.number)
                 return float("inf")
 
+        def objective_folds(trial: optuna.Trial) -> float:
+            params = space_fn(trial)
+            try:
+                accuracies: list[float] = []
+                for train_idx, val_idx in folds or []:
+                    model = self._create_model(params)  # fresh model per fold
+                    result = model.train(
+                        X_train[train_idx], y_train[train_idx],
+                        X_train[val_idx], y_train[val_idx],
+                    )
+                    accuracies.append(result.val_accuracy)
+                return float(np.mean(accuracies))
+            except Exception:
+                logger.exception("Trial %d failed", trial.number)
+                return 0.0  # worst possible accuracy under maximisation
+
+        use_folds = bool(folds)
         study = optuna.create_study(
-            direction="minimize",
+            direction="maximize" if use_folds else "minimize",
             sampler=optuna.samplers.TPESampler(seed=42),
             pruner=optuna.pruners.MedianPruner(),
         )
-        study.optimize(objective, n_trials=self.n_trials, show_progress_bar=False)
+        study.optimize(
+            objective_folds if use_folds else objective_single,
+            n_trials=self.n_trials,
+            show_progress_bar=False,
+        )
 
         logger.info(
-            "Hyperopt complete for %s  best_val_loss=%.6f  best_params=%s",
+            "Hyperopt complete for %s  %s=%.6f  best_params=%s",
             self.model_type,
+            "best_mean_cv_accuracy" if use_folds else "best_val_loss",
             study.best_value,
             study.best_params,
         )
@@ -139,6 +194,9 @@ class HyperOptimizer:
         elif self.model_type == "lightgbm":
             from services.prediction.models.lightgbm_model import LightGBMPredictor
             return LightGBMPredictor(classifier_params=params, regressor_params=params)
+        elif self.model_type == "catboost":
+            from services.prediction.models.catboost_model import CatBoostPredictor
+            return CatBoostPredictor(classifier_params=params, regressor_params=params)
         elif self.model_type == "lstm":
             from services.prediction.models.lstm_model import LSTMPredictor
             return LSTMPredictor(**params)

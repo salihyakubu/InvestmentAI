@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,8 +28,33 @@ logger = structlog.get_logger(__name__)
 # Stream / topic constants.
 _ORDERS_STREAM = "orders"
 _PREDICTIONS_STREAM = "predictions.ready"
+_FEATURES_STREAM = "features.ready"
 _SYSTEM_STREAM = SYSTEM
 _CONSUMER_GROUP = "continuous-learning-service"
+
+# Live-side feature buffering for data-drift detection. Rows are stored as
+# compact float32 ndarrays, NOT dicts (a dict row is ~10x larger). Worst-case
+# memory: 12 symbols x 2000 rows x ~30 features x 4 bytes ~= 3 MB.
+_FEATURE_BUFFER_MAXLEN = 2000
+
+# Minimum buffered live rows per symbol before a PSI comparison against the
+# training reference is statistically meaningful.
+_FEATURE_DRIFT_MIN_ROWS = 500
+
+# Reference feature distributions dropped by the TRAINING pipeline alongside
+# model artifacts; this service only READS the file and silently skips
+# feature-drift checking while it is absent.
+#
+# .npz schema contract (np.savez):
+#   - "feature_names": 1-D str array -- feature names in SORTED order
+#     (dataset_builder's sorted-names convention).
+#   - one 2-D float array PER SYMBOL, keyed by the raw symbol string
+#     (e.g. "BTC/USDT" -- slashes round-trip through np.savez/np.load),
+#     shape (n_rows, n_features), columns aligned with "feature_names".
+#     Rows are the training-window feature vectors for that symbol.
+#
+#   np.savez(path, feature_names=np.array(names), **{symbol: rows, ...})
+_FEATURE_REFERENCE_FILENAME = "feature_reference.npz"
 
 # Daily evaluation interval (seconds).
 _EVALUATION_INTERVAL = 86_400  # 24 hours
@@ -80,14 +108,16 @@ class ContinuousLearningService:
     """Subscribes to trading events and drives the model improvement loop.
 
     Lifecycle:
-        1. ``start()`` -- subscribe to the orders, predictions, and control
-           streams; launch periodic evaluation and outcome resolution.
+        1. ``start()`` -- subscribe to the orders, predictions, features, and
+           control streams; launch periodic evaluation and outcome resolution.
         2. Filled orders are fed into the feedback loop.
         3. Predictions are tracked; a background resolver later scores them
            against realised 1m ohlcv closes (real actuals, not fabricated).
-        4. Daily evaluation checks drift and triggers retraining when needed;
+        4. Live feature rows are buffered per symbol and compared against the
+           training-time reference distributions (feature/data drift).
+        5. Daily evaluation checks drift and triggers retraining when needed;
            a ``TradingControlEvent(action="retrain")`` triggers it on demand.
-        5. Publishes ``ModelRetrainedEvent`` and ``DriftDetectedEvent``.
+        6. Publishes ``ModelRetrainedEvent`` and ``DriftDetectedEvent``.
     """
 
     def __init__(
@@ -112,6 +142,19 @@ class ContinuousLearningService:
         self._running = False
         # model_id -> list of prediction records
         self._tracked_predictions: dict[str, list[dict[str, Any]]] = {}
+        # PER-SYMBOL live feature rows for data-drift detection (bounded; see
+        # _FEATURE_BUFFER_MAXLEN for the ~3 MB worst-case memory bound). Rows
+        # follow the sorted feature-name ordering pinned in _feature_names.
+        self._feature_buffers: dict[str, deque[np.ndarray]] = {}
+        self._feature_names: list[str] | None = None
+        self._feature_schema_warned = False
+        # Lazily loaded ({symbol: reference rows}, feature_names) from the
+        # training-side .npz, cached by mtime so a retrain that rewrites the
+        # file is picked up on the next cycle.
+        self._feature_reference: tuple[dict[str, np.ndarray], list[str]] | None = None
+        self._feature_reference_mtime: float | None = None
+        self._reference_missing_logged = False
+        self._reference_mismatch_warned = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -149,6 +192,19 @@ class ContinuousLearningService:
                     handler=self.handle_prediction,
                 ),
                 name="cl-predictions",
+            )
+        )
+
+        # Subscribe to live feature vectors (per-symbol data-drift buffers)
+        self._tasks.append(
+            asyncio.create_task(
+                self._event_bus.subscribe(
+                    stream=_FEATURES_STREAM,
+                    group=_CONSUMER_GROUP,
+                    consumer="cl-features-1",
+                    handler=self.handle_features_ready,
+                ),
+                name="cl-features",
             )
         )
 
@@ -269,6 +325,55 @@ class ContinuousLearningService:
             model_id=model_id,
             symbol=symbol,
         )
+
+    async def handle_features_ready(self, event: Event) -> None:
+        """Buffer a live feature row for per-symbol data-drift detection.
+
+        PER-SYMBOL buffering is deliberate: pooling rows across symbols would
+        bake the crypto/stocks market-hours mix into one distribution, and the
+        nightly composition swing (stocks vanish after the close) would
+        false-alarm PSI even when every per-symbol feature is stable.
+        """
+        symbol = getattr(event, "symbol", event.payload.get("symbol", ""))
+        feature_vector = getattr(
+            event, "feature_vector", event.payload.get("feature_vector", None)
+        )
+        if not symbol or not isinstance(feature_vector, dict) or not feature_vector:
+            return
+
+        # Stable column ordering: sorted names (dataset_builder's convention),
+        # pinned from the first event so every buffered row is column-aligned.
+        names = sorted(feature_vector)
+        if self._feature_names is None:
+            self._feature_names = names
+        elif names != self._feature_names:
+            # Feature-set changes arrive via a deploy (fresh process, empty
+            # buffers); a mid-run mismatch is malformed input. Skip it rather
+            # than poison the column alignment of buffered rows.
+            if not self._feature_schema_warned:
+                self._feature_schema_warned = True
+                logger.warning(
+                    "continuous_learning.feature_schema_mismatch",
+                    symbol=symbol,
+                    expected=len(self._feature_names),
+                    got=len(names),
+                )
+            return
+
+        try:
+            row = np.asarray(
+                [float(feature_vector[n]) for n in names], dtype=np.float32
+            )
+        except (TypeError, ValueError):
+            return  # non-numeric payload; not a usable feature row
+        if not np.all(np.isfinite(row)):
+            return  # NaN/inf would corrupt PSI percentile binning
+
+        buffer = self._feature_buffers.get(symbol)
+        if buffer is None:
+            buffer = deque(maxlen=_FEATURE_BUFFER_MAXLEN)
+            self._feature_buffers[symbol] = buffer
+        buffer.append(row)
 
     async def handle_control(self, event: Event) -> None:
         """React to operator control commands on the CONTROL stream.
@@ -479,9 +584,143 @@ class ContinuousLearningService:
         bar_time, close = row
         return bar_time, float(close)
 
+    # ------------------------------------------------------------------
+    # Feature (data) drift
+    # ------------------------------------------------------------------
+
+    def _load_feature_reference(
+        self,
+    ) -> tuple[dict[str, np.ndarray], list[str]] | None:
+        """Lazily load the training-side reference distributions.
+
+        Schema: see ``_FEATURE_REFERENCE_FILENAME``. Returns ``None`` (and
+        logs the absence once, at info) while the training pipeline has not
+        dropped the file yet -- feature-drift checking is silently skipped.
+        The parsed file is cached and re-read only when its mtime changes.
+        """
+        path = Path(self._settings.model_artifact_path) / _FEATURE_REFERENCE_FILENAME
+        if not path.exists():
+            if not self._reference_missing_logged:
+                self._reference_missing_logged = True
+                logger.info(
+                    "continuous_learning.feature_reference_missing",
+                    path=str(path),
+                )
+            return None
+
+        try:
+            mtime = path.stat().st_mtime
+            if (
+                self._feature_reference is not None
+                and mtime == self._feature_reference_mtime
+            ):
+                return self._feature_reference
+            with np.load(str(path)) as data:
+                names = [str(n) for n in data["feature_names"]]
+                refs = {
+                    key: np.asarray(data[key], dtype=np.float32)
+                    for key in data.files
+                    if key != "feature_names"
+                }
+        except Exception:
+            logger.exception(
+                "continuous_learning.feature_reference_load_failed",
+                path=str(path),
+            )
+            return None
+
+        self._feature_reference = (refs, names)
+        self._feature_reference_mtime = mtime
+        return self._feature_reference
+
+    async def _check_feature_drift(self) -> None:
+        """Per-symbol PSI check of live feature rows vs the training reference.
+
+        For every symbol with >= _FEATURE_DRIFT_MIN_ROWS buffered live rows
+        AND a reference distribution, run the (blocking, scipy-backed) PSI/KS
+        comparison in a thread. Each drifting symbol publishes its own
+        ``DriftDetectedEvent(drift_type="data")`` -- the monitoring alert path
+        consumes SYSTEM-stream drift events -- but the retrainer is marked at
+        most ONCE per cycle across all symbols (no retrain storms).
+        """
+        # Live side first: with no buffered rows there is nothing to compare,
+        # and idle evaluation cycles should not touch the filesystem.
+        if self._feature_names is None or not self._feature_buffers:
+            return
+
+        reference = self._load_feature_reference()
+        if reference is None:
+            return
+        refs, ref_names = reference
+        if ref_names != self._feature_names:
+            # Live pipeline and reference disagree on the feature set (e.g. a
+            # stale reference after a feature-pipeline upgrade): column-wise
+            # PSI would compare unrelated features, so skip until the training
+            # side rewrites the file.
+            if not self._reference_mismatch_warned:
+                self._reference_mismatch_warned = True
+                logger.warning(
+                    "continuous_learning.feature_reference_schema_mismatch",
+                    reference_features=len(ref_names),
+                    live_features=len(self._feature_names),
+                )
+            return
+
+        any_drifted = False
+        for symbol in list(self._feature_buffers):
+            buffer = self._feature_buffers[symbol]
+            if len(buffer) < _FEATURE_DRIFT_MIN_ROWS:
+                continue
+            ref_rows = refs.get(symbol)
+            if (
+                ref_rows is None
+                or ref_rows.ndim != 2
+                or ref_rows.shape[1] != len(ref_names)
+            ):
+                continue  # no (usable) reference for this symbol
+
+            # Snapshot BEFORE the thread hop: handle_features_ready appends
+            # between awaits, and np.stack over a materialised list is atomic
+            # w.r.t. the event loop.
+            live_rows = np.stack(list(buffer))
+            report = await asyncio.to_thread(
+                self._drift_detector.detect_feature_drift, live_rows, ref_rows
+            )
+            if not report.is_drifting:
+                continue
+
+            any_drifted = True
+            drift_event = DriftDetectedEvent(
+                source_service="continuous_learning",
+                drift_type="data",
+                score=report.drift_score,
+                threshold=report.threshold,
+                model_id=f"features:{symbol}",
+            )
+            await self._event_bus.publish(_SYSTEM_STREAM, drift_event)
+            logger.warning(
+                "continuous_learning.feature_drift_detected",
+                symbol=symbol,
+                score=report.drift_score,
+                live_rows=int(live_rows.shape[0]),
+            )
+
+        # Retrain marking happens ONCE per cycle across all symbols: feature
+        # drift is an input-distribution property of the whole serving stack,
+        # so per-symbol marking would just queue a retrain storm. Marked
+        # models are picked up by the should_retrain check later this cycle.
+        if any_drifted:
+            for model_id in list(self._tracked_predictions):
+                self._retrainer.mark_drift(model_id)
+
     async def _run_evaluation_cycle(self) -> None:
         """Execute one full evaluation cycle."""
         logger.info("continuous_learning.evaluation_cycle.start")
+
+        # Feature (data) drift first, so a drift-marked model is seen by its
+        # should_retrain check below in the SAME cycle (mirrors the
+        # prediction-drift path's mark-then-check ordering).
+        await self._check_feature_drift()
 
         for model_id in list(self._tracked_predictions.keys()):
             # 1. Evaluate live performance

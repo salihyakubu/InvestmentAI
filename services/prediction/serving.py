@@ -50,7 +50,7 @@ class ModelServer:
 
         import os
         worker_mode = os.environ.get("WORKER_MODE", "full")
-        model_types = ["xgboost", "lightgbm"]
+        model_types = ["xgboost", "lightgbm", "catboost"]
         if worker_mode == "full":
             model_types.extend(["lstm", "transformer"])
 
@@ -159,7 +159,7 @@ class ModelServer:
         Tree models share the feature set, so the prediction service can use
         this to order inference features identically to training.
         """
-        for model_type in ("xgboost", "lightgbm"):
+        for model_type in ("xgboost", "lightgbm", "catboost"):
             model = self._models.get(model_type)
             if model is not None and model.feature_names:
                 return model.feature_names
