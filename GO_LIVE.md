@@ -354,3 +354,15 @@ Railway's public Postgres proxy kills very long-lived connections.
 **Ops trap recorded:** deploy the `ui` service from `frontend/` (it has its own
 railway link); a repo-root `railway up -s ui` builds the backend image onto it
 and fails healthcheck.
+
+**Cloud deep-data retrain drill (2026-07-21 10:33–10:41Z) — PASSED:** with the
+backfill complete (649,405 rows of 90-day 1m history across 5 pairs), an
+operator `retrain` command made the WORKER train on 30 days of its own data
+through the full new pipeline (~8 min: 216k rows loaded, features replayed,
+triple-barrier labels, hyperopt, calibration selection — isotonic won, Brier
+0.1983 vs 0.1994). The worker served 141 predictions and every health beat
+stayed green DURING training (the async fix holding under real load). The
+champion gate then correctly **declined** the challenger: 30-day model
+val 0.5279 < 90-day champion 0.5471 — less data should lose, and the gate
+proved it with real numbers. The learning loop is verified end-to-end in
+production at full depth.
