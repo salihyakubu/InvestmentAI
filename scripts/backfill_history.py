@@ -310,6 +310,11 @@ def main(argv: list[str]) -> int:
                         help="name of the env var holding the DB URL (default DATABASE_URL)")
     parser.add_argument("--dry-run", action="store_true",
                         help="fetch + report only; write nothing")
+    parser.add_argument("--symbols", default="",
+                        help="comma-separated subset of the active symbols to "
+                             "backfill (e.g. 'ADA/USDT'); useful to finish one "
+                             "symbol after a provider rate-limit without "
+                             "re-fetching the rest")
     args = parser.parse_args(argv[1:])
 
     if args.crypto_days < 1:
@@ -324,6 +329,14 @@ def main(argv: list[str]) -> int:
     settings = get_settings()
     crypto_symbols = list(settings.active_symbols_crypto)
     stock_symbols = list(settings.active_symbols_stocks) if args.stocks else []
+    if args.symbols:
+        wanted = {s.strip() for s in args.symbols.split(",") if s.strip()}
+        unknown = wanted - set(crypto_symbols) - set(settings.active_symbols_stocks)
+        if unknown:
+            print(f"--symbols not in the active universe: {sorted(unknown)}", file=sys.stderr)
+            return 2
+        crypto_symbols = [s for s in crypto_symbols if s in wanted]
+        stock_symbols = [s for s in settings.active_symbols_stocks if s in wanted]
 
     url = _resolve_database_url(args.database_url_env)
 
