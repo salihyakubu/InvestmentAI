@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,37 @@ from core.enums import AssetClass, TimeFrame
 from services.data_ingestion.providers.base import BaseDataProvider, RawBar, RealtimeCallback
 
 logger = structlog.get_logger(__name__)
+
+# Known-transient websocket connect failures. 'connection limit exceeded'
+# happens on every deploy while the previous container still holds the
+# stream connection (~13s drain window) — retry with backoff, no traceback.
+_TRANSIENT_STREAM_ERRORS = ("connection limit exceeded",)
+
+# Reconnect backoff bounds (seconds).
+_STREAM_BACKOFF_BASE_S = 1.0
+_STREAM_BACKOFF_CAP_S = 30.0
+
+
+def _is_transient_stream_error(exc: BaseException) -> bool:
+    """True for connect errors that resolve on their own (deploy drain)."""
+    message = str(exc).lower()
+    return any(marker in message for marker in _TRANSIENT_STREAM_ERRORS)
+
+
+def _stream_backoff_delay(
+    attempt: int,
+    *,
+    base: float = _STREAM_BACKOFF_BASE_S,
+    cap: float = _STREAM_BACKOFF_CAP_S,
+    rand: float = 0.5,
+) -> float:
+    """Delay before reconnect *attempt* (0-based): capped exponential + jitter.
+
+    *rand* is a uniform draw in [0, 1) mapped to a 0.5-1.5x multiplier so
+    concurrent reconnects don't synchronise; the cap holds after jitter.
+    """
+    delay = base * (2.0 ** min(attempt, 32))
+    return min(cap, delay * (0.5 + rand))
 
 # Mapping from our TimeFrame enum values to Alpaca TimeFrame objects.
 # Resolved lazily to avoid import-time failures when alpaca-py is absent.
@@ -142,6 +174,7 @@ class AlpacaDataProvider(BaseDataProvider):
             api_key=self._api_key,
             secret_key=self._secret_key,
         )
+        self._install_stream_backoff(self._stream)
         self._running = True
 
         async def _on_bar(bar: Any) -> None:
@@ -168,6 +201,50 @@ class AlpacaDataProvider(BaseDataProvider):
 
         # _run() blocks until the stream is stopped.
         self._stream_task = asyncio.create_task(self._run_stream())
+
+    def _install_stream_backoff(self, stream: Any) -> None:
+        """Wrap the SDK's connect step with jittered exponential backoff.
+
+        alpaca-py's ``_run_forever`` retries ``_start_ws`` immediately
+        (``asyncio.sleep(0)``) and logs a full traceback per attempt, so a
+        transient 'connection limit exceeded' during deploy drain storms at
+        2-3 tracebacks/sec. The SDK exposes no backoff hook; wrapping
+        ``_start_ws`` keeps its loop intact while transient failures retry
+        here with backoff and a single-line warning. Non-transient errors
+        propagate to the SDK loop unchanged. Success resets the backoff:
+        ``attempt`` is local, and the SDK calls ``_start_ws`` afresh per
+        reconnect.
+        """
+        original_start_ws = stream._start_ws
+
+        async def _start_ws_with_backoff() -> None:
+            attempt = 0
+            while True:
+                try:
+                    await original_start_ws()
+                    return
+                except Exception as exc:
+                    if not _is_transient_stream_error(exc):
+                        raise
+                    # Drop the half-open socket so retries don't hold extra
+                    # connections against the account limit.
+                    try:
+                        await stream.close()
+                    except Exception:
+                        logger.debug("alpaca.realtime.backoff_close_error", exc_info=True)
+                    delay = _stream_backoff_delay(attempt, rand=random.random())
+                    attempt += 1
+                    logger.warning(
+                        "alpaca.realtime.transient_connect_error",
+                        error=str(exc),
+                        attempt=attempt,
+                        retry_in_s=round(delay, 1),
+                    )
+                    await asyncio.sleep(delay)
+                    if not self._running:
+                        raise asyncio.CancelledError from None
+
+        stream._start_ws = _start_ws_with_backoff
 
     async def _run_stream(self) -> None:
         """Run the WebSocket event loop in a background task."""

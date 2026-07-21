@@ -90,6 +90,16 @@ export interface RiskMetrics {
   position_concentration: Record<string, number>;
 }
 
+/**
+ * Calibration choice recorded by the registry in validation_metrics. Only
+ * present when the training run recorded it; brier is the chosen method's
+ * validation Brier score (absent for method "none" or older registry rows).
+ */
+export interface ModelCalibration {
+  method: string;
+  brier?: number;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -104,6 +114,7 @@ export interface ModelInfo {
   last_trained: string;
   feature_importance: Record<string, number>;
   prediction_count: number;
+  calibration?: ModelCalibration;
 }
 
 export interface AuditLogEntry {

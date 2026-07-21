@@ -218,7 +218,13 @@ class ExecutionEngineService:
             return
         action = getattr(event, "action", "") or event.payload.get("action", "")
         reason = getattr(event, "reason", "") or event.payload.get("reason", "")
-        logger.warning("control_command_received", action=action, reason=reason)
+        # Foreign actions (owned by other services, e.g. retrain) arrive on the
+        # shared CONTROL stream too — debug, so runbook readers only see
+        # WARNING for genuinely operator-critical halt/resume/flatten.
+        control_log = (
+            logger.debug if action in _FOREIGN_CONTROL_ACTIONS else logger.warning
+        )
+        control_log("control_command_received", action=action, reason=reason)
         if action == "halt":
             self.halt()
         elif action == "resume":

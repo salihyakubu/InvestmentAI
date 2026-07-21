@@ -67,6 +67,41 @@ async def test_foreign_action_logs_debug_not_warning(
 
 
 @pytest.mark.asyncio
+async def test_control_command_received_is_debug_for_foreign_actions(
+    mock_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The receipt line itself must not warn for foreign actions either."""
+    recorder = _RecordingLogger()
+    monkeypatch.setattr("services.execution.service.logger", recorder)
+    engine = _engine(mock_settings)
+
+    await engine._handle_control(
+        TradingControlEvent(action="retrain", source_service="test")
+    )
+
+    assert ("debug", "control_command_received") in recorder.calls
+    warnings = [event for level, event in recorder.calls if level == "warning"]
+    assert warnings == []  # a retrain pass leaves the WARNING channel silent
+
+
+@pytest.mark.asyncio
+async def test_control_command_received_stays_warning_for_operator_actions(
+    mock_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """halt is operator-critical: receipt must stay at WARNING."""
+    recorder = _RecordingLogger()
+    monkeypatch.setattr("services.execution.service.logger", recorder)
+    engine = _engine(mock_settings)
+
+    await engine._handle_control(
+        TradingControlEvent(action="halt", source_service="test")
+    )
+
+    assert ("warning", "control_command_received") in recorder.calls
+    assert engine.halted is True
+
+
+@pytest.mark.asyncio
 async def test_genuinely_unknown_action_still_warns(
     mock_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

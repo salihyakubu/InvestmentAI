@@ -13,6 +13,19 @@ interface EquityCurveProps {
   data: { date: string; equity: number }[];
 }
 
+/**
+ * Scale-aware axis label: sub-$10k values render as plain dollars ("$100",
+ * "$9,999") -- a flat /1000 divisor showed a $100 paper account as "$0k" on
+ * every tick. At $10k+ switch to thousands with one significant decimal
+ * ("$10.2k"), dropping a trailing ".0" ("$250k").
+ */
+export function formatEquityTick(v: number): string {
+  if (Math.abs(v) < 10_000) {
+    return `$${Math.round(v).toLocaleString('en-US')}`;
+  }
+  return `$${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+}
+
 export default function EquityCurve({ data }: EquityCurveProps) {
   const chartData = data.map((d) => ({
     ...d,
@@ -48,9 +61,7 @@ export default function EquityCurve({ data }: EquityCurveProps) {
               stroke="#6b7280"
               fontSize={11}
               tickLine={false}
-              tickFormatter={(v: number) =>
-                `$${(v / 1000).toFixed(0)}k`
-              }
+              tickFormatter={formatEquityTick}
             />
             <Tooltip
               contentStyle={{
