@@ -4,7 +4,7 @@
     "model_name": "xgboost",
     "model_type": "xgboost",
     "version": 1,
-    "is_active": true,
+    "is_active": false,
     "metrics": {
       "train_loss": 1.0301297903060913,
       "val_loss": 0.9990951418876648,
@@ -20,7 +20,7 @@
     "model_name": "lightgbm",
     "model_type": "lightgbm",
     "version": 1,
-    "is_active": true,
+    "is_active": false,
     "metrics": {
       "train_loss": 1.0198841248825674,
       "val_loss": 1.0022502920904612,
@@ -29,6 +29,63 @@
     },
     "artifact_path": "model_artifacts/lightgbm/v1",
     "created_at": "2026-07-19T12:35:05.693234+00:00",
+    "extra": {}
+  },
+  {
+    "model_id": "ba9a84c5-ea01-446f-9e59-6aaa5772f151",
+    "model_name": "xgboost",
+    "model_type": "xgboost",
+    "version": 2,
+    "is_active": true,
+    "metrics": {
+      "train_loss": 0.9974219799041748,
+      "val_loss": 0.9911351799964905,
+      "train_accuracy": 0.5290993246832081,
+      "val_accuracy": 0.5471304479763305,
+      "chosen_calibration": "isotonic",
+      "brier_isotonic": 0.1956414133407042,
+      "brier_sigmoid": 0.19621046891187002
+    },
+    "artifact_path": "model_artifacts/xgboost/v2",
+    "created_at": "2026-07-20T23:42:28.844429+00:00",
+    "extra": {}
+  },
+  {
+    "model_id": "efac1413-ef19-4428-95f9-219269314580",
+    "model_name": "lightgbm",
+    "model_type": "lightgbm",
+    "version": 2,
+    "is_active": true,
+    "metrics": {
+      "train_loss": 0.9872480489277313,
+      "val_loss": 0.9895044945606243,
+      "train_accuracy": 0.5347332878063586,
+      "val_accuracy": 0.5472821757766567,
+      "chosen_calibration": "isotonic",
+      "brier_isotonic": 0.1956771340510092,
+      "brier_sigmoid": 0.19616100974574427
+    },
+    "artifact_path": "model_artifacts/lightgbm/v2",
+    "created_at": "2026-07-20T23:42:28.854995+00:00",
+    "extra": {}
+  },
+  {
+    "model_id": "238115bf-ba99-4f99-a478-d7688fb26cf5",
+    "model_name": "catboost",
+    "model_type": "catboost",
+    "version": 1,
+    "is_active": true,
+    "metrics": {
+      "train_loss": 0.994155550307828,
+      "val_loss": 0.9888997516833757,
+      "train_accuracy": 0.5324948782153426,
+      "val_accuracy": 0.5469028562758411,
+      "chosen_calibration": "isotonic",
+      "brier_isotonic": 0.19535521211211096,
+      "brier_sigmoid": 0.1959203665851715
+    },
+    "artifact_path": "model_artifacts/catboost/v1",
+    "created_at": "2026-07-20T23:42:28.954483+00:00",
     "extra": {}
   }
 ]
