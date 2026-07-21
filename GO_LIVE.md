@@ -366,3 +366,14 @@ champion gate then correctly **declined** the challenger: 30-day model
 val 0.5279 < 90-day champion 0.5471 — less data should lose, and the gate
 proved it with real numbers. The learning loop is verified end-to-end in
 production at full depth.
+
+**Trade-gate tuning (2026-07-21, operator-approved):** 28h of the new calibrated
+3-model ensemble produced 1,628 predictions — 100% flat, zero non-flat calls. A
+live probe of the production models showed why: honestly calibrated
+probabilities sit near the label base rates (31% long / 38% flat / 31% short),
+so the old `MIN_PREDICTION_CONFIDENCE=0.6` bar (p(long) ≥ 0.6 vs a 0.31 base
+rate) is structurally unreachable — it dated from the pre-calibration era of
+overconfident outputs. Set to **0.40** on worker+api (env var, reversible in
+seconds) so the paper soak can actually exercise the trade/execution/P&L path;
+3-model unanimity and conformal gating remain. Follow-up filed: replace the
+absolute-confidence trigger with a calibrated edge margin (p_long − p_short).
