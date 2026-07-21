@@ -132,11 +132,17 @@ async def _build_services(
     # The ModelServer bridges the registry to serving; without it the service
     # has no models and every prediction is hardcoded flat (the registry alone
     # is not enough -- this wiring is what makes promoted models actually serve).
-    from services.prediction.registry import ModelRegistry
+    from core.models.base import get_async_session_factory
+    from services.prediction.registry import ModelRegistry, restore_and_reconcile
     from services.prediction.service import PredictionService
     from services.prediction.serving import ModelServer
 
+    session_factory = get_async_session_factory()
     model_registry = ModelRegistry(artifact_base=Path(settings.model_artifact_path))
+    # Railway has no volumes: cloud-promoted artifacts outlive deploys only via
+    # the DB blob mirror. Restore anything newer than the shipped registry and
+    # reconcile model_metadata to what actually serves. Never raises.
+    await restore_and_reconcile(model_registry, session_factory)
     model_server = ModelServer(registry=model_registry)
     prediction = PredictionService(
         event_bus=event_bus, settings=settings, model_server=model_server
@@ -169,17 +175,12 @@ async def _build_services(
     )
 
     # -- Continuous Learning --
-    from core.models.base import get_async_session_factory
     from services.continuous_learning.drift_detector import DataDriftDetector
     from services.continuous_learning.evaluator import ModelEvaluator
     from services.continuous_learning.feedback_loop import TradingFeedbackLoop
     from services.continuous_learning.retrainer import AutoRetrainer
     from services.continuous_learning.service import ContinuousLearningService
     from services.prediction.training.trainer import ModelTrainer
-
-    # One shared session factory for every DB-touching service below; the
-    # lazy fallbacks inside retrainer/CL would otherwise build a second engine.
-    session_factory = get_async_session_factory()
 
     trainer = ModelTrainer()
     evaluator = ModelEvaluator()
@@ -219,6 +220,14 @@ async def _build_services(
         database_url=settings.async_database_url,
         redis_url=settings.redis_url,
     )
+    if not settings.alert_webhook_url:
+        # An unattended soak with no alert delivery is a silent failure mode:
+        # circuit-breaker trips and drift warnings would go only to logs nobody
+        # is watching. Make running without a webhook a visible choice.
+        logger.warning(
+            "worker.alerts_log_only",
+            hint="set ALERT_WEBHOOK_URL (Slack incoming webhook) for operator alerts",
+        )
     alert_manager = AlertManager(webhook_url=settings.alert_webhook_url or None)
     audit_logger = AuditLogger()
 

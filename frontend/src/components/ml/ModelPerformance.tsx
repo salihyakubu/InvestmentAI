@@ -71,8 +71,15 @@ export default function ModelPerformance({
                 key={model.id}
                 className="border-b border-gray-700/50 hover:bg-gray-800/50"
               >
-                <td className="py-2.5 px-3 font-semibold text-white text-sm">
-                  {model.name}
+                <td className="py-2.5 px-3 text-sm">
+                  <div className="font-semibold text-white">{model.name}</div>
+                  {model.calibration && (
+                    <div className="text-xs text-gray-500 font-mono">
+                      cal: {model.calibration.method}
+                      {model.calibration.brier !== undefined &&
+                        ` · Brier ${model.calibration.brier.toFixed(4)}`}
+                    </div>
+                  )}
                 </td>
                 <td className="py-2.5 px-3 text-xs text-gray-400 uppercase font-mono">
                   {model.type}
