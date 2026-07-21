@@ -309,3 +309,48 @@ tests; live it is rightly holding until the ensemble sees an edge.
 were 501 stubs while the worker had been persisting every prediction — the
 dashboard's prediction views had no data source. Now serving live rows
 (verified: fresh predictions seconds old via the deployed API).
+
+## ML ascent record (2026-07-20 → 07-21) — deep-data 3-model conformal ensemble LIVE
+
+The prediction stack was upgraded end-to-end (PR #29) and new champions trained
+and deployed (PR #30). Every change remains subject to the champion/challenger
+gate; nothing bypasses it.
+
+**Pipeline upgrades:** triple-barrier labeling (volatility-scaled barriers,
+first-touch, per-symbol) replaces percentile thresholds; hyperopt now maximizes
+mean accuracy across purged walk-forward folds with embargo (no label-horizon
+leakage); calibration method (isotonic vs Platt) selected per model by Brier
+score; split-conformal prediction sets (α=0.10) added as an abstention layer —
+the ensemble emits a non-flat signal only when every agreeing member conformally
+supports it; CatBoost added as a third tree family with full contract parity;
+overfit guard at the gate (train−val gap > 0.35 rejected).
+
+**Deep-data champions (trained on 90 days of real 1m bars — 105,432 train /
+26,363 val rows, 48 features):**
+- xgboost v2: val_accuracy 0.5471, train−val gap −0.0180
+- lightgbm v2: val_accuracy 0.5473, gap −0.0125
+- catboost v1: val_accuracy 0.5469, gap −0.0144
+
+All gaps NEGATIVE (validation beats training — no overfit). Previous champions
+were ~0.505 on a few hundred validation rows. NOTE: labeling changed between
+generations, so accuracies are not strictly comparable across them; within-
+generation, the numbers are honest out-of-sample results on 26k rows.
+
+**Verified in production (2026-07-21 06:21Z):** worker serves
+`ensemble:xgboost,lightgbm,catboost`; predictions flowing at cadence;
+model_metadata mirrored to match the serving registry (UI truthful).
+
+**Feature-drift detection ARMED:** `feature_reference.npz` (per-symbol training
+distributions) now ships with artifacts; live per-symbol feature buffers
+compare against it each evaluation cycle once ≥500 rows accumulate (~8h after
+deploy). Drift publishes `DriftDetectedEvent(drift_type="data")` → monitoring
+alerts (Slack once ALERT_WEBHOOK_URL is set) and arms retraining.
+
+**Deep history backfill:** ~648k rows of 90-day 1m crypto history loaded into
+`ohlcv` (idempotent script, `scripts/backfill_history.py`); cloud retrains now
+use a 30-day lookback (was 7). Ops note: run it with modest `--batch` values —
+Railway's public Postgres proxy kills very long-lived connections.
+
+**Ops trap recorded:** deploy the `ui` service from `frontend/` (it has its own
+railway link); a repo-root `railway up -s ui` builds the backend image onto it
+and fails healthcheck.
