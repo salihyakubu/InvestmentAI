@@ -377,3 +377,35 @@ overconfident outputs. Set to **0.40** on worker+api (env var, reversible in
 seconds) so the paper soak can actually exercise the trade/execution/P&L path;
 3-model unanimity and conformal gating remain. Follow-up filed: replace the
 absolute-confidence trigger with a calibrated edge margin (p_long − p_short).
+
+## Incident postmortem (2026-07-21 18:43Z → 07-22 ~23:0xZ) — pipeline stall, RESOLVED
+
+**Impact:** no bars/predictions persisted for ~4.5h (crypto gap later backfilled:
+6,602 rows re-inserted; final per-symbol counts ~131k verified — no data loss).
+Paper account unaffected (no positions were open).
+
+**Root cause:** three Postgres sessions from the MORNING'S ADA backfill client sat
+`idle in transaction` for 14h49m holding uncommitted `ohlcv` writes. Live inserts
+eventually queued behind their transaction ids; the 18:43Z deploy restart re-formed
+the lock convoy and the whole worker write path stalled. Two amplifiers made
+diagnosis hard: (1) the Alpaca websocket retrying dead credentials (the API now
+returns 401 — keys need re-issuing) in a tight loop with giant rich tracebacks,
+flooding Railway's 500 logs/sec cap (thousands of lines dropped, burying the real
+error); (2) a code rollback that changed nothing — proving the cause was state,
+not code.
+
+**Resolution:** terminated the zombie transactions (pipeline recovered within
+seconds); blanked ALPACA_API_KEY/SECRET on the worker (ingestion falls back to
+Yahoo; crypto unaffected) until fresh keys are issued; restored `main` on the
+worker (its Alpaca backoff + single-line warnings prevent the log-storm class);
+gap-backfilled the outage window.
+
+**Prevention (applied):** `ALTER DATABASE ... SET
+idle_in_transaction_session_timeout = '10min'` — server-side, any future zombie
+transaction self-terminates instead of strangling the table. Follow-up filed:
+backfill-script connection hygiene (guaranteed engine disposal + per-session
+timeout).
+
+**Operator action required:** issue fresh Alpaca paper keys (old ones return 401)
+and set ALPACA_API_KEY / ALPACA_SECRET_KEY on the worker to restore the live
+stocks feed.
