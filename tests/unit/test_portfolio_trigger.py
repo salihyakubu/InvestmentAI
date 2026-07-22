@@ -1,7 +1,7 @@
 """Unit tests for the autonomous rebalance trigger in PortfolioOptimizerService.
 
 Covers the prediction -> optimisation -> RebalanceRequestEvent wire: correct
-stream subscriptions, the qualification gates (confidence / direction /
+stream subscriptions, the qualification gates (edge margin / direction /
 freshness), the rebalance cooldown, explicit weight-0.0 exits, and the
 reference-price requirements the risk manager depends on for sizing.
 """
@@ -71,7 +71,7 @@ def bus() -> RecordingBus:
 def settings() -> Settings:
     # Wide per-position cap so one- and two-symbol targets keep material
     # weights after constraint clipping.
-    return Settings(min_prediction_confidence=0.6, max_position_pct=0.5)
+    return Settings(min_edge_margin=0.10, max_position_pct=0.5)
 
 
 @pytest.fixture
@@ -83,18 +83,32 @@ async def service(
     return svc
 
 
+# Default probability maps per direction, each with a decisive edge margin
+# (|p(long) - p(short)| = 0.23) so direction/freshness/price tests are not
+# entangled with the margin gate. Margin-specific tests pass explicit maps.
+_DEFAULT_PROBABILITIES = {
+    "long": {"long": 0.45, "flat": 0.33, "short": 0.22},
+    "short": {"long": 0.22, "flat": 0.33, "short": 0.45},
+    "flat": {"long": 0.25, "flat": 0.50, "short": 0.25},
+}
+
+
 def _prediction(
     symbol: str,
     direction: str = "long",
     confidence: float = 0.9,
     expected_return: float | None = 0.05,
+    probabilities: dict[str, float] | None = None,
 ) -> PredictionReadyEvent:
+    if probabilities is None:
+        probabilities = _DEFAULT_PROBABILITIES[direction]
     return PredictionReadyEvent(
         symbol=symbol,
         direction=direction,
         confidence=confidence,
         expected_return=expected_return,
         model_id="model-1",
+        probabilities=probabilities,
     )
 
 
@@ -128,11 +142,65 @@ async def test_subscribes_to_predictions_ready_and_market_prices(
     assert all(stream != "predictions" for stream, _ in bus.subscriptions)
 
 
-async def test_low_confidence_does_not_trigger(
+async def test_thin_edge_does_not_trigger(
     service: PortfolioOptimizerService, bus: RecordingBus
 ) -> None:
+    """A long argmax whose p(long) - p(short) sits below min_edge_margin is
+    prior-shaped noise, not signal, and must not trade."""
     await bus.publish("market.prices", _price("AAPL", 100.0))
-    await bus.publish(PREDICTIONS_READY, _prediction("AAPL", confidence=0.5))
+    await bus.publish(
+        PREDICTIONS_READY,
+        _prediction(
+            "AAPL",
+            confidence=0.36,
+            probabilities={"long": 0.36, "flat": 0.35, "short": 0.29},
+        ),
+    )
+    assert _rebalances(bus) == []
+
+
+async def test_high_confidence_without_edge_does_not_trigger(
+    service: PortfolioOptimizerService, bus: RecordingBus
+) -> None:
+    """Absolute confidence is not the gate: even a high max-class probability
+    fails to qualify when the long-short margin is thin."""
+    await bus.publish("market.prices", _price("AAPL", 100.0))
+    await bus.publish(
+        PREDICTIONS_READY,
+        _prediction(
+            "AAPL",
+            confidence=0.48,
+            probabilities={"long": 0.48, "flat": 0.08, "short": 0.44},
+        ),
+    )
+    assert _rebalances(bus) == []
+
+
+async def test_edge_at_margin_triggers(
+    service: PortfolioOptimizerService, bus: RecordingBus
+) -> None:
+    """p(long) - p(short) exactly at min_edge_margin qualifies (>= gate)."""
+    await bus.publish("market.prices", _price("AAPL", 100.0))
+    await bus.publish(
+        PREDICTIONS_READY,
+        _prediction(
+            "AAPL",
+            confidence=0.40,
+            probabilities={"long": 0.40, "flat": 0.30, "short": 0.30},
+        ),
+    )
+    assert len(_rebalances(bus)) == 1
+
+
+async def test_missing_probabilities_fail_closed(
+    service: PortfolioOptimizerService, bus: RecordingBus
+) -> None:
+    """An event without a probability map (pre-upgrade publisher) cannot
+    demonstrate edge and must not trade, whatever its confidence claims."""
+    await bus.publish("market.prices", _price("AAPL", 100.0))
+    await bus.publish(
+        PREDICTIONS_READY, _prediction("AAPL", confidence=0.99, probabilities={})
+    )
     assert _rebalances(bus) == []
 
 

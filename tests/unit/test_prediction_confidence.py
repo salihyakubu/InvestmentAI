@@ -6,6 +6,7 @@ uncertain predictions don't drive trades.
 from __future__ import annotations
 
 from core.events.base import InProcessEventBus
+from core.events.signal_events import FeaturesReadyEvent, PredictionReadyEvent
 from services.prediction.models.base import PredictionOutput
 from services.prediction.service import PredictionService
 
@@ -54,3 +55,22 @@ def test_high_confidence_signal_passes() -> None:
 def test_low_confidence_flat_stays_flat() -> None:
     pred = _service("flat", 0.3).predict("AAPL", {"a": 1.0})
     assert pred.direction == "flat"
+
+
+async def test_published_event_carries_probability_map() -> None:
+    """The portfolio optimizer's edge-margin gate reads the full calibrated
+    probability map off PredictionReadyEvent; publishing must forward it."""
+    bus = InProcessEventBus()
+    service = PredictionService(
+        event_bus=bus, model_server=_FakeServer("long", 0.9)
+    )
+    await service.handle_features_ready(
+        FeaturesReadyEvent(symbol="AAPL", feature_vector={"a": 1.0})
+    )
+    published = [
+        PredictionReadyEvent.model_validate(event.model_dump())
+        for stream, event in bus.history
+        if stream == "predictions.ready"
+    ]
+    assert len(published) == 1
+    assert published[0].probabilities == {"long": 0.9}

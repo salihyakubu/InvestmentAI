@@ -123,6 +123,7 @@ class PredictionService:
                 confidence=prediction.confidence,
                 expected_return=prediction.expected_return,
                 model_id=prediction.model_id,
+                probabilities=prediction.probabilities,
                 source_service="prediction-service",
             )
             await self._event_bus.publish(_PREDICTIONS_STREAM, pred_event)

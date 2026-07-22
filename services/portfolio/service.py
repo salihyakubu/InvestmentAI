@@ -48,8 +48,9 @@ class PortfolioOptimizerService:
 
     Subscribes to :class:`PredictionReadyEvent` on the ``predictions.ready``
     stream, buffers the latest prediction per symbol, and publishes a
-    :class:`RebalanceRequestEvent` once at least one fresh, confident signal
-    exists and the rebalance cooldown has elapsed.
+    :class:`RebalanceRequestEvent` once at least one fresh signal with
+    sufficient calibrated edge (``p(long) - p(short)``) exists and the
+    rebalance cooldown has elapsed.
 
     LONG-ONLY by design: the optimizer stack produces long weights, so only
     ``direction == "long"`` predictions qualify; ``short``/``flat`` signals
@@ -130,9 +131,11 @@ class PortfolioOptimizerService:
         self._pending_predictions[prediction.symbol] = prediction
         self._prediction_received_at[prediction.symbol] = time.monotonic()
         logger.debug(
-            "Received prediction for %s (confidence=%.2f).",
+            "Received prediction for %s (direction=%s edge=%.3f).",
             prediction.symbol,
-            prediction.confidence,
+            prediction.direction,
+            prediction.probabilities.get(SignalDirection.LONG.value, 0.0)
+            - prediction.probabilities.get(SignalDirection.SHORT.value, 0.0),
         )
         await self._maybe_rebalance()
 
@@ -266,9 +269,13 @@ class PortfolioOptimizerService:
         """Return the buffered predictions eligible for optimisation.
 
         Long-only: a prediction qualifies when it is fresh, its direction is
-        ``long``, and its confidence clears the configured floor.
+        ``long``, and its calibrated edge margin ``p(long) - p(short)`` clears
+        ``settings.min_edge_margin``. An absolute-confidence bar would mostly
+        measure the class prior (~31% long base rate), not signal strength;
+        the margin isolates directional edge. Events without a probability
+        map (pre-upgrade publishers) fail closed.
         """
-        min_confidence = self.settings.min_prediction_confidence
+        min_margin = self.settings.min_edge_margin
         qualifying: dict[str, PredictionReadyEvent] = {}
         for symbol, prediction in self._pending_predictions.items():
             received_at = self._prediction_received_at.get(symbol)
@@ -276,7 +283,9 @@ class PortfolioOptimizerService:
                 continue
             if prediction.direction != SignalDirection.LONG:
                 continue
-            if prediction.confidence < min_confidence:
+            p_long = prediction.probabilities.get(SignalDirection.LONG.value, 0.0)
+            p_short = prediction.probabilities.get(SignalDirection.SHORT.value, 0.0)
+            if p_long - p_short < min_margin:
                 continue
             qualifying[symbol] = prediction
         return qualifying
