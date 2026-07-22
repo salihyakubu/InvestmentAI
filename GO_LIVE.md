@@ -409,3 +409,14 @@ timeout).
 **Operator action required:** issue fresh Alpaca paper keys (old ones return 401)
 and set ALPACA_API_KEY / ALPACA_SECRET_KEY on the worker to restore the live
 stocks feed.
+
+**Postmortem addendum (2026-07-22):** re-enabling fresh Alpaca keys re-triggered
+the storm — the 401 was only a trigger, not the cause. True root cause: the
+Alpaca DataStream was constructed on the worker's main event loop but run on a
+private loop the SDK creates in a thread, with bar callbacks awaited back across
+the divide ("Future attached to a different loop" storms → log-cap floods →
+event-loop starvation → poisoned DB sessions). Fixed: the stream now lives
+entirely on a dedicated thread's own loop (constructed AND driven there), bars
+marshal to the main loop thread-safely, shutdown joins cleanly, and non-transient
+stream errors log once + retry with capped backoff instead of tracebacking at
+multiple/sec. Keys restored from parked variables the same day.
