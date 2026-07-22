@@ -38,6 +38,10 @@ _TrainingData = tuple[
 
 _NO_DATA: _TrainingData = (None, None, None, None, None, None, None)
 
+# Prediction events from an ensemble carry ids like "ensemble:xgboost,lightgbm".
+_ENSEMBLE_PREFIX = "ensemble:"
+_KNOWN_MODEL_TYPES = ("xgboost", "lightgbm", "lstm", "transformer")
+
 
 class AutoRetrainer:
     """Decides when to retrain models and orchestrates the process.
@@ -106,21 +110,27 @@ class AutoRetrainer:
     # ------------------------------------------------------------------
 
     async def retrain(self, model_id: str) -> dict[str, Any]:
-        """Retrain a model and register the new version if it improves.
+        """Retrain the model(s) behind *model_id* and promote improvements.
 
-        Returns:
-            Dictionary with ``new_model_id``, ``version``, and ``metrics``
-            on success, or ``{"skipped": True}`` if validation fails.
+        Plain model ids train a single challenger and return
+        ``{"new_model_id", "version", "metrics", "model_type"}`` on success,
+        or ``{"skipped": True, "reason": ...}``.
+
+        Ensemble ids (``"ensemble:xgboost,lightgbm"``) name every member type
+        they serve: each member is retrained, gated, and promoted
+        independently on a shared dataset, and the per-member results are
+        returned under ``"members"``. The top-level ``"skipped"`` flag is set
+        only when no member was promoted.
         """
         logger.info("retrainer.retrain.start", model_id=model_id)
 
-        # Determine model type from registry
-        model_type = self._resolve_model_type(model_id)
-        if model_type is None:
+        member_types = self._resolve_member_types(model_id)
+        if not member_types:
             logger.warning("retrainer.retrain.unknown_model", model_id=model_id)
             return {"skipped": True, "reason": "unknown_model"}
 
-        # Load training data (recent 1m bars -> serve-time feature replay)
+        # Load training data once (recent 1m bars -> serve-time feature
+        # replay); ensemble members share the same dataset.
         (
             X_train, y_train, returns_train,
             X_val, y_val, returns_val,
@@ -129,9 +139,55 @@ class AutoRetrainer:
         if X_train is None or y_train is None or X_val is None or y_val is None:
             return {"skipped": True, "reason": "no_training_data"}
 
-        # Train new model. Training is CPU-bound and can run for minutes; on
-        # the event loop it starves every Redis consumer, so push it to a
-        # thread (to_thread forwards kwargs).
+        results = [
+            await self._retrain_member(
+                model_id,
+                member,
+                X_train=X_train,
+                y_train=y_train,
+                returns_train=returns_train,
+                X_val=X_val,
+                y_val=y_val,
+                returns_val=returns_val,
+                feature_names=feature_names,
+            )
+            for member in member_types
+        ]
+
+        if any(not r.get("skipped") for r in results):
+            # At least one member completed train -> gate -> promote, so the
+            # cycle counts as done. A wholly failed cycle leaves the
+            # bookkeeping untouched so the next evaluation retries.
+            self._last_trained[model_id] = datetime.now(UTC)
+            self._drift_flags[model_id] = False
+
+        if not model_id.startswith(_ENSEMBLE_PREFIX):
+            return results[0]
+
+        summary: dict[str, Any] = {"members": results}
+        if all(r.get("skipped") for r in results):
+            summary["skipped"] = True
+            summary["reason"] = "no_member_promoted"
+        return summary
+
+    async def _retrain_member(
+        self,
+        model_id: str,
+        model_type: str,
+        *,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        returns_train: np.ndarray | None,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        returns_val: np.ndarray | None,
+        feature_names: list[str] | None,
+    ) -> dict[str, Any]:
+        """Train one model type, gate it against its champion, and promote.
+
+        Training is CPU-bound and can run for minutes; on the event loop it
+        starves every Redis consumer, so it runs in a thread.
+        """
         result, new_model = await asyncio.to_thread(
             self._trainer.train_model,
             model_type=model_type,
@@ -159,10 +215,15 @@ class AutoRetrainer:
             logger.warning(
                 "retrainer.retrain.validation_failed",
                 model_id=model_id,
+                model_type=model_type,
                 new_metrics=new_metrics,
                 old_metrics=old_metrics,
             )
-            return {"skipped": True, "reason": "new_model_not_better"}
+            return {
+                "skipped": True,
+                "reason": "new_model_not_better",
+                "model_type": model_type,
+            }
 
         # Register and promote
         new_model_id, version = self._registry.register(
@@ -178,14 +239,14 @@ class AutoRetrainer:
 
         # Durability: the deploy target has no volumes, so without this the
         # promoted artifacts die with the container on the next deploy.
+        # (last_trained/drift bookkeeping is handled once at the retrain()
+        # loop level, covering all members.)
         await self._persist_artifacts_to_db(model_type, version)
-
-        self._last_trained[model_id] = datetime.now(UTC)
-        self._drift_flags[model_id] = False
 
         logger.info(
             "retrainer.retrain.complete",
             old_model_id=model_id,
+            model_type=model_type,
             new_model_id=new_model_id,
             version=version,
             metrics=new_metrics,
@@ -194,19 +255,46 @@ class AutoRetrainer:
             "new_model_id": new_model_id,
             "version": version,
             "metrics": new_metrics,
+            "model_type": model_type,
         }
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    def _resolve_member_types(self, model_id: str) -> list[str]:
+        """Resolve the model type(s) a model_id refers to.
+
+        Ensemble ids name every member type they serve (the id is the
+        comma-joined active types, e.g. ``"ensemble:xgboost,lightgbm"``);
+        each member must be retrained individually. Plain ids resolve to a
+        single type; unrecognised ids resolve to an empty list.
+        """
+        if not model_id.startswith(_ENSEMBLE_PREFIX):
+            single = self._resolve_model_type(model_id)
+            return [] if single is None else [single]
+
+        members: list[str] = []
+        for raw in model_id.removeprefix(_ENSEMBLE_PREFIX).split(","):
+            member = raw.strip()
+            if member in _KNOWN_MODEL_TYPES:
+                if member not in members:
+                    members.append(member)
+            elif member:
+                logger.warning(
+                    "retrainer.retrain.unknown_member",
+                    model_id=model_id,
+                    member=member,
+                )
+        return members
+
     def _resolve_model_type(self, model_id: str) -> str | None:
-        """Resolve the model type string from a model_id."""
+        """Resolve the model type string from a non-ensemble model_id."""
         for entry in self._registry._entries:
             if entry.model_id == model_id:
                 return entry.model_type
-        # Try to infer from the model_id itself (e.g. "ensemble:xgboost,lightgbm")
-        for known in ("xgboost", "lightgbm", "lstm", "transformer"):
+        # Try to infer from the model_id itself (e.g. "xgboost-v3")
+        for known in _KNOWN_MODEL_TYPES:
             if known in model_id:
                 return known
         return None

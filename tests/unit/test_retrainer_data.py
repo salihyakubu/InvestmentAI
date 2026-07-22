@@ -8,6 +8,8 @@ Covers:
   champion comparison.
 - ``retrain()`` end-to-end: trains, gates, registers + promotes through a real
   filesystem ``ModelRegistry``, and mirrors metadata into ``model_metadata``.
+- Ensemble ids ("ensemble:xgboost,lightgbm") retrain EVERY member type, each
+  gated and promoted independently, with per-member results under "members".
 """
 
 from __future__ import annotations
@@ -99,6 +101,26 @@ def _make_retrainer(factory, tmp_path: Path, settings: Settings) -> AutoRetraine
         settings=settings,
         session_factory=factory,
     )
+
+
+def _patch_fast_training(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Keep retrain() fast + deterministic: tiny trees, no hyperopt, and no
+    dependence on synthetic-data accuracy clearing the absolute floor (the
+    floor itself is unit-tested separately). Returns a dict capturing the
+    kwargs of the most recent ``train_model`` call.
+    """
+    captured: dict[str, object] = {}
+    orig_train_model = ModelTrainer.train_model
+
+    def fast_train_model(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        kwargs["hyperopt"] = False
+        kwargs["extra_params"] = {"n_estimators": 10, "max_depth": 2}
+        captured.update(kwargs)
+        return orig_train_model(self, *args, **kwargs)
+
+    monkeypatch.setattr(ModelTrainer, "train_model", fast_train_model)
+    monkeypatch.setattr("services.continuous_learning.retrainer.MIN_VAL_ACCURACY", 0.0)
+    return captured
 
 
 # ---------------------------------------------------------------------------
@@ -210,20 +232,7 @@ async def test_retrain_end_to_end_promotes_and_mirrors_db(
     await _seed_bars(factory, "BTC/USDT", 400, seed=21)
     await _seed_bars(factory, "ETH/USDT", 400, seed=22)
 
-    # Keep the test fast + deterministic: tiny trees, no hyperopt, and no
-    # dependence on synthetic-data accuracy clearing the absolute floor (the
-    # floor itself is unit-tested above).
-    captured: dict[str, object] = {}
-    orig_train_model = ModelTrainer.train_model
-
-    def fast_train_model(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
-        kwargs["hyperopt"] = False
-        kwargs["extra_params"] = {"n_estimators": 10, "max_depth": 2}
-        captured.update(kwargs)
-        return orig_train_model(self, *args, **kwargs)
-
-    monkeypatch.setattr(ModelTrainer, "train_model", fast_train_model)
-    monkeypatch.setattr("services.continuous_learning.retrainer.MIN_VAL_ACCURACY", 0.0)
+    captured = _patch_fast_training(monkeypatch)
 
     retrainer = _make_retrainer(factory, tmp_path, mock_settings)
     result = await retrainer.retrain("xgboost")
@@ -269,6 +278,156 @@ async def test_retrain_skips_when_no_data(
 
     retrainer = _make_retrainer(factory, tmp_path, mock_settings)
     result = await retrainer.retrain("xgboost")
-
     assert result == {"skipped": True, "reason": "no_training_data"}
+
+    # Ensemble ids share the dataset load, so they skip the same way.
+    result = await retrainer.retrain("ensemble:xgboost,lightgbm")
+    assert result == {"skipped": True, "reason": "no_training_data"}
+
+    await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Ensemble ids: every member type is retrained and gated independently
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_member_types_parses_ensemble_ids(
+    tmp_path: Path, mock_settings: Settings
+) -> None:
+    retrainer = _make_retrainer(None, tmp_path, mock_settings)
+
+    # Every named member is resolved, in order -- not just the first match.
+    assert retrainer._resolve_member_types("ensemble:xgboost,lightgbm") == [
+        "xgboost",
+        "lightgbm",
+    ]
+    # Unknown members are dropped, duplicates collapse, whitespace tolerated.
+    assert retrainer._resolve_member_types("ensemble:xgboost,mystery") == ["xgboost"]
+    assert retrainer._resolve_member_types("ensemble:xgboost, xgboost") == ["xgboost"]
+    # Plain ids keep the single-model resolution; unknowns resolve to nothing.
+    assert retrainer._resolve_member_types("xgboost") == ["xgboost"]
+    assert retrainer._resolve_member_types("lightgbm-v3") == ["lightgbm"]
+    assert retrainer._resolve_member_types("mystery") == []
+    assert retrainer._resolve_member_types("ensemble:") == []
+
+
+async def test_retrain_unknown_ensemble_members_skips(
+    tmp_path: Path, mock_settings: Settings
+) -> None:
+    retrainer = _make_retrainer(None, tmp_path, mock_settings)
+    result = await retrainer.retrain("ensemble:mystery")
+    assert result == {"skipped": True, "reason": "unknown_model"}
+
+
+async def test_retrain_ensemble_retrains_every_member(
+    tmp_path: Path, mock_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The historical bug: "ensemble:xgboost,lightgbm" only ever retrained
+    xgboost (first substring match). Every member must now be promoted."""
+    engine, factory = _make_factory()
+    await _create_tables(engine, with_metadata=True)
+    await _seed_bars(factory, "BTC/USDT", 400, seed=31)
+
+    _patch_fast_training(monkeypatch)
+
+    model_id = "ensemble:xgboost,lightgbm"
+    retrainer = _make_retrainer(factory, tmp_path, mock_settings)
+    result = await retrainer.retrain(model_id)
+
+    # Per-member results, in member order, each fully promoted.
+    assert "skipped" not in result
+    members = result["members"]
+    assert [m["model_type"] for m in members] == ["xgboost", "lightgbm"]
+    for member in members:
+        assert "new_model_id" in member, f"member skipped: {member}"
+        assert member["version"] == 1
+        assert "val_accuracy" in member["metrics"]
+
+    # BOTH member types are now served from the filesystem registry.
+    for model_type in ("xgboost", "lightgbm"):
+        _model, meta = retrainer._registry.get_active(model_type)
+        assert meta.model_type == model_type
+        assert meta.version == 1 and meta.is_active
+
+    # One active DB mirror row per member (backs GET /api/v1/models).
+    async with factory() as session:
+        rows = (await session.execute(select(DBModelMetadata))).scalars().all()
+    assert sorted(row.model_name for row in rows) == ["lightgbm", "xgboost"]
+    assert all(row.is_active for row in rows)
+
+    # Ensemble-level bookkeeping: the cycle counts as done.
+    assert model_id in retrainer._last_trained
+    assert retrainer._drift_flags.get(model_id) is False
+
+    await engine.dispose()
+
+
+async def test_retrain_ensemble_gates_members_independently(
+    tmp_path: Path, mock_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One member failing the challenger gate must not block the others."""
+    engine, factory = _make_factory()
+    await _create_tables(engine, with_metadata=True)
+    await _seed_bars(factory, "BTC/USDT", 400, seed=41)
+
+    _patch_fast_training(monkeypatch)
+    # Members are gated in id order: accept xgboost, reject lightgbm.
+    verdicts = iter([True, False])
+    monkeypatch.setattr(
+        AutoRetrainer,
+        "_validate_new_model",
+        staticmethod(lambda new_metrics, old_metrics: next(verdicts)),
+    )
+
+    model_id = "ensemble:xgboost,lightgbm"
+    retrainer = _make_retrainer(factory, tmp_path, mock_settings)
+    result = await retrainer.retrain(model_id)
+
+    xgb, lgbm = result["members"]
+    assert xgb["model_type"] == "xgboost" and "new_model_id" in xgb
+    assert lgbm == {
+        "skipped": True,
+        "reason": "new_model_not_better",
+        "model_type": "lightgbm",
+    }
+
+    # A partially successful cycle still counts as done at the ensemble level.
+    assert "skipped" not in result
+    assert model_id in retrainer._last_trained
+
+    # Only the promoted member reached the registry.
+    assert retrainer._registry.get_active("xgboost")[1].is_active
+    with pytest.raises(ValueError, match="No active model"):
+        retrainer._registry.get_active("lightgbm")
+
+    await engine.dispose()
+
+
+async def test_retrain_ensemble_all_members_rejected_is_skipped(
+    tmp_path: Path, mock_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, factory = _make_factory()
+    await _create_tables(engine, with_metadata=True)
+    await _seed_bars(factory, "BTC/USDT", 400, seed=51)
+
+    _patch_fast_training(monkeypatch)
+    monkeypatch.setattr(
+        AutoRetrainer,
+        "_validate_new_model",
+        staticmethod(lambda new_metrics, old_metrics: False),
+    )
+
+    model_id = "ensemble:xgboost,lightgbm"
+    retrainer = _make_retrainer(factory, tmp_path, mock_settings)
+    result = await retrainer.retrain(model_id)
+
+    assert result["skipped"] is True
+    assert result["reason"] == "no_member_promoted"
+    assert all(m["skipped"] for m in result["members"])
+
+    # A wholly failed cycle leaves the bookkeeping untouched -> retried next
+    # evaluation.
+    assert model_id not in retrainer._last_trained
+
     await engine.dispose()
