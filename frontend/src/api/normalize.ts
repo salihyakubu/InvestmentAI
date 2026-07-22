@@ -12,10 +12,12 @@
 
 import type {
   EquityPoint,
+  ModelCalibration,
   ModelInfo,
   Order,
   PortfolioSummary,
   Position,
+  Prediction,
   RiskMetrics,
 } from '../types';
 
@@ -33,6 +35,34 @@ export function num(v: unknown, fallback = 0): number {
 
 const str = (v: unknown, fallback = ''): string =>
   typeof v === 'string' ? v : fallback;
+
+/** Like num(), but absent/garbage stays undefined so the UI can hide it. */
+function numOpt(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+/**
+ * validation_metrics carries calibration-selection keys only when the training
+ * run recorded them (chosen_calibration: 'isotonic'|'sigmoid'|'none', plus
+ * brier_isotonic / brier_sigmoid). Missing method -> undefined (line hidden);
+ * missing Brier -> method shown alone. Never NaN.
+ */
+function normalizeCalibration(metrics: Raw): ModelCalibration | undefined {
+  const method = str(metrics.chosen_calibration);
+  if (method === '') return undefined;
+  const brier =
+    method === 'isotonic'
+      ? numOpt(metrics.brier_isotonic)
+      : method === 'sigmoid'
+        ? numOpt(metrics.brier_sigmoid)
+        : undefined;
+  return brier === undefined ? { method } : { method, brier };
+}
 
 export function normalizePortfolioSummary(raw: Raw): PortfolioSummary {
   const totalEquity = num(raw.total_equity);
@@ -123,6 +153,7 @@ export function normalizeModelInfo(raw: Raw): ModelInfo {
   // the UI's richer fields (precision/recall/f1/sharpe) default to 0 until the
   // backend computes them from live prediction outcomes.
   const metrics = (raw.validation_metrics ?? {}) as Raw;
+  const calibration = normalizeCalibration(metrics);
   return {
     id: str(raw.id, str(raw.model_name)),
     name: str(raw.model_name, 'model'),
@@ -138,6 +169,34 @@ export function normalizeModelInfo(raw: Raw): ModelInfo {
     feature_importance:
       (raw.feature_importance as ModelInfo['feature_importance']) ?? {},
     prediction_count: num(raw.prediction_count),
+    ...(calibration ? { calibration } : {}),
+  };
+}
+
+/** API direction vocabulary (long/short/flat) -> UI signal (buy/sell/hold). */
+const DIRECTION_TO_SIGNAL: Record<string, Prediction['signal']> = {
+  long: 'buy',
+  short: 'sell',
+  flat: 'hold',
+};
+
+export function normalizePrediction(raw: Raw): Prediction {
+  // The API speaks the trading vocabulary (direction/expected_return); the UI
+  // components were written against signal/predicted_return. Anything
+  // unrecognized degrades to 'hold' -- an unknown direction must never crash
+  // the dashboard (undefined.icon did exactly that when this endpoint first
+  // returned real rows).
+  return {
+    id: str(raw.id, `${str(raw.symbol)}-${str(raw.timestamp)}`),
+    symbol: str(raw.symbol),
+    model_id: str(raw.model_id),
+    model_name: str(raw.model_id, 'model'),
+    signal: DIRECTION_TO_SIGNAL[str(raw.direction)] ?? 'hold',
+    confidence: num(raw.confidence),
+    predicted_return: num(raw.expected_return),
+    horizon: '5m',
+    features: (raw.features as Record<string, number>) ?? {},
+    timestamp: str(raw.timestamp),
   };
 }
 

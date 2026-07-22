@@ -58,7 +58,10 @@ class Settings(BaseSettings):
     model_artifact_path: str = "model_artifacts"
     retrain_interval_hours: int = 168
     # How many days of 1m bars the AutoRetrainer loads for a retraining run.
-    retrain_lookback_days: int = 7
+    # 30 days assumes scripts/backfill_history.py has seeded deep history;
+    # the rolling feature replay over ~216k crypto bars runs in a worker
+    # thread (minutes), so the event loop is unaffected.
+    retrain_lookback_days: int = 30
     min_prediction_confidence: float = 0.6
     ensemble_min_agreement: int = 3
 
@@ -80,6 +83,10 @@ class Settings(BaseSettings):
 
     # Monitoring
     prometheus_enabled: bool = True
+    # Worker log verbosity. DEBUG emits per-event lines (~12/min steady state,
+    # bursts far higher) which trips Railway's 500 logs/sec limit and DROPS
+    # messages -- exactly the lines needed during an incident. INFO in prod.
+    log_level: str = "INFO"
 
     @model_validator(mode="after")
     def _validate_security(self) -> "Settings":

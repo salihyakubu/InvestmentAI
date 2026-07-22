@@ -45,7 +45,9 @@ export default function PredictionView({ predictions }: PredictionViewProps) {
       <div className="card-header">Latest Predictions</div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {predictions.map((pred) => {
-          const cfg = signalConfig[pred.signal];
+          // Fallback: the normalize layer maps unknown directions to 'hold',
+          // but a config miss must degrade gracefully, never crash the page.
+          const cfg = signalConfig[pred.signal] ?? signalConfig.hold;
           const Icon = cfg.icon;
           return (
             <div

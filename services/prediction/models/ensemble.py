@@ -11,7 +11,7 @@ from services.prediction.models.base import BasePredictor, PredictionOutput
 logger = logging.getLogger(__name__)
 
 SEQUENCE_MODELS = {"lstm", "transformer"}
-FLAT_MODELS = {"xgboost", "lightgbm"}
+FLAT_MODELS = {"xgboost", "lightgbm", "catboost"}
 
 
 class EnsemblePredictor:
@@ -117,12 +117,57 @@ class EnsemblePredictor:
                 best_direction = "flat"
                 confidence = combined_probs["flat"]
 
+        # Conformal gate ON TOP of the vote: a surviving non-flat signal must
+        # be conformally supportable by EVERY agreeing member that carries
+        # split-conformal state. Members without conformal state (old
+        # artifacts, torch models) are vote-only and never block.
+        conformal_gated = False
+        if best_direction != "flat":
+            blocker = self._conformal_blocker(best_direction, outputs)
+            if blocker is not None:
+                logger.info(
+                    "Conformal gate degraded %s vote to flat: member %s set=%s",
+                    best_direction,
+                    blocker[0],
+                    blocker[1],
+                )
+                best_direction = "flat"
+                confidence = combined_probs["flat"]
+                conformal_gated = True
+
         return PredictionOutput(
             direction=best_direction,
             confidence=confidence,
             expected_return=weighted_return,
             probabilities=combined_probs,
+            metadata={"conformal_gated": conformal_gated},
         )
+
+    @staticmethod
+    def _conformal_blocker(
+        direction: str,
+        outputs: list[tuple[str, PredictionOutput, float]],
+    ) -> tuple[str, list[str]] | None:
+        """First agreeing member whose conformal set cannot support *direction*.
+
+        A member supports the vote only if its conformal prediction set is the
+        singleton ``{direction}`` or ``{direction, "flat"}``: the winning class
+        must be conformally admissible, and no OTHER non-flat class may be.
+        Members that publish no ``conformal_set`` metadata are non-blocking, so
+        mixed ensembles (old artifacts, torch models) keep working.
+
+        Returns ``(model_type, conformal_set)`` of the blocker, else ``None``.
+        """
+        for model_type, out, _ in outputs:
+            if out.direction != direction:
+                continue
+            conformal_set = out.metadata.get("conformal_set")
+            if conformal_set is None:
+                continue
+            allowed = {str(c) for c in conformal_set}
+            if direction not in allowed or not allowed <= {direction, "flat"}:
+                return model_type, sorted(allowed)
+        return None
 
     # ------------------------------------------------------------------
     # Dynamic weight updating

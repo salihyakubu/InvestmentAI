@@ -34,6 +34,11 @@ _CONSUMER_GROUP = "execution-engine"
 # Polling interval for pending order monitoring (seconds).
 _POLL_INTERVAL = 2.0
 
+# CONTROL-stream actions owned by other services (each consumer group sees
+# every control event); logged at debug so a valid request is not misread as
+# a failure. "retrain" belongs to the continuous-learning service.
+_FOREIGN_CONTROL_ACTIONS = frozenset({"retrain"})
+
 
 class ExecutionEngineService:
     """Top-level execution service.
@@ -213,7 +218,13 @@ class ExecutionEngineService:
             return
         action = getattr(event, "action", "") or event.payload.get("action", "")
         reason = getattr(event, "reason", "") or event.payload.get("reason", "")
-        logger.warning("control_command_received", action=action, reason=reason)
+        # Foreign actions (owned by other services, e.g. retrain) arrive on the
+        # shared CONTROL stream too — debug, so runbook readers only see
+        # WARNING for genuinely operator-critical halt/resume/flatten.
+        control_log = (
+            logger.debug if action in _FOREIGN_CONTROL_ACTIONS else logger.warning
+        )
+        control_log("control_command_received", action=action, reason=reason)
         if action == "halt":
             self.halt()
         elif action == "resume":
@@ -221,6 +232,8 @@ class ExecutionEngineService:
         elif action == "flatten":
             result = await self.emergency_flatten()
             logger.warning("control_flatten_result", **result)
+        elif action in _FOREIGN_CONTROL_ACTIONS:
+            logger.debug("control_foreign_action", action=action)
         else:
             logger.warning("control_unknown_action", action=action)
 

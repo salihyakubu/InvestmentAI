@@ -12,7 +12,15 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, log_loss
 from xgboost import XGBClassifier, XGBRegressor
 
-from services.prediction.models.base import BasePredictor, PredictionOutput, TrainResult
+from services.prediction.models.base import (
+    BasePredictor,
+    ConformalState,
+    PredictionOutput,
+    TrainResult,
+    fit_conformal_state,
+    probabilities_in_class_order,
+    select_calibration_method,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +28,9 @@ DIRECTION_MAP = {0: "short", 1: "flat", 2: "long"}
 DIRECTION_INV = {v: k for k, v in DIRECTION_MAP.items()}
 
 # Minimum validation rows (with all 3 classes present) before we fit a
-# probability calibrator. Below this a Platt fit is unstable, so we fall back to
-# raw classifier probabilities rather than emit a miscalibrated confidence.
+# probability calibrator. Below this the calibration fits are unstable, so we
+# fall back to raw classifier probabilities rather than emit a miscalibrated
+# confidence.
 _MIN_CALIBRATION_SAMPLES = 30
 
 
@@ -36,6 +45,7 @@ class XGBoostPredictor(BasePredictor):
         classifier_params: dict[str, Any] | None = None,
         regressor_params: dict[str, Any] | None = None,
         feature_names: list[str] | None = None,
+        conformal_alpha: float = 0.10,
     ) -> None:
         default_cls_params: dict[str, Any] = {
             "n_estimators": 500,
@@ -73,6 +83,11 @@ class XGBoostPredictor(BasePredictor):
         self._regressor = XGBRegressor(**default_reg_params)
         self._feature_names = feature_names or []
         self._calibrator: CalibratedClassifierCV | None = None
+        self._calibration_method: str = "none"  # "isotonic" | "sigmoid" | "none"
+        self._brier_isotonic: float | None = None
+        self._brier_sigmoid: float | None = None
+        self._conformal_alpha = float(conformal_alpha)
+        self._conformal: ConformalState | None = None
         self._is_fitted = False
 
     # ------------------------------------------------------------------
@@ -88,12 +103,7 @@ class XGBoostPredictor(BasePredictor):
         rather than a silently shifted distribution.
         """
         estimator = self._calibrator if self._calibrator is not None else self._classifier
-        raw = estimator.predict_proba(features)
-        out = np.zeros((raw.shape[0], 3), dtype=np.float64)
-        for col, cls in enumerate(int(c) for c in estimator.classes_):
-            if 0 <= cls <= 2:
-                out[:, cls] = raw[:, col]
-        return out
+        return probabilities_in_class_order(estimator, features)
 
     def predict(self, features: np.ndarray) -> PredictionOutput:
         """Predict for a single flat feature vector (1-D or 2-D with one row)."""
@@ -104,12 +114,14 @@ class XGBoostPredictor(BasePredictor):
         direction = DIRECTION_MAP[direction_idx]
         confidence = float(probs[direction_idx])
         expected_return = float(self._regressor.predict(features)[0])
+        prob_map = {DIRECTION_MAP[i]: float(p) for i, p in enumerate(probs)}
 
         return PredictionOutput(
             direction=direction,
             confidence=confidence,
             expected_return=expected_return,
-            probabilities={DIRECTION_MAP[i]: float(p) for i, p in enumerate(probs)},
+            probabilities=prob_map,
+            metadata=self._conformal_metadata(prob_map),
         )
 
     def predict_batch(self, features: np.ndarray) -> list[PredictionOutput]:
@@ -119,12 +131,14 @@ class XGBoostPredictor(BasePredictor):
         outputs: list[PredictionOutput] = []
         for i in range(len(features)):
             direction_idx = int(np.argmax(probs[i]))
+            prob_map = {DIRECTION_MAP[j]: float(probs[i][j]) for j in range(3)}
             outputs.append(
                 PredictionOutput(
                     direction=DIRECTION_MAP[direction_idx],
                     confidence=float(probs[i][direction_idx]),
                     expected_return=float(returns[i]),
-                    probabilities={DIRECTION_MAP[j]: float(probs[i][j]) for j in range(3)},
+                    probabilities=prob_map,
+                    metadata=self._conformal_metadata(prob_map),
                 )
             )
         return outputs
@@ -132,16 +146,22 @@ class XGBoostPredictor(BasePredictor):
     def _fit_calibrator(
         self, X_val: np.ndarray, y_val: np.ndarray
     ) -> CalibratedClassifierCV | None:
-        """Fit a Platt (sigmoid) calibrator on the validation split.
+        """Fit isotonic AND sigmoid calibrators; keep the lower-Brier one.
 
         The emitted confidence drives the live confidence gate
         (``min_prediction_confidence``); that gate only protects capital if a
         reported 0.6 really corresponds to ~60% empirical accuracy. Tree
         classifiers are typically over-confident, so we map raw scores to
-        calibrated posteriors. Skipped (raw probabilities used) when the
-        validation split lacks all three classes or is too small for a stable
-        fit.
+        calibrated posteriors. Both candidates are fitted on the validation
+        split and the one with the lower multi-class Brier score (mean over
+        one-vs-rest) wins; the chosen method and both scores are recorded on
+        ``self`` for :class:`TrainResult` and persistence. Skipped (raw
+        probabilities used) when the validation split lacks all three classes
+        or is too small for a stable fit.
         """
+        self._calibration_method = "none"
+        self._brier_isotonic = None
+        self._brier_sigmoid = None
         try:
             y_val = np.asarray(y_val)
             _, counts = np.unique(y_val, return_counts=True)
@@ -149,23 +169,27 @@ class XGBoostPredictor(BasePredictor):
                 logger.info("Skipping probability calibration: insufficient validation coverage")
                 return None
             # Calibrate the already-fitted classifier without refitting it. cv folds
-            # the validation rows for the sigmoid fit; cap folds at the rarest
+            # the validation rows for the calibration fits; cap folds at the rarest
             # class count so StratifiedKFold always has >=1 row per class per fold.
             n_splits = int(min(5, counts.min()))
             if n_splits < 2:
                 logger.info("Skipping probability calibration: a class has too few validation rows")
                 return None
-            try:
-                from sklearn.frozen import FrozenEstimator
-
-                calibrator = CalibratedClassifierCV(
-                    FrozenEstimator(self._classifier), method="sigmoid", cv=n_splits
-                )
-            except ImportError:  # sklearn < 1.6
-                calibrator = CalibratedClassifierCV(self._classifier, method="sigmoid", cv="prefit")
-            calibrator.fit(X_val, y_val)
-            logger.info("Fitted sigmoid probability calibrator on %d validation rows", len(y_val))
-            return calibrator
+            selection = select_calibration_method(
+                self._classifier, X_val, y_val, n_splits=n_splits
+            )
+            self._calibration_method = selection.method
+            self._brier_isotonic = selection.brier_isotonic
+            self._brier_sigmoid = selection.brier_sigmoid
+            logger.info(
+                "Selected %s probability calibration on %d validation rows "
+                "(brier isotonic=%s sigmoid=%s)",
+                selection.method,
+                len(y_val),
+                selection.brier_isotonic,
+                selection.brier_sigmoid,
+            )
+            return selection.calibrator
         except Exception:
             logger.exception("Probability calibration failed; using raw classifier probabilities")
             return None
@@ -221,6 +245,13 @@ class XGBoostPredictor(BasePredictor):
         # --- Probability calibration (on the held-out validation split) ---
         self._calibrator = self._fit_calibrator(X_val, y_val)
 
+        # --- Split-conformal calibration (validation nonconformity quantiles) ---
+        # Fitted AFTER the calibrator so nonconformity uses the same calibrated
+        # probabilities that serving emits.
+        self._conformal = fit_conformal_state(
+            self._proba(X_val), y_val, alpha=self._conformal_alpha
+        )
+
         # --- Metrics ---
         train_probs = self._classifier.predict_proba(X_train)
         val_probs = self._classifier.predict_proba(X_val)
@@ -251,6 +282,9 @@ class XGBoostPredictor(BasePredictor):
                 else cast(int, self._classifier.n_estimators)
             ),
             feature_importance=importance,
+            chosen_calibration=self._calibration_method,
+            brier_isotonic=self._brier_isotonic,
+            brier_sigmoid=self._brier_sigmoid,
         )
 
     # ------------------------------------------------------------------
@@ -264,6 +298,16 @@ class XGBoostPredictor(BasePredictor):
         joblib.dump(self._feature_names, path / "feature_names.joblib")
         if self._calibrator is not None:
             joblib.dump(self._calibrator, path / "calibrator.joblib")
+        joblib.dump(
+            {
+                "chosen_calibration": self._calibration_method,
+                "brier_isotonic": self._brier_isotonic,
+                "brier_sigmoid": self._brier_sigmoid,
+            },
+            path / "calibration_meta.joblib",
+        )
+        if self._conformal is not None:
+            joblib.dump(self._conformal.to_dict(), path / "conformal.joblib")
         logger.info("XGBoost model saved to %s", path)
 
     def load(self, path: Path) -> None:
@@ -274,6 +318,23 @@ class XGBoostPredictor(BasePredictor):
             self._feature_names = joblib.load(feature_names_path)
         calibrator_path = path / "calibrator.joblib"
         self._calibrator = joblib.load(calibrator_path) if calibrator_path.exists() else None
+        meta_path = path / "calibration_meta.joblib"
+        if meta_path.exists():
+            meta = joblib.load(meta_path)
+            self._calibration_method = str(meta.get("chosen_calibration", "none"))
+            self._brier_isotonic = meta.get("brier_isotonic")
+            self._brier_sigmoid = meta.get("brier_sigmoid")
+        else:
+            # Pre-selection artifact: any persisted calibrator was sigmoid-only.
+            self._calibration_method = "sigmoid" if self._calibrator is not None else "none"
+            self._brier_isotonic = None
+            self._brier_sigmoid = None
+        conformal_path = path / "conformal.joblib"
+        self._conformal = (
+            ConformalState.from_dict(joblib.load(conformal_path))
+            if conformal_path.exists()
+            else None  # old artifact: no conformal state, non-blocking downstream
+        )
         self._is_fitted = True
         logger.info("XGBoost model loaded from %s", path)
 

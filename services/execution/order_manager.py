@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
@@ -13,6 +13,18 @@ import structlog
 from core.enums import OrderStatus
 
 logger = structlog.get_logger(__name__)
+
+_TERMINAL_STATUSES = {
+    OrderStatus.FILLED,
+    OrderStatus.CANCELLED,
+    OrderStatus.REJECTED,
+    OrderStatus.EXPIRED,
+}
+
+# Terminal orders older than this are dropped from the in-memory maps; the
+# DB order/fill rows persisted by the execution service are the audit trail,
+# so in-memory copies only need to outlive post-trade inspection.
+_TERMINAL_RETENTION = timedelta(hours=48)
 
 
 class OrderError(Exception):
@@ -128,6 +140,10 @@ class OrderManager:
         client_order_id: str | None = None,
     ) -> Order:
         """Create a new order in PENDING status."""
+        # Opportunistic prune: the monitor loop already drops terminal orders
+        # from in-flight tracking, so creation time is the natural hook to
+        # release the retained copies without a background task.
+        self._prune_terminal()
         order_id = str(uuid.uuid4())
         order = Order(
             order_id=order_id,
@@ -200,8 +216,7 @@ class OrderManager:
 
     def get_open_orders(self) -> list[Order]:
         """Return all orders that are not in a terminal state."""
-        terminal = {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED}
-        return [o for o in self._orders.values() if o.status not in terminal]
+        return [o for o in self._orders.values() if o.status not in _TERMINAL_STATUSES]
 
     def cancel_all_open(self) -> int:
         """Cancel all open orders. Returns count of orders cancelled."""
@@ -223,6 +238,25 @@ class OrderManager:
     def get_order(self, order_id: str) -> Order | None:
         """Return an order by ID, or None if not found."""
         return self._orders.get(order_id)
+
+    def _prune_terminal(self) -> None:
+        """Drop terminal orders (and their fills) past the retention window.
+
+        Terminal states admit no further transitions, so ``updated_at`` is
+        the moment the order reached its terminal status. Open orders are
+        never pruned.
+        """
+        cutoff = datetime.now(UTC) - _TERMINAL_RETENTION
+        expired = [
+            order_id
+            for order_id, order in self._orders.items()
+            if order.status in _TERMINAL_STATUSES and order.updated_at < cutoff
+        ]
+        for order_id in expired:
+            del self._orders[order_id]
+            self._fills.pop(order_id, None)
+        if expired:
+            logger.info("terminal_orders_pruned", count=len(expired))
 
     def _get_order(self, order_id: str) -> Order:
         """Return an order by ID or raise OrderError."""

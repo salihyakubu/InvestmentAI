@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
 from core.models.market_data import OHLCVRecord
+from core.models.ml_models import ModelArtifactBlob
 from core.models.ml_models import ModelMetadata as DBModelMetadata
 from services.prediction.registry import ModelRegistry
 from services.prediction.training.dataset_builder import (
@@ -181,8 +183,13 @@ class AutoRetrainer:
         returns_val: np.ndarray | None,
         feature_names: list[str] | None,
     ) -> dict[str, Any]:
-        """Train one model type, gate it against its champion, and promote."""
-        result, new_model = self._trainer.train_model(
+        """Train one model type, gate it against its champion, and promote.
+
+        Training is CPU-bound and can run for minutes; on the event loop it
+        starves every Redis consumer, so it runs in a thread.
+        """
+        result, new_model = await asyncio.to_thread(
+            self._trainer.train_model,
             model_type=model_type,
             X_train=X_train,
             y_train=y_train,
@@ -229,6 +236,12 @@ class AutoRetrainer:
         # Mirror into the DB model_metadata table (backs GET /api/v1/models).
         # Best-effort: a DB hiccup must not undo a successful retrain+promote.
         await self._mirror_metadata_to_db(model_type, version, new_metrics)
+
+        # Durability: the deploy target has no volumes, so without this the
+        # promoted artifacts die with the container on the next deploy.
+        # (last_trained/drift bookkeeping is handled once at the retrain()
+        # loop level, covering all members.)
+        await self._persist_artifacts_to_db(model_type, version)
 
         logger.info(
             "retrainer.retrain.complete",
@@ -394,6 +407,79 @@ class AutoRetrainer:
         except Exception:
             logger.exception(
                 "retrainer.db_mirror.failed", model_name=model_type, version=version
+            )
+
+    async def _persist_artifacts_to_db(self, model_type: str, version: int) -> None:
+        """Copy the promoted version's artifact files into ``model_artifact_blobs``.
+
+        ``restore_and_reconcile`` replays these blobs onto disk at worker
+        startup, surviving the volume-less redeploys that otherwise revert
+        serving to the repo champions. Best-effort like the metadata mirror:
+        failure is logged but never propagated, and the filesystem registry
+        remains the serving source of truth.
+        """
+        try:
+            artifact_dir: Path | None = None
+            for entry in self._registry.list_versions(model_type):
+                if entry.version == version:
+                    artifact_dir = Path(entry.artifact_path)
+                    break
+            if artifact_dir is None or not artifact_dir.is_dir():
+                logger.warning(
+                    "retrainer.blob_persist.no_artifact_dir",
+                    model_name=model_type,
+                    version=version,
+                )
+                return
+
+            # A version dir is a few MB of joblib files; read off-loop anyway.
+            def _read_files() -> list[tuple[str, bytes]]:
+                return [
+                    (path.name, path.read_bytes())
+                    for path in sorted(artifact_dir.iterdir())
+                    if path.is_file()
+                ]
+
+            contents = await asyncio.to_thread(_read_files)
+            if not contents:
+                logger.warning(
+                    "retrainer.blob_persist.empty_dir",
+                    model_name=model_type,
+                    version=version,
+                )
+                return
+
+            now = datetime.now(UTC)
+            factory = self._get_session_factory()
+            async with factory() as session:
+                # Replace rows from any earlier partial persist of this version.
+                await session.execute(
+                    delete(ModelArtifactBlob).where(
+                        ModelArtifactBlob.model_name == model_type,
+                        ModelArtifactBlob.version == version,
+                    )
+                )
+                for filename, content in contents:
+                    session.add(
+                        ModelArtifactBlob(
+                            model_name=model_type,
+                            version=version,
+                            filename=filename,
+                            content=content,
+                            created_at=now,
+                        )
+                    )
+                await session.commit()
+            logger.info(
+                "retrainer.blob_persist.ok",
+                model_name=model_type,
+                version=version,
+                files=len(contents),
+                bytes=sum(len(content) for _, content in contents),
+            )
+        except Exception:
+            logger.exception(
+                "retrainer.blob_persist.failed", model_name=model_type, version=version
             )
 
     @staticmethod

@@ -6,7 +6,7 @@ import asyncio
 import random
 import uuid
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -23,6 +23,10 @@ _MAX_SLIPPAGE_BPS = Decimal("5")
 # Simulated latency bounds (seconds).
 _MIN_LATENCY = 0.010
 _MAX_LATENCY = 0.050
+
+# Terminal orders and their fills older than this are dropped from memory;
+# without a cap the broker's order/fill maps grow for the process lifetime.
+_TERMINAL_RETENTION = timedelta(hours=48)
 
 
 class PaperBroker(BaseBroker):
@@ -44,8 +48,11 @@ class PaperBroker(BaseBroker):
         self._orders: dict[str, BrokerOrder] = {}
         # external_id -> status string
         self._order_statuses: dict[str, str] = {}
-        # All fills for audit trail
-        self._fills: list[BrokerFill] = []
+        # order external_id -> fills, so get_order_status stays O(fills for
+        # that order) instead of scanning every fill ever recorded
+        self._fills_by_order: dict[str, list[BrokerFill]] = {}
+        # external_id -> when the order reached a terminal status (prune key)
+        self._terminal_at: dict[str, datetime] = {}
         # Pending limit / stop orders awaiting trigger
         self._pending_orders: dict[str, BrokerOrder] = {}
         # Last known prices per symbol (used to evaluate pending orders)
@@ -66,6 +73,9 @@ class PaperBroker(BaseBroker):
 
     async def submit_order(self, order: BrokerOrder) -> str:
         """Submit an order; market orders fill immediately."""
+        # Opportunistic prune: a broker object must not run background tasks,
+        # so expired terminal orders are dropped on the next submission.
+        self._prune()
         await asyncio.sleep(random.uniform(_MIN_LATENCY, _MAX_LATENCY))
 
         external_id = order.external_id or str(uuid.uuid4())
@@ -93,7 +103,7 @@ class PaperBroker(BaseBroker):
                 stop_price=str(order.stop_price),
             )
         else:
-            self._order_statuses[external_id] = "rejected"
+            self._mark_terminal(external_id, "rejected")
             logger.warning(
                 "paper_unsupported_order_type",
                 order_type=order.order_type,
@@ -105,7 +115,7 @@ class PaperBroker(BaseBroker):
         """Cancel a pending order."""
         if external_id in self._pending_orders:
             del self._pending_orders[external_id]
-            self._order_statuses[external_id] = "cancelled"
+            self._mark_terminal(external_id, "cancelled")
             logger.info("paper_order_cancelled", external_id=external_id)
             return True
         return False
@@ -119,7 +129,7 @@ class PaperBroker(BaseBroker):
         status = self._order_statuses.get(external_id, "unknown")
         order = self._orders.get(external_id)
 
-        order_fills = [f for f in self._fills if f.order_external_id == external_id]
+        order_fills = self._fills_by_order.get(external_id, [])
         filled_qty = sum((f.quantity for f in order_fills), Decimal("0"))
         if filled_qty > 0:
             filled_avg_price = (
@@ -173,6 +183,34 @@ class PaperBroker(BaseBroker):
         return True
 
     # ------------------------------------------------------------------
+    # Memory retention
+    # ------------------------------------------------------------------
+
+    def _mark_terminal(self, external_id: str, status: str) -> None:
+        """Set a terminal status and stamp it for later pruning."""
+        self._order_statuses[external_id] = status
+        self._terminal_at[external_id] = datetime.now(UTC)
+
+    def _prune(self) -> None:
+        """Drop terminal orders (and their fills) past the retention window.
+
+        Account state (_cash/_positions/_last_prices) already reflects every
+        fill, so removing fill records cannot change balances or positions.
+        Open and pending orders are never pruned.
+        """
+        cutoff = datetime.now(UTC) - _TERMINAL_RETENTION
+        expired = [
+            ext_id for ext_id, at in self._terminal_at.items() if at < cutoff
+        ]
+        for ext_id in expired:
+            del self._terminal_at[ext_id]
+            self._orders.pop(ext_id, None)
+            self._order_statuses.pop(ext_id, None)
+            self._fills_by_order.pop(ext_id, None)
+        if expired:
+            logger.info("paper_terminal_orders_pruned", count=len(expired))
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -184,7 +222,7 @@ class PaperBroker(BaseBroker):
             if order.limit_price is not None:
                 base_price = order.limit_price
             else:
-                self._order_statuses[order.external_id] = "rejected"
+                self._mark_terminal(order.external_id, "rejected")
                 logger.warning(
                     "paper_no_price_for_market_order",
                     symbol=order.symbol,
@@ -206,7 +244,7 @@ class PaperBroker(BaseBroker):
         if order.side == "buy":
             cost = order.quantity * fill_price
             if cost > self._cash:
-                self._order_statuses[order.external_id] = "rejected"
+                self._mark_terminal(order.external_id, "rejected")
                 logger.warning(
                     "paper_insufficient_cash",
                     symbol=order.symbol,
@@ -223,14 +261,14 @@ class PaperBroker(BaseBroker):
             commission=Decimal("0"),  # paper trading: no commissions
             filled_at=datetime.now(UTC),
         )
-        self._fills.append(fill)
+        self._fills_by_order.setdefault(order.external_id, []).append(fill)
 
         # Update positions and cash
         signed_qty = order.quantity if order.side == "buy" else -order.quantity
         self._positions[order.symbol] += signed_qty
         self._cash -= signed_qty * fill_price
 
-        self._order_statuses[order.external_id] = "filled"
+        self._mark_terminal(order.external_id, "filled")
         logger.info(
             "paper_market_order_filled",
             external_id=order.external_id,
@@ -276,12 +314,12 @@ class PaperBroker(BaseBroker):
                 commission=Decimal("0"),
                 filled_at=datetime.now(UTC),
             )
-            self._fills.append(fill)
+            self._fills_by_order.setdefault(ext_id, []).append(fill)
 
             signed_qty = order.quantity if order.side == "buy" else -order.quantity
             self._positions[order.symbol] += signed_qty
             self._cash -= signed_qty * fill_price
-            self._order_statuses[ext_id] = "filled"
+            self._mark_terminal(ext_id, "filled")
 
             logger.info(
                 "paper_pending_order_filled",
@@ -297,8 +335,10 @@ class PaperBroker(BaseBroker):
 
     @property
     def fills(self) -> list[BrokerFill]:
-        """Return all recorded fills."""
-        return list(self._fills)
+        """Return all retained fills in chronological order."""
+        all_fills = [f for fills in self._fills_by_order.values() for f in fills]
+        all_fills.sort(key=lambda f: f.filled_at)
+        return all_fills
 
     @property
     def open_orders(self) -> dict[str, BrokerOrder]:

@@ -225,3 +225,198 @@ Honest caveats, recorded so the numbers are not over-read:
   refreshes xgboost only; lightgbm retrains require per-member iteration (follow-up).
 - Outcome tracking is in-memory: a worker restart clears unresolved predictions
   (they re-accumulate within minutes; the `predictions` DB table is unaffected).
+
+## Soak-hardening record (2026-07-19) — adversarial audit + fixes
+
+A 4-dimension adversarial audit (memory growth, outcome correctness, drift wiring,
+live health) of the new learning loop produced 30 findings; the load-bearing ones
+were fixed the same evening:
+
+- **Autonomous trade path was DEAD (critical):** the portfolio optimizer subscribed
+  to stream `predictions` while predictions publish on `predictions.ready`, and
+  nothing ever called `optimize()`/`trigger_rebalance()`. The flat equity and zero
+  positions of the soak were a dead wire, not conservative gating. Now: correct
+  stream, a rebalance trigger (long-only, confidence ≥ 0.6, 120 s freshness,
+  300 s cooldown), reference prices from `market.prices`, and explicit weight-0
+  exits for symbols that stop qualifying. **The AI can now open paper positions
+  autonomously**; risk sizing/limits and the kill switch govern it.
+- **Retraining froze the worker (high, observed live):** the 19:32Z retrain ran
+  synchronously on the event loop for ~60 s — every Redis consumer timed out and
+  Railway dropped 682 log lines. Training now runs in a worker thread.
+- **Memory retention (critical):** the learning stack quadruple-stored every
+  prediction in unbounded structures (~15-30 MB/day; OOM risk mid-soak) — all
+  four stores now capped/pruned (20 k records per model, 30-day feedback prune,
+  1 k prediction history) with drift/evaluation semantics preserved.
+- **Redis streams capped (critical):** events were XADD'd with no MAXLEN and acks
+  never delete — Redis itself would fill within weeks and stall all publishing.
+  All publishes now cap at ~100 k entries per stream.
+- **Outcome windows bounded (high):** a stock prediction near session close was
+  scored against the NEXT session's first bar (overnight gap recorded as a
+  5-minute outcome). Lookups are now bar-grid-bounded (t0 within 10 min back,
+  t+5 m within 3 min slack); unresolvable records expire after 60 min. Tracking
+  now uses event creation time and skips stale backlog (> 10 min old).
+- **Drift statistics fixed (medium):** the ≥100-record gate made the 5 pp drift
+  threshold a coin flip (~31 % false fire) — now ≥1000 resolved records over a
+  rolling 2000-record window (~1 %). `DriftDetectedEvent` now carries `model_id`.
+- **Feedback loop de-garbaged (medium):** returns are now signed by the predicted
+  direction (Sharpe measures skill, not market drift) and the notional-as-PnL
+  order-fill write was removed.
+- **Log hygiene:** worker no longer logs the full Redis URL (password) at startup;
+  log level is settings-driven (INFO default — DEBUG tripped Railway's 500
+  logs/sec drop limit); stdlib-logging INFO lines (e.g. hot-reload confirmation)
+  are now visible in production.
+
+**Operator actions arising:**
+- **Rotate the Redis password** (Railway → Redis service): the old value is baked
+  into historical deploy logs.
+- `ALERT_WEBHOOK_URL` still unset — alert-delivery rehearsal remains open.
+
+**Known gaps accepted for now (documented, not hidden):** feature-drift detection
+(`DataDriftDetector.detect_feature_drift`) remains unwired (needs per-symbol
+reference distributions; pooled shortcuts would false-alarm nightly); learning
+state is in-memory and resets on deploy; no consumer-group XAUTOCLAIM reclaim
+(at-most-once delivery on crash mid-handler); lightgbm auto-retrain pending the
+ensemble-member fix (separate session).
+
+## Post-hardening drill + overnight endurance (2026-07-19 → 07-20) — PASSED
+
+**Async-retrain drill (19 Jul 20:31:48Z):** `{"action":"retrain"}` triggered on the
+hardened build. Training ran ~14 s in a worker thread while the event loop stayed
+fully live — health beats completed and predictions kept persisting *during*
+training; zero Redis consumer errors (vs. the 60 s freeze + 682 dropped log lines
+in the pre-fix drill). The champion/challenger gate correctly **declined** the
+challenger (val 0.40 ≥ floor 0.34, but < champion 0.505) — the gate now proven in
+both directions live.
+
+**Discovery — cloud-promoted models are ephemeral:** the 19:32Z rehearsal's
+xgboost v2 was promoted on the container filesystem; the next deploy rebuilt from
+the repo and silently reverted serving to v1, while `model_metadata` still says
+v2 is active (the ML Models page overstates). Railway has no volumes. Follow-up
+task filed: persist promoted artifacts durably (DB) + reconcile the mirror at
+worker startup. Until then: **a soak-period deploy discards any cloud-promoted
+model** — retrains re-promote later if still better.
+
+**Overnight endurance (20:30Z → 06:59Z, first ~10.5 h unattended on hardened
+build):** zero errors/exceptions, zero consumer failures, every health beat
+healthy; outcome resolution steady at 45–50 predictions per ~10-min pass;
++3,075 predictions persisted overnight (exact 5/min crypto cadence); ohlcv
+~270 rows/h; snapshots on 5-min cadence; equity 100.00 with zero positions —
+**correct**, since every prediction overnight was `flat` (max confidence 0.765;
+zero long ≥ 0.6 calls). The autonomous trade path is armed and verified by unit
+tests; live it is rightly holding until the ensemble sees an edge.
+
+**Predictions API implemented (PR #26):** `/api/v1/predictions/{latest,history,id}`
+were 501 stubs while the worker had been persisting every prediction — the
+dashboard's prediction views had no data source. Now serving live rows
+(verified: fresh predictions seconds old via the deployed API).
+
+## ML ascent record (2026-07-20 → 07-21) — deep-data 3-model conformal ensemble LIVE
+
+The prediction stack was upgraded end-to-end (PR #29) and new champions trained
+and deployed (PR #30). Every change remains subject to the champion/challenger
+gate; nothing bypasses it.
+
+**Pipeline upgrades:** triple-barrier labeling (volatility-scaled barriers,
+first-touch, per-symbol) replaces percentile thresholds; hyperopt now maximizes
+mean accuracy across purged walk-forward folds with embargo (no label-horizon
+leakage); calibration method (isotonic vs Platt) selected per model by Brier
+score; split-conformal prediction sets (α=0.10) added as an abstention layer —
+the ensemble emits a non-flat signal only when every agreeing member conformally
+supports it; CatBoost added as a third tree family with full contract parity;
+overfit guard at the gate (train−val gap > 0.35 rejected).
+
+**Deep-data champions (trained on 90 days of real 1m bars — 105,432 train /
+26,363 val rows, 48 features):**
+- xgboost v2: val_accuracy 0.5471, train−val gap −0.0180
+- lightgbm v2: val_accuracy 0.5473, gap −0.0125
+- catboost v1: val_accuracy 0.5469, gap −0.0144
+
+All gaps NEGATIVE (validation beats training — no overfit). Previous champions
+were ~0.505 on a few hundred validation rows. NOTE: labeling changed between
+generations, so accuracies are not strictly comparable across them; within-
+generation, the numbers are honest out-of-sample results on 26k rows.
+
+**Verified in production (2026-07-21 06:21Z):** worker serves
+`ensemble:xgboost,lightgbm,catboost`; predictions flowing at cadence;
+model_metadata mirrored to match the serving registry (UI truthful).
+
+**Feature-drift detection ARMED:** `feature_reference.npz` (per-symbol training
+distributions) now ships with artifacts; live per-symbol feature buffers
+compare against it each evaluation cycle once ≥500 rows accumulate (~8h after
+deploy). Drift publishes `DriftDetectedEvent(drift_type="data")` → monitoring
+alerts (Slack once ALERT_WEBHOOK_URL is set) and arms retraining.
+
+**Deep history backfill:** ~648k rows of 90-day 1m crypto history loaded into
+`ohlcv` (idempotent script, `scripts/backfill_history.py`); cloud retrains now
+use a 30-day lookback (was 7). Ops note: run it with modest `--batch` values —
+Railway's public Postgres proxy kills very long-lived connections.
+
+**Ops trap recorded:** deploy the `ui` service from `frontend/` (it has its own
+railway link); a repo-root `railway up -s ui` builds the backend image onto it
+and fails healthcheck.
+
+**Cloud deep-data retrain drill (2026-07-21 10:33–10:41Z) — PASSED:** with the
+backfill complete (649,405 rows of 90-day 1m history across 5 pairs), an
+operator `retrain` command made the WORKER train on 30 days of its own data
+through the full new pipeline (~8 min: 216k rows loaded, features replayed,
+triple-barrier labels, hyperopt, calibration selection — isotonic won, Brier
+0.1983 vs 0.1994). The worker served 141 predictions and every health beat
+stayed green DURING training (the async fix holding under real load). The
+champion gate then correctly **declined** the challenger: 30-day model
+val 0.5279 < 90-day champion 0.5471 — less data should lose, and the gate
+proved it with real numbers. The learning loop is verified end-to-end in
+production at full depth.
+
+**Trade-gate tuning (2026-07-21, operator-approved):** 28h of the new calibrated
+3-model ensemble produced 1,628 predictions — 100% flat, zero non-flat calls. A
+live probe of the production models showed why: honestly calibrated
+probabilities sit near the label base rates (31% long / 38% flat / 31% short),
+so the old `MIN_PREDICTION_CONFIDENCE=0.6` bar (p(long) ≥ 0.6 vs a 0.31 base
+rate) is structurally unreachable — it dated from the pre-calibration era of
+overconfident outputs. Set to **0.40** on worker+api (env var, reversible in
+seconds) so the paper soak can actually exercise the trade/execution/P&L path;
+3-model unanimity and conformal gating remain. Follow-up filed: replace the
+absolute-confidence trigger with a calibrated edge margin (p_long − p_short).
+
+## Incident postmortem (2026-07-21 18:43Z → 07-22 ~23:0xZ) — pipeline stall, RESOLVED
+
+**Impact:** no bars/predictions persisted for ~4.5h (crypto gap later backfilled:
+6,602 rows re-inserted; final per-symbol counts ~131k verified — no data loss).
+Paper account unaffected (no positions were open).
+
+**Root cause:** three Postgres sessions from the MORNING'S ADA backfill client sat
+`idle in transaction` for 14h49m holding uncommitted `ohlcv` writes. Live inserts
+eventually queued behind their transaction ids; the 18:43Z deploy restart re-formed
+the lock convoy and the whole worker write path stalled. Two amplifiers made
+diagnosis hard: (1) the Alpaca websocket retrying dead credentials (the API now
+returns 401 — keys need re-issuing) in a tight loop with giant rich tracebacks,
+flooding Railway's 500 logs/sec cap (thousands of lines dropped, burying the real
+error); (2) a code rollback that changed nothing — proving the cause was state,
+not code.
+
+**Resolution:** terminated the zombie transactions (pipeline recovered within
+seconds); blanked ALPACA_API_KEY/SECRET on the worker (ingestion falls back to
+Yahoo; crypto unaffected) until fresh keys are issued; restored `main` on the
+worker (its Alpaca backoff + single-line warnings prevent the log-storm class);
+gap-backfilled the outage window.
+
+**Prevention (applied):** `ALTER DATABASE ... SET
+idle_in_transaction_session_timeout = '10min'` — server-side, any future zombie
+transaction self-terminates instead of strangling the table. Follow-up filed:
+backfill-script connection hygiene (guaranteed engine disposal + per-session
+timeout).
+
+**Operator action required:** issue fresh Alpaca paper keys (old ones return 401)
+and set ALPACA_API_KEY / ALPACA_SECRET_KEY on the worker to restore the live
+stocks feed.
+
+**Postmortem addendum (2026-07-22):** re-enabling fresh Alpaca keys re-triggered
+the storm — the 401 was only a trigger, not the cause. True root cause: the
+Alpaca DataStream was constructed on the worker's main event loop but run on a
+private loop the SDK creates in a thread, with bar callbacks awaited back across
+the divide ("Future attached to a different loop" storms → log-cap floods →
+event-loop starvation → poisoned DB sessions). Fixed: the stream now lives
+entirely on a dedicated thread's own loop (constructed AND driven there), bars
+marshal to the main loop thread-safely, shutdown joins cleanly, and non-transient
+stream errors log once + retry with capped backoff instead of tracebacking at
+multiple/sec. Keys restored from parked variables the same day.

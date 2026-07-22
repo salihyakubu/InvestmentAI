@@ -37,12 +37,12 @@ class FillTracker:
     """Tracks fills, builds positions, and reconciles with broker state."""
 
     def __init__(self) -> None:
-        # symbol -> PositionRecord
+        # symbol -> PositionRecord. Per-order fill history is intentionally
+        # not retained here: nothing reads it, and it grows unbounded over
+        # the process lifetime. DB fill rows are the durable record.
         self._positions: dict[str, PositionRecord] = defaultdict(
             lambda: PositionRecord(symbol="")
         )
-        # order_id -> list of fill dicts
-        self._fills_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     def record_fill(
         self,
@@ -54,14 +54,6 @@ class FillTracker:
         commission: Decimal = Decimal("0"),
     ) -> PositionRecord:
         """Record a fill and update the local position for *symbol*."""
-        self._fills_by_order[order_id].append({
-            "symbol": symbol,
-            "side": side,
-            "price": price,
-            "quantity": quantity,
-            "commission": commission,
-        })
-
         pos = self._positions[symbol]
         pos.symbol = symbol
 
