@@ -59,6 +59,7 @@ def mock_settings() -> Settings:
         model_artifact_path="model_artifacts",
         retrain_interval_hours=168,
         min_prediction_confidence=0.6,
+        min_edge_margin=0.10,
         ensemble_min_agreement=3,
         jwt_secret="test-jwt-secret",
         jwt_algorithm="HS256",

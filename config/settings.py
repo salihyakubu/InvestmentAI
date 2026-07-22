@@ -62,7 +62,16 @@ class Settings(BaseSettings):
     # the rolling feature replay over ~216k crypto bars runs in a worker
     # thread (minutes), so the event loop is unaffected.
     retrain_lookback_days: int = 30
+    # Serving-side abstain: a non-flat prediction whose max-class probability
+    # is below this floor is emitted as flat. With calibrated 3-class outputs
+    # (base rates ~31/38/31) absolute probability mostly reflects the class
+    # prior, so this is a loose sanity floor, not the trade gate -- production
+    # overrides it via MIN_PREDICTION_CONFIDENCE (0.40 as of 2026-07-21).
     min_prediction_confidence: float = 0.6
+    # Trade trigger: a long prediction qualifies for rebalancing only when
+    # p(long) - p(short) >= this margin. Unlike an absolute confidence bar,
+    # the margin measures directional edge independent of class priors.
+    min_edge_margin: float = 0.10
     ensemble_min_agreement: int = 3
 
     # API

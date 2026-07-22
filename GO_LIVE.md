@@ -420,3 +420,14 @@ entirely on a dedicated thread's own loop (constructed AND driven there), bars
 marshal to the main loop thread-safely, shutdown joins cleanly, and non-transient
 stream errors log once + retry with capped backoff instead of tracebacking at
 multiple/sec. Keys restored from parked variables the same day.
+
+**Edge-margin trade gate (2026-07-21):** the follow-up above is implemented.
+The rebalance trigger now qualifies a long prediction on calibrated edge —
+`p(long) − p(short) >= MIN_EDGE_MARGIN` (settings.min_edge_margin, default
+0.10) — instead of an absolute confidence bar; `PredictionReadyEvent` carries
+the full probability map (events without one fail the gate closed, so mixed
+old/new versions during a deploy cannot trade on missing data).
+`min_prediction_confidence` remains only as the serving-side abstain (flat
+below the floor). Ops: the `MIN_PREDICTION_CONFIDENCE=0.40` env var on
+worker+api no longer gates trades — keep it as the abstain floor or remove it;
+tune the trade gate via `MIN_EDGE_MARGIN` instead.
