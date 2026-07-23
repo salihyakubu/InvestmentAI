@@ -431,3 +431,37 @@ old/new versions during a deploy cannot trade on missing data).
 below the floor). Ops: the `MIN_PREDICTION_CONFIDENCE=0.40` env var on
 worker+api no longer gates trades — keep it as the abstain floor or remove it;
 tune the trade gate via `MIN_EDGE_MARGIN` instead.
+
+## Durable learning state (2026-07-23) — VERIFIED
+
+Learning-loop state was in-memory, so every deploy reset the evaluator window
+and the drift detector's >=1000-resolved-outcome gate to zero — a soak with
+regular deploys never accumulated the history it needs. Now durable
+(PR #39, migration 0004):
+
+- predictions table gained event_id (indexed), actual_direction, actual_return,
+  resolved_at. The outcome resolver best-effort writes each realised outcome
+  back to its row; startup rehydrates the last 7 days of resolved rows (newest
+  20k/model, oldest-first) into the evaluator and tracked-prediction history.
+- Verified live: migration applied cleanly (columns + ix_predictions_event_id
+  present); new predictions persist with event_id; the resolver wrote back 17
+  outcomes within the first pass (sample: flat prediction -> actual long,
+  +0.094%, resolved_at set); startup rehydration ran (reported empty, correct
+  for the first deploy with write-back — the NEXT deploy rehydrates this data).
+
+The soak's evidence is now cumulative across deploys.
+
+## Trade gate (2026-07-23) — calibrated edge margin LIVE
+The absolute-confidence trigger (unreachable once probabilities were honestly
+calibrated) was replaced by a calibrated edge margin: a long qualifies when
+p(long) - p(short) >= MIN_EDGE_MARGIN (default 0.10). Events without a
+probability map fail the gate closed. Deployed (PR #38). Per-member ensemble
+retraining also merged (PR #24) — all three families retrain independently.
+
+## Remaining open gaps (for a future session)
+- Wired strategy backtester (Backtesting page still a 501 stub).
+- Shorting in the autonomous path + symbol-universe expansion.
+- Aux regime features (funding/VIX/F&G/SPY) with train-serve replay parity.
+- Alert delivery: set ALERT_WEBHOOK_URL (Slack webhook) — still unset.
+(A four-agent build fleet for these hit the account spend limit mid-run and
+wrote nothing; they remain to be built, ideally one at a time.)
