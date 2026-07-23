@@ -482,3 +482,22 @@ rotate the Slack webhook (the token was exposed in logs before the fix) —
 Slack app -> Incoming Webhooks -> remove the old webhook, Add New Webhook,
 update ALERT_WEBHOOK_URL. Low urgency (a webhook only posts to one channel),
 but clean hygiene.
+
+## Flat equity is CORRECT, not a bug (2026-07-23) — operator decision recorded
+Observed: equity flat at $100, every prediction HOLD. Diagnosed by probing the
+live models on current bars: p(flat) ~0.48-0.62 dominates every symbol, and the
+long-vs-short edge (p_long - p_short) is ~0 (+/-0.03), so the edge-margin gate
+(>= 0.10, long argmax) correctly does not fire. Root cause is honest, not
+broken: triple-barrier labeling + calibrated probabilities + a calm market mean
+the models genuinely see no tradeable directional edge at the 5-minute horizon.
+The small positive "predicted return" (~+0.07% avg) is the regressor's drift
+estimate, far below the volatility barrier and trading costs.
+
+DECISION (operator, 2026-07-23): KEEP THE GATE HONEST. Do not lower
+min_edge_margin to manufacture soak activity -- trading on a ~0.03 edge is
+trading on noise, the exact self-deception the platform exists to avoid. The
+soak currently validates the LEARNING loop (predict -> resolve -> evaluate ->
+drift -> retrain), which is its present purpose. Real trades will appear when
+volatility rises and genuine edges emerge, OR when a regressor/expected-return
+trigger is proven to have edge via the (not-yet-built) backtester. A flat
+equity curve during a calm regime is the system being truthful.
