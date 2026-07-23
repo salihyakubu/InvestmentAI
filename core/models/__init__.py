@@ -2,7 +2,7 @@
 
 from core.models.audit import AuditLog
 from core.models.base import AsyncBase, TimestampMixin, UUIDMixin, get_async_session
-from core.models.market_data import OHLCVRecord
+from core.models.market_data import AuxMarketState, OHLCVRecord
 from core.models.ml_models import ModelMetadata
 from core.models.orders import Fill, Order
 from core.models.portfolio import PortfolioSnapshot
@@ -17,6 +17,7 @@ __all__ = [
     "UUIDMixin",
     "get_async_session",
     "OHLCVRecord",
+    "AuxMarketState",
     "Order",
     "Fill",
     "Position",

@@ -118,26 +118,45 @@ async def _build_services(
 ) -> list[Any]:
     """Instantiate all services and return them as a list."""
 
+    from core.models.base import get_async_session_factory
+
+    session_factory = get_async_session_factory()
+
     # -- Data Ingestion --
     from services.data_ingestion.service import DataIngestionService
 
     data_ingestion = DataIngestionService(event_bus=event_bus, settings=settings)
 
+    # -- Auxiliary market-regime ingestion + shared live snapshot --
+    # ONE LiveAuxProvider is shared: the AuxMarketService refreshes it from
+    # keyless public sources, and the FeatureEngineeringService reads it (via
+    # its FeatureStore) so every live feature vector carries current
+    # market-regime values under the same keys training replay uses.
+    from services.data_ingestion.aux_market import AuxMarketService
+    from services.feature_engineering.aux_features import LiveAuxProvider
+
+    live_aux_provider = LiveAuxProvider()
+    aux_market = AuxMarketService(
+        session_factory=session_factory,
+        live_provider=live_aux_provider,
+        settings=settings,
+    )
+
     # -- Feature Engineering --
     from services.feature_engineering.service import FeatureEngineeringService
 
-    feature_engineering = FeatureEngineeringService(event_bus=event_bus, settings=settings)
+    feature_engineering = FeatureEngineeringService(
+        event_bus=event_bus, settings=settings, aux_provider=live_aux_provider
+    )
 
     # -- Prediction --
     # The ModelServer bridges the registry to serving; without it the service
     # has no models and every prediction is hardcoded flat (the registry alone
     # is not enough -- this wiring is what makes promoted models actually serve).
-    from core.models.base import get_async_session_factory
     from services.prediction.registry import ModelRegistry, restore_and_reconcile
     from services.prediction.service import PredictionService
     from services.prediction.serving import ModelServer
 
-    session_factory = get_async_session_factory()
     model_registry = ModelRegistry(artifact_base=Path(settings.model_artifact_path))
     # Railway has no volumes: cloud-promoted artifacts outlive deploys only via
     # the DB blob mirror. Restore anything newer than the shipped registry and
@@ -253,6 +272,7 @@ async def _build_services(
 
     return [
         data_ingestion,
+        aux_market,
         feature_engineering,
         prediction,
         portfolio,

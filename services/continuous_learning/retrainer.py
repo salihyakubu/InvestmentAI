@@ -13,9 +13,10 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
-from core.models.market_data import OHLCVRecord
+from core.models.market_data import AuxMarketState, OHLCVRecord
 from core.models.ml_models import ModelArtifactBlob
 from core.models.ml_models import ModelMetadata as DBModelMetadata
+from services.feature_engineering.aux_features import HistoricalAuxProvider
 from services.prediction.registry import ModelRegistry
 from services.prediction.training.dataset_builder import (
     MIN_VAL_ACCURACY,
@@ -340,14 +341,51 @@ class AutoRetrainer:
                 sym: bars_matrix(sym_rows) for sym, sym_rows in per_symbol_rows.items()
             }
 
+            # Aux regime values over the SAME window, replayed as-of each bar
+            # time so training sees exactly what live serving would have held
+            # (train/serve parity). Best-effort and self-contained: if the aux
+            # table is empty/unavailable the provider yields 0.0, matching a
+            # live path with no aux data -- training must never fail on aux.
+            aux_provider = await self._load_aux_provider(cutoff)
+
             # The rolling feature replay is CPU-bound; keep the event loop free.
-            return await asyncio.to_thread(build_dataset, per_symbol_cols)
+            return await asyncio.to_thread(
+                build_dataset, per_symbol_cols, aux_provider=aux_provider
+            )
         except ValueError as exc:  # no symbol had enough bars -> skip, not error
             logger.info("retrainer.load_data.insufficient", model_id=model_id, reason=str(exc))
             return _NO_DATA
         except Exception:
             logger.exception("retrainer.load_data.error", model_id=model_id)
             return _NO_DATA
+
+    async def _load_aux_provider(self, cutoff: datetime) -> HistoricalAuxProvider:
+        """Build a HistoricalAuxProvider from aux_market_state since *cutoff*.
+
+        Best-effort: any failure (missing table, DB hiccup) yields an empty
+        provider that returns 0.0 for every aux feature, so a retrain still
+        proceeds on price/volume alone rather than aborting.
+        """
+        try:
+            stmt = (
+                select(
+                    AuxMarketState.time,
+                    AuxMarketState.metric,
+                    AuxMarketState.symbol,
+                    AuxMarketState.value,
+                )
+                .where(AuxMarketState.time >= cutoff)
+                .order_by(AuxMarketState.time)
+            )
+            factory = self._get_session_factory()
+            async with factory() as session:
+                rows = (await session.execute(stmt)).all()
+            return HistoricalAuxProvider(
+                (r.time, r.metric, r.symbol, r.value) for r in rows
+            )
+        except Exception:
+            logger.warning("retrainer.load_aux.unavailable")
+            return HistoricalAuxProvider(())
 
     async def _mirror_metadata_to_db(
         self, model_type: str, version: int, metrics: dict[str, Any]

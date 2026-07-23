@@ -18,6 +18,7 @@ from config.settings import Settings, get_settings
 from core.events.base import Event, EventBus
 from core.events.market_events import BarCloseEvent
 from core.events.signal_events import FeaturesReadyEvent
+from services.feature_engineering.aux_features import AuxFeatureProvider
 from services.feature_engineering.feature_registry import FeatureRegistry
 from services.feature_engineering.feature_store import FeatureStore
 from services.feature_engineering.technical import indicators as ti
@@ -40,6 +41,11 @@ class FeatureEngineeringService:
     settings  : application settings
     feature_store : optional pre-built FeatureStore (created internally if
                     not provided)
+    aux_provider : optional market-regime feature provider. Used only when
+                    *feature_store* is not supplied; the internally built store
+                    is then constructed with it so aux features are computed
+                    with the closing bar's timestamp. Default None keeps the
+                    aux keys at 0.0 (backward-compatible).
     """
 
     def __init__(
@@ -47,10 +53,11 @@ class FeatureEngineeringService:
         event_bus: EventBus,
         settings: Settings | None = None,
         feature_store: FeatureStore | None = None,
+        aux_provider: AuxFeatureProvider | None = None,
     ) -> None:
         self._bus = event_bus
         self._settings = settings or get_settings()
-        self._store = feature_store or FeatureStore()
+        self._store = feature_store or FeatureStore(aux_provider=aux_provider)
         self._registry = FeatureRegistry()
         self._bar_buffers: dict[str, list[dict[str, Any]]] = {}
         self._register_default_features()
@@ -110,7 +117,11 @@ class FeatureEngineeringService:
             buf = self._bar_buffers[key]
 
         df = self._bars_to_df(buf)
-        features = self._store.compute_all_features(event.symbol, df)
+        # Pass the closing bar's time so the aux provider (if wired) supplies
+        # market-regime values consistent with training-replay as-of lookups.
+        features = self._store.compute_all_features(
+            event.symbol, df, timestamp=event.bar_time
+        )
 
         if not features:
             logger.warning("No features computed for %s", key)

@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from services.feature_engineering.aux_features import AuxFeatureProvider, zero_aux
 from services.feature_engineering.technical import indicators as ti
 from services.feature_engineering.technical.microstructure import (
     price_momentum,
@@ -34,11 +35,20 @@ class FeatureStore:
     ----------
     db_session : async SQLAlchemy session (or None during tests)
     redis      : aioredis connection (or None during tests)
+    aux_provider : optional market-regime feature provider. When wired (and a
+        timestamp is supplied to :meth:`compute_all_features`) it appends the
+        aux feature values; otherwise those keys are emitted as ``0.0``.
     """
 
-    def __init__(self, db_session: Any = None, redis: Any = None) -> None:
+    def __init__(
+        self,
+        db_session: Any = None,
+        redis: Any = None,
+        aux_provider: AuxFeatureProvider | None = None,
+    ) -> None:
         self._db = db_session
         self._redis = redis
+        self._aux_provider = aux_provider
 
     # ------------------------------------------------------------------
     # Core computation
@@ -48,11 +58,18 @@ class FeatureStore:
         self,
         symbol: str,
         ohlcv_df: pl.DataFrame,
+        timestamp: datetime | None = None,
     ) -> dict[str, float]:
         """Compute the full feature vector from an OHLCV polars DataFrame.
 
         Expected columns: ``open``, ``high``, ``low``, ``close``, ``volume``.
         An optional ``vwap`` column is used when available.
+
+        ``timestamp`` is the window-end bar's time; it drives the aux
+        (market-regime) provider's as-of lookup so training replay and live
+        serving agree. When no provider is wired or no timestamp is given, the
+        aux keys are still emitted -- as ``0.0`` -- so the feature key set is
+        stable either way.
 
         Returns a flat ``{feature_name: value}`` dict.
         """
@@ -151,6 +168,17 @@ class FeatureStore:
         if len(c) > 0:
             features["close"] = float(c[-1])
             features["daily_return"] = float((c[-1] / c[-2] - 1.0) if len(c) > 1 else 0.0)
+
+        # ---- Market-regime (aux) features -----------------------------------
+        # ALWAYS append the full aux key set so the emitted schema is stable
+        # whether or not a provider is wired (critical: never conditionally
+        # emit keys). With a provider AND a timestamp, use the as-of values;
+        # otherwise every aux key is 0.0 -- identical to a live path with no
+        # provider.
+        if self._aux_provider is not None and timestamp is not None:
+            features.update(self._aux_provider.features_asof(symbol, timestamp))
+        else:
+            features.update(zero_aux())
 
         # Replace any remaining NaN with 0 for downstream consumers.
         for k, val in features.items():

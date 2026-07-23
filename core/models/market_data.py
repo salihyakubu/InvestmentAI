@@ -1,11 +1,11 @@
-"""OHLCV market data model (TimescaleDB hypertable)."""
+"""OHLCV market data model (TimescaleDB hypertable) and market-regime state."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, Numeric, String
+from sqlalchemy import DateTime, Float, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.models.base import AsyncBase
@@ -45,4 +45,34 @@ class OHLCVRecord(AsyncBase):
         return (
             f"<OHLCVRecord symbol={self.symbol!r} time={self.time} "
             f"tf={self.timeframe!r} close={self.close}>"
+        )
+
+
+class AuxMarketState(AsyncBase):
+    """Slow-moving market-regime metrics, timestamped for as-of replay.
+
+    One row per ``(time, metric, symbol)`` observation. Global metrics
+    (Fear & Greed index, VIX close, SPY daily return) use the empty-symbol
+    sentinel ``""``; the crypto funding rate is stored per symbol (e.g.
+    ``"BTC/USDT"``). The ``time`` is the moment the value became observable, so
+    :class:`~services.feature_engineering.aux_features.HistoricalAuxProvider`
+    can reproduce, without look-ahead, the value the live snapshot would have
+    held at any past bar time -- the train/serve parity guarantee.
+    """
+
+    __tablename__ = "aux_market_state"
+
+    time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True, nullable=False
+    )
+    metric: Mapped[str] = mapped_column(String, primary_key=True, nullable=False)
+    symbol: Mapped[str] = mapped_column(
+        String, primary_key=True, nullable=False, default="", server_default=""
+    )
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"<AuxMarketState time={self.time} metric={self.metric!r} "
+            f"symbol={self.symbol!r} value={self.value}>"
         )
