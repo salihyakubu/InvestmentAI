@@ -553,3 +553,23 @@ The original gap ("does the platform use news/other feeds?") is now closed to
 the extent honesty allows: the knowledge-base MACHINERY exists end-to-end with
 train/serve parity, four reliable feeds flow live, and the first measurement
 says today's models don't yet benefit. That measurement is the platform working.
+
+## Strategy backtester (2026-07-23) — BUILT, DEPLOYED, VERIFIED LIVE
+The last major product gap is closed. The Backtesting page was a dead 501 stub
+with no engine behind it; the platform's proven methodology lived only in the
+Stage-2 CLI harness. Now (PR #48, migration 0006):
+- services/backtesting/edge.py is the canonical harness (net-of-cost,
+  NON-overlapping holds, stability-gated, cross-symbol verdict) with a
+  portfolio layer; the CLI imports from it and the null random-walk self-test
+  still reports NO edge (the honesty invariant held through the refactor).
+- Job-based API (run/status/results/history; orphaned jobs marked failed) and
+  a job-polling UI with VISIBLE error states and an edge-verdict banner.
+- Verified live through the deployed API: a 3-symbol 2018-2025 run completed in
+  ~5s -- verdict "EDGE STABLE across 2/3 symbols" (AAPL and SPY pass the gate
+  out-of-sample, MSFT fails), portfolio +52.2% OOS, Sharpe 1.17, maxDD 13.1%,
+  359 trades. Consistent with the 2026-07-18 Stage-2 study, now reproducible
+  from the dashboard by the operator.
+CAVEAT (unchanged honesty): this is the DAILY-horizon harness strategy. It does
+not validate the live 5-minute soak models; it is the research tool for
+measuring whether any candidate signal has edge net of costs before it is
+trusted with capital.
