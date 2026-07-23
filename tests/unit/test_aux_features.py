@@ -400,5 +400,10 @@ def test_alembic_single_head_includes_aux_migration() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
-    assert heads == ["0005_aux_market"]
+    sd = ScriptDirectory.from_config(Config("alembic.ini"))
+    heads = sd.get_heads()
+    # Single linear head, with the aux migration somewhere in its ancestry
+    # (later migrations may extend the chain past it).
+    assert len(heads) == 1
+    chain = {rev.revision for rev in sd.walk_revisions()}
+    assert "0005_aux_market" in chain
