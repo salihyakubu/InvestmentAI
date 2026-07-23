@@ -326,10 +326,13 @@ class PortfolioOptimizerService:
             received_at = self._prediction_received_at.get(symbol)
             if received_at is None or now - received_at > _PREDICTION_MAX_AGE:
                 continue
-            if prediction.direction != SignalDirection.LONG:
-                continue
             if self._last_prices.get(symbol, 0.0) <= 0.0:
                 continue
+            # Deliberately NOT filtered on prediction.direction: the serving
+            # pipeline flattens every sub-gate signal's label (abstention), so
+            # the signals exploration exists to learn from are exactly the
+            # ones labelled flat. The calibrated probability margin underneath
+            # the abstention is the criterion; long-lean only.
             p_long = prediction.probabilities.get(SignalDirection.LONG.value, 0.0)
             p_short = prediction.probabilities.get(SignalDirection.SHORT.value, 0.0)
             margin = p_long - p_short

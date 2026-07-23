@@ -94,6 +94,33 @@ async def _make_service(settings: Settings) -> tuple[PortfolioOptimizerService, 
     return svc, bus
 
 
+async def test_flat_labelled_lean_qualifies_for_exploration() -> None:
+    """The serving pipeline flattens sub-gate directions (abstention), so
+    exploration must read the probability margin, not the label -- otherwise
+    the signals it exists to learn from are invisible to it."""
+    svc, bus = await _make_service(_settings())
+    await bus.publish("market.prices", _price("DOT/USDT"))
+    await bus.publish(
+        PREDICTIONS_READY,
+        PredictionReadyEvent(
+            symbol="DOT/USDT",
+            direction="flat",  # abstained label...
+            confidence=0.55,
+            expected_return=0.0005,
+            model_id="ensemble:test",
+            # ...over a clear long lean above the exploration floor.
+            probabilities={"long": 0.30, "short": 0.215, "flat": 0.485},
+            source_service="test",
+        ),
+    )
+    events = _rebalances(bus)
+    assert len(events) == 1
+    assert events[0].exploration_symbols == ["DOT/USDT"]
+    assert events[0].target_allocations == {
+        "DOT/USDT": pytest.approx(svc.settings.exploration_weight)
+    }
+
+
 async def test_exploration_disabled_in_live_mode() -> None:
     svc, bus = await _make_service(
         _settings(trading_mode="live", jwt_secret="x" * 48)
