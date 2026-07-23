@@ -48,3 +48,8 @@ class RebalanceRequestEvent(Event):
     # symbol -> reference price, supplied by the producer (which has market
     # data) so the risk manager can size weight deltas into share quantities.
     reference_prices: dict[str, float] = Field(default_factory=dict)
+    # Symbols in this request that are EXPLORATION trades (paper-only learning
+    # positions, small and auto-expiring). The risk manager tags their order
+    # ids "explore-" so fills, audit rows, and P&L reporting can separate
+    # learning trades from conviction trades.
+    exploration_symbols: list[str] = Field(default_factory=list)

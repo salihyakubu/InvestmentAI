@@ -105,6 +105,13 @@ _STALE_EVENT_CUTOFF = 2 * _OUTCOME_HORIZON
 _DRIFT_MIN_RESOLVED = 1000
 _DRIFT_WINDOW = 2000
 
+# Trade P&L attribution: open lots per symbol are matched FIFO against sell
+# fills so the feedback loop learns from REAL round-trip P&L (not notional).
+# Bounded: at most this many open lots per symbol; lots older than a day are
+# dropped (the position was closed outside our view or the fill never came).
+_MAX_OPEN_LOTS_PER_SYMBOL = 20
+_LOT_MAX_AGE = timedelta(hours=24)
+
 # Realised-direction deadband. The serving path derives the *predicted*
 # direction from calibrated class probabilities (the 30/70 logic), which has
 # no analogue for a realised price move. We instead classify the realised
@@ -152,6 +159,10 @@ class ContinuousLearningService:
         self._running = False
         # model_id -> list of prediction records
         self._tracked_predictions: dict[str, list[dict[str, Any]]] = {}
+        # symbol -> newest tracked prediction id (drives trade attribution).
+        self._latest_prediction_by_symbol: dict[str, str] = {}
+        # symbol -> open entry lots for round-trip P&L attribution.
+        self._open_lots: dict[str, list[dict[str, Any]]] = {}
         # PER-SYMBOL live feature rows for data-drift detection (bounded; see
         # _FEATURE_BUFFER_MAXLEN for the ~3 MB worst-case memory bound). Rows
         # follow the sorted feature-name ordering pinned in _feature_names.
@@ -362,27 +373,107 @@ class ContinuousLearningService:
     # ------------------------------------------------------------------
 
     async def handle_order_filled(self, event: Event) -> None:
-        """Observe a filled order (log only for now).
+        """Learn from filled orders: FIFO round-trip P&L attribution.
 
-        The orders stream carries the full order lifecycle (created / filled /
-        rejected / cancelled); only fills represent an outcome, so everything
-        else is ignored.
+        The orders stream carries the full order lifecycle; only fills matter
+        here. A BUY fill opens a lot attributed to the symbol's newest tracked
+        prediction; a SELL fill closes lots FIFO and feeds the REAL realised
+        return and P&L into the feedback loop -- the "learn when to place and
+        when to exit" half of the learning period. Exploration fills (order
+        ids tagged "explore-") are labelled so their P&L reads as learning
+        data, never edge evidence.
         """
         if event.event_type != "OrderFilledEvent":
             return
 
-        order_id = getattr(event, "order_id", event.payload.get("order_id", ""))
-        fill_price = getattr(event, "fill_price", event.payload.get("fill_price", 0.0))
-
-        # No feedback-loop record here: fill_price * quantity is NOTIONAL, not
-        # P&L, and order_id never matches a registered prediction_id. Real
-        # P&L attribution needs an order->prediction map (deliberately not
-        # built yet).
-        logger.debug(
-            "continuous_learning.order_filled",
-            order_id=order_id,
-            fill_price=fill_price,
+        symbol = str(getattr(event, "symbol", "") or event.payload.get("symbol", ""))
+        side = str(getattr(event, "side", "") or event.payload.get("side", "")).lower()
+        price = float(
+            getattr(event, "fill_price", 0.0) or event.payload.get("fill_price", 0.0)
         )
+        quantity = float(
+            getattr(event, "fill_quantity", 0.0)
+            or event.payload.get("fill_quantity", 0.0)
+        )
+        commission = float(
+            getattr(event, "commission", 0.0) or event.payload.get("commission", 0.0)
+        )
+        client_order_id = str(
+            getattr(event, "client_order_id", "")
+            or event.payload.get("client_order_id", "")
+        )
+        exploration = client_order_id.startswith("explore-")
+        if not symbol or price <= 0.0 or quantity <= 0.0:
+            return
+
+        now = datetime.now(UTC)
+        lots = self._open_lots.setdefault(symbol, [])
+        # Age out lots whose exit we never saw (closed elsewhere / flattened).
+        lots[:] = [lot for lot in lots if now - lot["ts"] <= _LOT_MAX_AGE]
+
+        if side == "buy":
+            lots.append(
+                {
+                    "quantity": quantity,
+                    "price": price,
+                    "commission": commission,
+                    "prediction_id": self._latest_prediction_by_symbol.get(symbol, ""),
+                    "exploration": exploration,
+                    "ts": now,
+                }
+            )
+            del lots[:-_MAX_OPEN_LOTS_PER_SYMBOL]
+            logger.debug(
+                "continuous_learning.lot_opened",
+                symbol=symbol,
+                quantity=quantity,
+                exploration=exploration,
+            )
+            return
+
+        if side != "sell":
+            return
+
+        # FIFO close against open lots; the remainder (a sell with no tracked
+        # entry, e.g. pre-restart positions) is ignored -- no fabricated P&L.
+        remaining = quantity
+        while remaining > 1e-12 and lots:
+            lot = lots[0]
+            matched = min(remaining, lot["quantity"])
+            entry_price = lot["price"]
+            realised_return = (price - entry_price) / entry_price
+            # Commissions: exit commission pro-rated by matched share, plus
+            # the lot's entry commission share.
+            exit_comm = commission * (matched / quantity) if quantity else 0.0
+            entry_comm = lot["commission"] * (matched / lot["quantity"])
+            pnl = (price - entry_price) * matched - exit_comm - entry_comm
+
+            prediction_id = lot["prediction_id"]
+            if prediction_id:
+                self._feedback_loop.record_outcome(
+                    prediction_id, realised_return, trade_pnl=pnl
+                )
+            logger.info(
+                "continuous_learning.trade_closed",
+                symbol=symbol,
+                quantity=matched,
+                realised_return=round(realised_return, 6),
+                pnl=round(pnl, 6),
+                exploration=lot["exploration"] or exploration,
+                prediction_id=prediction_id,
+            )
+
+            lot["quantity"] -= matched
+            lot["commission"] -= entry_comm
+            remaining -= matched
+            if lot["quantity"] <= 1e-12:
+                lots.pop(0)
+        if remaining > 1e-12:
+            logger.debug(
+                "continuous_learning.unmatched_sell",
+                symbol=symbol,
+                quantity=remaining,
+            )
 
     async def handle_prediction(self, event: Event) -> None:
         """Track a prediction for later evaluation."""
@@ -426,6 +517,8 @@ class ContinuousLearningService:
                 "timestamp": event_time,
             }
         )
+        if symbol:
+            self._latest_prediction_by_symbol[symbol] = prediction_id
 
         logger.debug(
             "continuous_learning.prediction_tracked",

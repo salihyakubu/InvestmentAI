@@ -142,11 +142,12 @@ async def test_subscribes_to_predictions_ready_and_market_prices(
     assert all(stream != "predictions" for stream, _ in bus.subscriptions)
 
 
-async def test_thin_edge_does_not_trigger(
+async def test_thin_edge_explores_instead_of_conviction_trading(
     service: PortfolioOptimizerService, bus: RecordingBus
 ) -> None:
-    """A long argmax whose p(long) - p(short) sits below min_edge_margin is
-    prior-shaped noise, not signal, and must not trade."""
+    """Below the full gate but above the exploration margin, the learning
+    period opens a tagged, small EXPLORATION position -- never a conviction
+    trade at optimizer weight."""
     await bus.publish("market.prices", _price("AAPL", 100.0))
     await bus.publish(
         PREDICTIONS_READY,
@@ -156,14 +157,38 @@ async def test_thin_edge_does_not_trigger(
             probabilities={"long": 0.36, "flat": 0.35, "short": 0.29},
         ),
     )
+    events = _rebalances(bus)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.exploration_symbols == ["AAPL"]
+    assert ev.target_allocations == {
+        "AAPL": pytest.approx(service.settings.exploration_weight)
+    }
+
+
+async def test_edge_below_exploration_margin_does_nothing(
+    service: PortfolioOptimizerService, bus: RecordingBus
+) -> None:
+    """Margins below even the exploration floor are pure noise: no trade of
+    any kind."""
+    await bus.publish("market.prices", _price("AAPL", 100.0))
+    await bus.publish(
+        PREDICTIONS_READY,
+        _prediction(
+            "AAPL",
+            confidence=0.35,
+            probabilities={"long": 0.35, "flat": 0.35, "short": 0.34},
+        ),
+    )
     assert _rebalances(bus) == []
 
 
-async def test_high_confidence_without_edge_does_not_trigger(
+async def test_high_confidence_without_edge_never_conviction_trades(
     service: PortfolioOptimizerService, bus: RecordingBus
 ) -> None:
-    """Absolute confidence is not the gate: even a high max-class probability
-    fails to qualify when the long-short margin is thin."""
+    """Absolute confidence is not the gate: a high max-class probability with
+    a thin margin qualifies (at most) for tagged exploration, never for a
+    conviction trade at optimizer weight."""
     await bus.publish("market.prices", _price("AAPL", 100.0))
     await bus.publish(
         PREDICTIONS_READY,
@@ -173,7 +198,13 @@ async def test_high_confidence_without_edge_does_not_trigger(
             probabilities={"long": 0.48, "flat": 0.08, "short": 0.44},
         ),
     )
-    assert _rebalances(bus) == []
+    for ev in _rebalances(bus):
+        assert ev.exploration_symbols  # anything published is exploration
+        assert all(
+            w == pytest.approx(service.settings.exploration_weight)
+            for w in ev.target_allocations.values()
+            if w > 0.0
+        )
 
 
 async def test_edge_at_margin_triggers(

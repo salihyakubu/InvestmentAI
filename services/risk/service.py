@@ -224,10 +224,16 @@ class RiskManagerService:
             if quantity <= 0.0:
                 continue
 
+            # Exploration trades are tagged in the correlation id so fills,
+            # audit rows, and P&L reporting can separate learning trades from
+            # conviction trades.
+            prefix = (
+                "explore" if symbol in rebalance.exploration_symbols else "rebal"
+            )
             await self.event_bus.publish(
                 RISK_APPROVED,
                 RiskApprovedEvent(
-                    order_id=f"rebal-{event.event_id}-{symbol}",
+                    order_id=f"{prefix}-{event.event_id}-{symbol}",
                     symbol=symbol,
                     side=str(side),
                     order_type="market",
