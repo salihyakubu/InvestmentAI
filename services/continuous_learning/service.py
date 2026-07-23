@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
@@ -18,6 +18,7 @@ from core.events.base import Event, EventBus
 from core.events.streams import CONTROL, SYSTEM
 from core.events.system_events import DriftDetectedEvent, ModelRetrainedEvent
 from core.models.market_data import OHLCVRecord
+from core.models.predictions import Prediction
 from services.continuous_learning.drift_detector import DataDriftDetector, ModelDriftDetector
 from services.continuous_learning.evaluator import ModelEvaluator
 from services.continuous_learning.feedback_loop import TradingFeedbackLoop
@@ -82,6 +83,15 @@ _UNRESOLVABLE_AFTER = timedelta(minutes=60)
 # Per-model cap on RESOLVED records retained for drift detection; oldest
 # resolved records beyond the cap are pruned so tracking memory is bounded.
 _MAX_RESOLVED_PER_MODEL = 20_000
+
+# Startup rehydration window: reload resolved predictions from the last
+# _REHYDRATE_WINDOW so the evaluator's report window and the drift detector's
+# >=1000-resolved gate survive deploys instead of resetting to zero. The query
+# is bounded by _REHYDRATE_MAX_ROWS (newest first), then trimmed to
+# _MAX_RESOLVED_PER_MODEL per model -- the same bound the live path enforces
+# (~10 MB transient load; retained set identical to steady-state memory).
+_REHYDRATE_WINDOW = timedelta(days=7)
+_REHYDRATE_MAX_ROWS = 40_000
 
 # Predictions consumed more than 2x the horizon after creation are backlog
 # replays -- their outcome window has already passed, so tracking them would
@@ -169,6 +179,11 @@ class ContinuousLearningService:
         self._running = True
         logger.info("continuous_learning.starting")
 
+        # Rehydrate learning state from durable storage BEFORE consuming live
+        # events, so drift/evaluation windows continue across the deploy that
+        # just restarted this process rather than resetting to zero.
+        await self._rehydrate_from_db()
+
         # Subscribe to order fills
         self._tasks.append(
             asyncio.create_task(
@@ -239,6 +254,98 @@ class ContinuousLearningService:
         )
 
         logger.info("continuous_learning.started")
+
+    async def _rehydrate_from_db(self) -> None:
+        """Reload recent resolved predictions so learning survives restarts.
+
+        Without this, every deploy wipes the evaluator's window and the drift
+        detector's >=1000-resolved-outcome gate back to zero, so a soak with
+        weekly deploys never accumulates the history it needs. Seeds both the
+        evaluator and ``_tracked_predictions`` from the last _REHYDRATE_WINDOW
+        of resolved rows, newest-first then trimmed to _MAX_RESOLVED_PER_MODEL
+        per model and inserted oldest-first (the arrival order the drift
+        midpoint split assumes). Fully best-effort: an absent/empty table or
+        any DB error is a clean start, never a startup failure.
+        """
+        cutoff = datetime.now(UTC) - _REHYDRATE_WINDOW
+        stmt = (
+            select(
+                Prediction.event_id,
+                Prediction.model_id,
+                Prediction.symbol,
+                Prediction.direction,
+                Prediction.confidence,
+                Prediction.actual_direction,
+                Prediction.actual_return,
+                Prediction.predicted_at,
+            )
+            .where(
+                Prediction.resolved_at.is_not(None),
+                Prediction.event_id.is_not(None),
+                Prediction.predicted_at >= cutoff,
+            )
+            .order_by(Prediction.predicted_at.desc())
+            .limit(_REHYDRATE_MAX_ROWS)
+        )
+        try:
+            factory = self._get_session_factory()
+            async with factory() as session:
+                rows = (await session.execute(stmt)).all()
+        except Exception:
+            logger.exception("continuous_learning.rehydrate_failed")
+            return
+
+        if not rows:
+            logger.info("continuous_learning.rehydrate_empty")
+            return
+
+        # Keep the newest _MAX_RESOLVED_PER_MODEL per model (rows are newest
+        # first), then replay oldest-first so append order matches live.
+        per_model: dict[str, int] = {}
+        kept = []
+        for row in rows:
+            model_id = row.model_id or ""
+            if per_model.get(model_id, 0) >= _MAX_RESOLVED_PER_MODEL:
+                continue
+            per_model[model_id] = per_model.get(model_id, 0) + 1
+            kept.append(row)
+
+        for row in reversed(kept):
+            event_id = row.event_id
+            model_id = row.model_id or ""
+            predicted_at = row.predicted_at
+            if predicted_at.tzinfo is None:
+                predicted_at = predicted_at.replace(tzinfo=UTC)
+            actual_direction = row.actual_direction or "flat"
+            actual_return = (
+                float(row.actual_return) if row.actual_return is not None else 0.0
+            )
+            self._evaluator.record_prediction(
+                prediction_id=event_id,
+                model_id=model_id,
+                symbol=row.symbol,
+                predicted=row.direction,
+                confidence=row.confidence,
+                timestamp=predicted_at,
+            )
+            self._evaluator.record_outcome(event_id, actual_direction, actual_return)
+            self._tracked_predictions.setdefault(model_id, []).append(
+                {
+                    "prediction_id": event_id,
+                    "symbol": row.symbol,
+                    "predicted": row.direction,
+                    "confidence": row.confidence,
+                    "timestamp": predicted_at,
+                    "actual": actual_direction,
+                    "actual_return": actual_return,
+                }
+            )
+
+        logger.info(
+            "continuous_learning.rehydrated",
+            records=len(kept),
+            models=len(per_model),
+        )
 
     async def stop(self) -> None:
         """Cancel all background tasks."""
@@ -448,6 +555,9 @@ class ContinuousLearningService:
         expiry_cutoff = now - _UNRESOLVABLE_AFTER
         resolved = 0
         expired = 0
+        # (event_id, actual_direction, actual_return) to write back after the
+        # read loop, so learning state is durable across deploys.
+        newly_resolved: list[tuple[str, str, float]] = []
 
         factory = self._get_session_factory()
         async with factory() as session:
@@ -466,6 +576,32 @@ class ContinuousLearningService:
                         continue  # not matured yet
                     if await self._resolve_record(session, record):
                         resolved += 1
+                        newly_resolved.append(
+                            (record["prediction_id"], record["actual"], record["actual_return"])
+                        )
+
+            # Best-effort write-back of the realised outcome to the predictions
+            # table (matched by event_id) so a restart rehydrates real history
+            # rather than resetting the drift/evaluation windows. A DB hiccup
+            # here must not undo the in-memory resolution already done above.
+            if newly_resolved:
+                try:
+                    for event_id, direction, ret in newly_resolved:
+                        await session.execute(
+                            update(Prediction)
+                            .where(Prediction.event_id == event_id)
+                            .values(
+                                actual_direction=direction,
+                                actual_return=ret,
+                                resolved_at=now,
+                            )
+                        )
+                    await session.commit()
+                except Exception:
+                    logger.exception(
+                        "continuous_learning.outcome_persist_failed",
+                        count=len(newly_resolved),
+                    )
 
         # Prune pass (no awaits, so atomic w.r.t. the event loop): drop
         # expired unresolved records and cap resolved history per model,

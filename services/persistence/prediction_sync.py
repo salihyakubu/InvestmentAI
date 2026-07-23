@@ -63,6 +63,10 @@ class PredictionPersistenceService:
         model_id = str(
             getattr(event, "model_id", "") or event.payload.get("model_id", "")
         )
+        # The continuous-learning tracker keys predictions by the event id; store
+        # it so the outcome resolver can write the realised outcome back to this
+        # row and startup rehydration can rebuild drift state from resolved rows.
+        event_id = str(getattr(event, "event_id", "") or event.payload.get("event_id", ""))
 
         now = datetime.now(UTC)
         try:
@@ -82,6 +86,7 @@ class PredictionPersistenceService:
                         # outcome horizon for live-accuracy checks is 5 minutes.
                         horizon_minutes=5,
                         created_at=now,
+                        event_id=event_id[:64] or None,
                     )
                 )
                 await session.commit()

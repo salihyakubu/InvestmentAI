@@ -36,6 +36,20 @@ class Prediction(UUIDMixin, AsyncBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # The prediction event's id, which the continuous-learning tracker uses as
+    # its prediction key. Indexed so the outcome resolver can UPDATE this row
+    # by event_id and startup rehydration can reload resolved rows efficiently.
+    event_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Realised outcome written back by the outcome resolver (5-minute forward
+    # move classified with the +/-5bp deadband). NULL until resolved. These
+    # columns make learning state durable: the continuous-learning service
+    # rehydrates recent resolved rows on startup so drift statistics (which
+    # need >=1000 resolved outcomes) survive deploys instead of resetting.
+    actual_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    actual_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     def __repr__(self) -> str:
         return (
