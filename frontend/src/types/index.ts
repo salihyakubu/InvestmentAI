@@ -157,6 +157,7 @@ export interface BacktestResult {
   profit_factor: number;
   equity_curve: { date: string; equity: number }[];
   trades: BacktestTrade[];
+  verdict?: string;
 }
 
 export interface BacktestTrade {

@@ -11,6 +11,8 @@
  */
 
 import type {
+  BacktestResult,
+  BacktestTrade,
   EquityPoint,
   ModelCalibration,
   ModelInfo,
@@ -209,3 +211,36 @@ export function normalizeEquityPoint(raw: Raw): EquityPoint {
       raw.max_drawdown_pct == null ? undefined : num(raw.max_drawdown_pct),
   };
 }
+
+/** Backtest job result -> UI shape. Every numeric coerced; arrays defensive. */
+export function normalizeBacktestResult(raw: Raw): BacktestResult {
+  const curve = Array.isArray(raw.equity_curve) ? (raw.equity_curve as Raw[]) : [];
+  const trades = Array.isArray(raw.trades) ? (raw.trades as Raw[]) : [];
+  return {
+    id: str(raw.id),
+    config: (raw.config as BacktestResult['config']) ?? {
+      start_date: '', end_date: '', symbols: [], strategy: '',
+      initial_capital: 0, commission: 0,
+    },
+    total_return: num(raw.total_return),
+    sharpe_ratio: num(raw.sharpe_ratio),
+    max_drawdown: num(raw.max_drawdown),
+    win_rate: num(raw.win_rate),
+    total_trades: num(raw.total_trades),
+    profit_factor: Number.isFinite(Number(raw.profit_factor)) ? num(raw.profit_factor) : 0,
+    equity_curve: curve.map((p) => ({ date: str(p.date), equity: num(p.equity) })),
+    trades: trades.map((t): BacktestTrade => ({
+      symbol: str(t.symbol),
+      side: t.side === 'sell' ? 'sell' : 'buy',
+      entry_date: str(t.entry_date),
+      exit_date: str(t.exit_date),
+      entry_price: num(t.entry_price),
+      exit_price: num(t.exit_price),
+      quantity: num(t.quantity),
+      pnl: num(t.pnl),
+      return_pct: num(t.return_pct),
+    })),
+    ...(typeof raw.verdict === 'string' ? { verdict: raw.verdict } : {}),
+  };
+}
+

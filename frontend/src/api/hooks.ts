@@ -6,6 +6,7 @@ import {
   normalizeOrder,
   normalizePortfolioSummary,
   normalizePosition,
+  normalizeBacktestResult,
   normalizePrediction,
   normalizeRiskMetrics,
 } from './normalize';
@@ -171,11 +172,43 @@ export function useAuditLogs(params?: {
   });
 }
 
-// Backtesting
+// Backtesting -- job-based: run returns an id, the UI polls status and
+// fetches the normalized result once completed (visible failure states).
+export interface BacktestJobStatus {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  error: string | null;
+}
+
 export function useRunBacktest() {
-  return useMutation<BacktestResult, Error, BacktestConfig>({
+  return useMutation<BacktestJobStatus, Error, BacktestConfig>({
     mutationFn: (config) =>
       apiClient.post('/backtest/run', config).then((r) => r.data),
+  });
+}
+
+export function useBacktestStatus(jobId: string | null) {
+  return useQuery<BacktestJobStatus>({
+    queryKey: ['backtest', 'status', jobId],
+    queryFn: () =>
+      apiClient.get(`/backtest/status/${jobId}`).then((r) => r.data),
+    enabled: jobId != null,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === 'queued' || s === 'running' ? 2000 : false;
+    },
+  });
+}
+
+export function useBacktestResults(jobId: string | null, ready: boolean) {
+  return useQuery<BacktestResult>({
+    queryKey: ['backtest', 'results', jobId],
+    queryFn: () =>
+      apiClient
+        .get(`/backtest/results/${jobId}`)
+        .then((r) => normalizeBacktestResult(r.data as Record<string, unknown>)),
+    enabled: jobId != null && ready,
+    staleTime: Infinity,
   });
 }
 

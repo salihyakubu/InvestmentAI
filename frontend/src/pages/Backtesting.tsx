@@ -2,22 +2,37 @@ import { useState } from 'react';
 import clsx from 'clsx';
 import { format } from 'date-fns';
 import EquityCurve from '../components/charts/EquityCurve';
-import { useRunBacktest } from '../api/hooks';
-import type { BacktestConfig, BacktestResult } from '../types';
+import {
+  useBacktestResults,
+  useBacktestStatus,
+  useRunBacktest,
+} from '../api/hooks';
+import type { BacktestConfig } from '../types';
 
 export default function Backtesting() {
   const [config, setConfig] = useState<BacktestConfig>({
-    start_date: '2024-01-01',
-    end_date: '2024-12-31',
+    // The harness needs enough daily bars to train (>=200 rows post-split),
+    // so the default range is deliberately multi-year.
+    start_date: '2018-01-01',
+    end_date: '2025-12-31',
     symbols: ['AAPL', 'GOOGL', 'MSFT'],
-    strategy: 'ml_ensemble',
+    strategy: 'edge_harness',
     initial_capital: 100000,
-    commission: 0.001,
+    commission: 0.0005,
   });
   const [symbolInput, setSymbolInput] = useState(config.symbols.join(', '));
-  const [result, setResult] = useState<BacktestResult | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
 
   const runBacktest = useRunBacktest();
+  const status = useBacktestStatus(jobId);
+  const jobState = status.data?.status;
+  const results = useBacktestResults(jobId, jobState === 'completed');
+  const result = results.data ?? null;
+  const isRunning =
+    runBacktest.isPending || jobState === 'queued' || jobState === 'running';
+  const errorText =
+    runBacktest.error?.message ??
+    (jobState === 'failed' ? (status.data?.error ?? 'backtest failed') : null);
 
   const handleRun = () => {
     const symbols = symbolInput
@@ -26,8 +41,9 @@ export default function Backtesting() {
       .filter(Boolean);
     const updatedConfig = { ...config, symbols };
     setConfig(updatedConfig);
+    setJobId(null);
     runBacktest.mutate(updatedConfig, {
-      onSuccess: (data) => setResult(data),
+      onSuccess: (data) => setJobId(data.id),
     });
   };
 
@@ -94,10 +110,9 @@ export default function Backtesting() {
               }
               className="input-field w-full text-sm"
             >
-              <option value="ml_ensemble">ML Ensemble</option>
-              <option value="momentum">Momentum</option>
-              <option value="mean_reversion">Mean Reversion</option>
-              <option value="pairs_trading">Pairs Trading</option>
+              <option value="edge_harness">
+                ML Edge Harness (walk-forward, net of costs)
+              </option>
             </select>
           </div>
           <div>
@@ -119,17 +134,42 @@ export default function Backtesting() {
           <div className="flex items-end">
             <button
               onClick={handleRun}
-              disabled={runBacktest.isPending}
+              disabled={isRunning}
               className="btn-primary w-full disabled:opacity-50"
             >
-              {runBacktest.isPending ? 'Running...' : 'Run Backtest'}
+              {isRunning ? 'Running...' : 'Run Backtest'}
             </button>
           </div>
         </div>
       </div>
 
+      {errorText && (
+        <div className="card border border-red-500/40">
+          <div className="text-red-400 text-sm font-mono">
+            Backtest failed: {errorText}
+          </div>
+        </div>
+      )}
+
+      {isRunning && !result && (
+        <div className="card">
+          <div className="text-sm text-gray-400">
+            Running backtest (fetching history, training per symbol, scoring
+            out-of-sample)... this takes up to a minute.
+          </div>
+        </div>
+      )}
+
       {result && (
         <>
+          {result.verdict && (
+            <div className="card">
+              <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                Edge Verdict (net of costs, non-overlapping, stability-gated)
+              </div>
+              <div className="text-sm font-mono text-white">{result.verdict}</div>
+            </div>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             {[
               {
