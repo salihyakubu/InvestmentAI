@@ -529,3 +529,27 @@ backfill historical aux (Binance funding history, alternative.me F&G history,
 Yahoo VIX/SPY daily) then trigger a retrain -- the champion/challenger gate then
 decides whether the regime features actually improve out-of-sample accuracy.
 The retrain is real cloud compute; run it deliberately.
+
+## Regime-feature A/B verdict (2026-07-23) — NULL RESULT, honestly recorded
+Controlled experiment on 90 days of production bars (103,171 train / 25,796 val
+rows, identical purged-CV training, only difference = real aux values vs zeros):
+  xgboost   no-aux 0.5474  with-aux 0.5448  (-0.0026)
+  lightgbm  no-aux 0.5466  with-aux 0.5465  (-0.0000)
+  catboost  no-aux 0.5453  with-aux 0.5460  (+0.0007)
+With ~25.8k val rows the standard error is ~0.003, so every delta is within
+noise: the regime features neither help nor hurt 5-minute directional accuracy
+in this window. Interpretation: slow-moving daily/8-hourly signals (VIX, F&G,
+funding) carry little discriminative power for the NEXT 5 MINUTES -- plausible
+and now measured, not assumed.
+
+DECISION: no promotion on this evidence (the gate would rightly have declined).
+The pipeline stays live and collecting at zero risk (serving models ignore the
+keys); re-test as history deepens, at longer horizons, or with interaction
+features. Also learned operationally: 90-day retrains are too heavy for the
+small worker (event-loop starvation during the row load; reverted its lookback
+to 30d) -- heavyweight training belongs off-box.
+
+The original gap ("does the platform use news/other feeds?") is now closed to
+the extent honesty allows: the knowledge-base MACHINERY exists end-to-end with
+train/serve parity, four reliable feeds flow live, and the first measurement
+says today's models don't yet benefit. That measurement is the platform working.
