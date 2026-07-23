@@ -64,8 +64,14 @@ class ModelEvaluator:
         symbol: str,
         predicted: str,
         confidence: float,
+        timestamp: datetime | None = None,
     ) -> None:
-        """Store a prediction for later evaluation."""
+        """Store a prediction for later evaluation.
+
+        ``timestamp`` defaults to now; startup rehydration passes the original
+        ``predicted_at`` so the 30-day report window stays honest across a
+        restart rather than treating every reloaded row as brand new.
+        """
         preds = self._predictions.setdefault(model_id, [])
         preds.append(
             {
@@ -73,7 +79,7 @@ class ModelEvaluator:
                 "symbol": symbol,
                 "predicted": predicted,
                 "confidence": confidence,
-                "timestamp": datetime.now(UTC),
+                "timestamp": timestamp or datetime.now(UTC),
             }
         )
         # Evict oldest overflow and drop their outcomes so _outcomes stays
