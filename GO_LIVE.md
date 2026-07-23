@@ -573,3 +573,26 @@ CAVEAT (unchanged honesty): this is the DAILY-horizon harness strategy. It does
 not validate the live 5-minute soak models; it is the research tool for
 measuring whether any candidate signal has edge net of costs before it is
 trusted with capital.
+
+## Exploration paper-trading LIVE — first autonomous round trip (2026-07-23)
+Operator direction: the learning period must also exercise the trade path.
+Built (PRs #50, #51): when nothing clears the full edge gate, the single BEST
+sub-gate signal (calibrated margin >= exploration_edge_margin 0.03, read from
+UNDER the abstention label -- serving flattens sub-gate directions, so the
+picker must use the probability margin) opens a small tagged position (3% of
+equity, max 2 concurrent, auto-exit after 15 min, "explore-" order ids,
+paper-mode hard gate). Closed round trips feed REAL commission-aware P&L into
+the feedback loop via FIFO lot attribution.
+
+FIRST ROUND TRIP, verified live:
+- 21:24:30Z BUY 0.0395 SOL/USDT @ 76.08 (explore-tagged, 5bps slippage)
+- 21:29:57Z second entry ETH/USDT (cooldown pacing; cap reached at 2)
+- 21:39:42Z hold expired -> SELL @ 76.03; same cycle opened BTC/USDT
+- 21:39:44Z continuous_learning.trade_closed exploration=True
+  realised_return=-0.066% pnl=-$0.002 -- a real, tagged, learning outcome.
+
+POLICY (recorded): exploration P&L is learning data, never edge evidence; the
+equity curve now moves for learning reasons and must be read accordingly.
+Known startup artifact: fills consumed before the first post-restart
+prediction lack prediction attribution (empty prediction_id; P&L logged but
+not fed to the feedback loop) -- steady-state fills are fully attributed.
