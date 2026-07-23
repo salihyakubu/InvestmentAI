@@ -465,3 +465,20 @@ retraining also merged (PR #24) — all three families retrain independently.
 - Alert delivery: set ALERT_WEBHOOK_URL (Slack webhook) — still unset.
 (A four-agent build fleet for these hit the account spend limit mid-run and
 wrote nothing; they remain to be built, ideally one at a time.)
+
+## Alert delivery (2026-07-23) — VERIFIED, final rehearsal item CLOSED
+ALERT_WEBHOOK_URL (Slack incoming webhook) set on the worker by the operator.
+End-to-end test: a DriftDetectedEvent published to the SYSTEM stream was
+consumed by the deployed MonitoringService -> AlertManager -> Slack POST
+returned HTTP 200; "Model Drift Detected" landed in the channel; the
+worker.alerts_log_only startup warning is gone. Circuit-breaker trips, drift
+detections, and health criticals now page the operator instead of dying in logs.
+
+**Security finding + fix (same session):** httpx logs every request URL at INFO,
+and the Slack webhook URL embeds a secret token, so the first alert wrote the
+token into the worker log store. Fixed (PR #41): httpx/httpcore capped at
+WARNING so request URLs are never logged. **Operator action recommended:**
+rotate the Slack webhook (the token was exposed in logs before the fix) —
+Slack app -> Incoming Webhooks -> remove the old webhook, Add New Webhook,
+update ALERT_WEBHOOK_URL. Low urgency (a webhook only posts to one channel),
+but clean hygiene.
