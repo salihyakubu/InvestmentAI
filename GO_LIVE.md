@@ -501,3 +501,31 @@ drift -> retrain), which is its present purpose. Real trades will appear when
 volatility rises and genuine edges emerge, OR when a regressor/expected-return
 trigger is proven to have edge via the (not-yet-built) backtester. A flat
 equity curve during a calm regime is the system being truthful.
+
+## Market-regime features (2026-07-23) — pipeline LIVE, activation pending
+Closed the "does it use news/other feeds?" gap for the achievable, honest half:
+four keyless market-regime signals now feed the feature pipeline with strict
+train/serve parity (PR #44, migration 0005):
+- aux_funding_rate (per crypto symbol, Binance futures)
+- aux_fear_greed (alternative.me), aux_vix_close, aux_spy_daily_return (Yahoo)
+
+Design: a shared as-of AuxFeatureProvider used by BOTH live serving (latest
+snapshot) and training replay (HistoricalAuxProvider, as-of each bar time), so
+a feature is computed identically in both paths -- no look-ahead. Backward-
+compatible: serving selects features by each model's trained names, so the
+current 48-feature champions ignore the new keys. AuxMarketService polls every
+5 min into aux_market_state; the retrainer replays those rows as-of during
+training. Verified live: real values flowing (VIX 16.64, F&G 31, SPY -0.12%,
+per-symbol funding), pipeline healthy.
+
+NEWS/SENTIMENT deliberately OUT of scope: honest point-in-time historical news
+has no reliable keyless source, and per-minute LLM sentiment over 90d of history
+is cost-prohibitive. Documented as blocked on a paid historical-news source.
+
+ACTIVATION (remaining): the features become live in DECISIONS only after a
+retrain whose training window contains aux history. Two paths: (a) wait ~30d
+for AuxMarketService to fill the cloud retrainer's window naturally, or (b)
+backfill historical aux (Binance funding history, alternative.me F&G history,
+Yahoo VIX/SPY daily) then trigger a retrain -- the champion/challenger gate then
+decides whether the regime features actually improve out-of-sample accuracy.
+The retrain is real cloud compute; run it deliberately.
