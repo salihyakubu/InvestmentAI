@@ -368,6 +368,11 @@ def main() -> None:
     # WARNING threshold was silently hiding their INFO lines (e.g. the
     # hot-reload confirmation) from production logs.
     logging.basicConfig(level=level, format="%(levelname)s %(name)s %(message)s")
+    # httpx/httpcore log every request URL at INFO -- including the Slack alert
+    # webhook, whose URL embeds a secret token. Cap them at WARNING so the
+    # token is never written to the log store (errors still surface).
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
