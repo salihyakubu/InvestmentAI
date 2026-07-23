@@ -38,6 +38,9 @@ _MARKET_PRICES_STREAM = "market.prices"
 # predictions produces one coherent target instead of one event per symbol.
 _REBALANCE_COOLDOWN = 300.0
 
+# Exploration paper-trading: at most this many concurrent learning positions.
+_MAX_EXPLORATION_POSITIONS = 2
+
 # Predictions older than this cannot qualify for a rebalance: the model scored
 # a market state that no longer exists.
 _PREDICTION_MAX_AGE = 120.0
@@ -100,6 +103,9 @@ class PortfolioOptimizerService:
         # published with non-zero weight and have not yet exited.
         self._last_rebalance_at: float | None = None
         self._last_target_symbols: set[str] = set()
+        # symbol -> entry time (monotonic) of open EXPLORATION positions --
+        # small, tagged, auto-expiring learning trades (paper mode only).
+        self._exploration_positions: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -290,6 +296,49 @@ class PortfolioOptimizerService:
             qualifying[symbol] = prediction
         return qualifying
 
+    def _exploration_allowed(self) -> bool:
+        """Exploration is a paper-mode learning tool, never a live behavior."""
+        return (
+            self.settings.exploration_enabled
+            and self.settings.trading_mode == "paper"
+        )
+
+    def _expired_exploration_exits(self, now: float) -> set[str]:
+        hold_s = self.settings.exploration_hold_minutes * 60.0
+        return {
+            s for s, entered in self._exploration_positions.items()
+            if now - entered >= hold_s
+        }
+
+    def _exploration_pick(self, now: float) -> str | None:
+        """The single best fresh long signal above the exploration margin.
+
+        Only consulted when nothing clears the full trade gate: the learning
+        period should still exercise entries/fills/exits/P&L on the strongest
+        available signal -- explicitly tagged, tiny, and auto-expiring, so its
+        P&L is learning data rather than edge evidence.
+        """
+        margin_floor = self.settings.exploration_edge_margin
+        best: tuple[float, str] | None = None
+        for symbol, prediction in self._pending_predictions.items():
+            if symbol in self._exploration_positions or symbol in self._last_target_symbols:
+                continue
+            received_at = self._prediction_received_at.get(symbol)
+            if received_at is None or now - received_at > _PREDICTION_MAX_AGE:
+                continue
+            if prediction.direction != SignalDirection.LONG:
+                continue
+            if self._last_prices.get(symbol, 0.0) <= 0.0:
+                continue
+            p_long = prediction.probabilities.get(SignalDirection.LONG.value, 0.0)
+            p_short = prediction.probabilities.get(SignalDirection.SHORT.value, 0.0)
+            margin = p_long - p_short
+            if margin < margin_floor:
+                continue
+            if best is None or margin > best[0]:
+                best = (margin, symbol)
+        return best[1] if best else None
+
     async def _maybe_rebalance(self) -> None:
         """Publish a rebalance if the cooldown has elapsed and signals qualify."""
         now = time.monotonic()
@@ -301,9 +350,11 @@ class PortfolioOptimizerService:
 
         qualifying = self._qualifying_predictions(now)
         if not qualifying:
-            # Hold. Deliberately NOT rotating to cash on every uncertain
-            # minute -- that would thrash the book; risk-based exits are the
-            # liquidation manager's and the kill switch's job.
+            # No conviction signal. Instead of pure hold, the learning period
+            # exercises the trade path via EXPLORATION: expire stale learning
+            # positions and, if allowed, open the single best sub-gate signal.
+            if self._exploration_allowed():
+                await self._explore(now)
             return
 
         # Risk skips sizing any symbol without a positive reference price, so
@@ -355,12 +406,62 @@ class PortfolioOptimizerService:
         self._last_target_symbols = (
             self._last_target_symbols | set(priced_targets)
         ) - priced_exits
+        # A conviction cycle supersedes exploration: symbols now in the real
+        # target graduate; symbols exited by this cycle stop being tracked.
+        for symbol in (*priced_targets, *priced_exits):
+            self._exploration_positions.pop(symbol, None)
+
+    async def _explore(self, now: float) -> None:
+        """Expire stale exploration holds and open at most one new one.
+
+        Bypasses the optimizer deliberately: exploration weights are small
+        FIXED fractions (settings.exploration_weight), not optimized targets --
+        renormalizing a lone 3% learning position to 100% of equity would turn
+        exploration into conviction. Risk sizing and all hard limits still
+        apply downstream.
+        """
+        exits = self._expired_exploration_exits(now)
+        priced_exits = {s for s in exits if self._last_prices.get(s, 0.0) > 0.0}
+
+        entry: str | None = None
+        if len(self._exploration_positions) - len(priced_exits) < _MAX_EXPLORATION_POSITIONS:
+            entry = self._exploration_pick(now)
+
+        if entry is None and not priced_exits:
+            return  # nothing to learn from this cycle
+
+        allocations: dict[str, float] = {}
+        if entry is not None:
+            allocations[entry] = self.settings.exploration_weight
+        reference_prices = {
+            s: self._last_prices[s]
+            for s in (*([entry] if entry else []), *sorted(priced_exits))
+        }
+        await self.trigger_rebalance(
+            TargetAllocation(weights=allocations),
+            reference_prices=reference_prices,
+            exits=sorted(priced_exits),
+            exploration_symbols=sorted({*allocations, *priced_exits}),
+        )
+
+        self._last_rebalance_at = now
+        for symbol in priced_exits:
+            self._exploration_positions.pop(symbol, None)
+            self._last_target_symbols.discard(symbol)
+        if entry is not None:
+            self._exploration_positions[entry] = now
+            self._last_target_symbols.add(entry)
+        logger.info(
+            "Exploration cycle: entry=%s exits=%s (open=%d).",
+            entry, sorted(priced_exits), len(self._exploration_positions),
+        )
 
     async def trigger_rebalance(
         self,
         target: TargetAllocation,
         reference_prices: dict[str, float] | None = None,
         exits: Iterable[str] = (),
+        exploration_symbols: Iterable[str] = (),
     ) -> None:
         """Publish a :class:`RebalanceRequestEvent` to the event bus.
 
@@ -377,6 +478,7 @@ class PortfolioOptimizerService:
         event = RebalanceRequestEvent(
             target_allocations=allocations,
             reference_prices=dict(reference_prices or {}),
+            exploration_symbols=sorted(exploration_symbols),
             source_service="portfolio_optimizer",
         )
         await self.event_bus.publish(REBALANCE, event)

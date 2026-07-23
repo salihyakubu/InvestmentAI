@@ -178,6 +178,9 @@ class ExecutionEngineService:
                 limit_price=limit_price,
                 stop_price=stop_price,
                 reference_price=reference_price,
+                # The risk correlation id ("rebal-.."/"explore-..") rides in
+                # client_order_id so OrderFilledEvent carries the linkage.
+                client_order_id=correlation_id or None,
             )
             logger.info(
                 "risk_approved_order_submitted",

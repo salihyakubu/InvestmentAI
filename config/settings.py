@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # the margin measures directional edge independent of class priors.
     min_edge_margin: float = 0.10
     ensemble_min_agreement: int = 3
+    # Exploration paper-trading: the learning period must also exercise the
+    # trade path (entries, fills, exits, real P&L attribution), so when no
+    # signal clears the full trade gate, the single BEST fresh signal above the
+    # lower exploration margin may open a small, auto-expiring position.
+    # Exploration trades are tagged ("explore-" order ids) and their P&L is
+    # LEARNING data, never edge evidence. Enforced paper-mode-only in code.
+    exploration_enabled: bool = True
+    exploration_edge_margin: float = 0.03
+    exploration_weight: float = 0.03
+    exploration_hold_minutes: int = 15
 
     # API
     jwt_secret: SecretStr = SecretStr(_DEFAULT_JWT_SECRET)
