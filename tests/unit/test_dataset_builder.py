@@ -52,8 +52,12 @@ def test_bars_matrix_coerces_decimal_to_float64() -> None:
         ),
     ]
     cols = bars_matrix(bars)
-    assert set(cols) == {"open", "high", "low", "close", "volume"}
-    for arr in cols.values():
+    # OHLCV keys plus a "time" slot; these SimpleNamespace bars have no `.time`
+    # attribute, so it is None (older-caller path -> replay uses timestamp=None).
+    assert set(cols) == {"open", "high", "low", "close", "volume", "time"}
+    assert cols["time"] is None
+    for key in ("open", "high", "low", "close", "volume"):
+        arr = cols[key]
         assert arr.dtype == np.float64
         assert arr.shape == (2,)
     np.testing.assert_allclose(cols["close"], [2.0, 2.25])

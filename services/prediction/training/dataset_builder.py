@@ -29,9 +29,16 @@ from typing import Any, Literal
 import numpy as np
 import polars as pl
 
+from services.feature_engineering.aux_features import AuxFeatureProvider
 from services.feature_engineering.feature_store import FeatureStore
 
 logger = logging.getLogger(__name__)
+
+# Per-symbol column arrays: the OHLCV keys ("open".."volume") are always float64
+# ndarrays; the optional "time" key is a datetime object-array aligned with them,
+# or None when the source bars carry no timestamp (older callers). Kept as a
+# single dict so a symbol's replay window can carry its bar times alongside OHLCV.
+BarColumns = dict[str, "np.ndarray | None"]
 
 WINDOW = 200          # live feature buffer size (feature_engineering/service.py)
 HORIZON = 5           # label horizon in bars == prediction service semantics
@@ -56,24 +63,36 @@ DatasetSplits = tuple[
 ]
 
 
-def bars_matrix(bars: Sequence[Any]) -> dict[str, np.ndarray]:
+def bars_matrix(bars: Sequence[Any]) -> BarColumns:
     """Turn a sequence of bar-like records into float64 OHLCV column arrays.
 
     Each element must expose ``open`` / ``high`` / ``low`` / ``close`` /
     ``volume`` attributes whose values are float-coercible (float, int, or
     ``Decimal`` as returned by the ``ohlcv`` table's ``Numeric`` columns).
+
+    If the records also expose a ``time`` attribute (e.g. ``OHLCVRecord`` rows
+    or ``RawBar``), an aligned ``"time"`` object-array of datetimes is included
+    so a windowed replay can stamp each feature vector with its window-end bar
+    time (which drives the aux market-regime provider's as-of lookup). Records
+    without ``time`` set ``cols["time"] = None``, and the replay falls back to
+    ``timestamp=None`` -- identical to a live path with no aux provider.
     """
-    return {
+    cols: BarColumns = {
         "open": np.array([b.open for b in bars], dtype=np.float64),
         "high": np.array([b.high for b in bars], dtype=np.float64),
         "low": np.array([b.low for b in bars], dtype=np.float64),
         "close": np.array([b.close for b in bars], dtype=np.float64),
         "volume": np.array([b.volume for b in bars], dtype=np.float64),
     }
+    if bars and hasattr(bars[0], "time"):
+        cols["time"] = np.array([b.time for b in bars], dtype=object)
+    else:
+        cols["time"] = None
+    return cols
 
 
 def replay_features(
-    symbol: str, cols: dict[str, np.ndarray], stride: int, store: FeatureStore
+    symbol: str, cols: BarColumns, stride: int, store: FeatureStore
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Rolling ``WINDOW``-bar replay of the live feature computation.
 
@@ -82,14 +101,26 @@ def replay_features(
     indicators) is mandatory: obv / volume-profile depend on the window itself
     and ema/macd/rsi/atr/adx are path-dependent, so only this reproduces the
     numbers the worker computes live.
+
+    When ``cols`` carries a non-None ``"time"`` array, each window's end-bar
+    time is passed to ``compute_all_features`` so the store's aux provider (if
+    any) supplies as-of parity values; otherwise ``timestamp=None`` is passed
+    and the aux keys come through as ``0.0`` -- matching a live path with no
+    provider.
     """
-    n = len(cols["close"])
+    times = cols.get("time")
+    # OHLCV-only columns for the polars frame (exclude "time"; the aux value is
+    # threaded separately via the timestamp argument). The `v is not None`
+    # guard both drops an absent time column and narrows the value type.
+    ohlcv = {k: v for k, v in cols.items() if k != "time" and v is not None}
+    n = len(ohlcv["close"])
     names: list[str] | None = None
     rows: list[list[float]] = []
     closes: list[float] = []
     for end_i in range(WINDOW, n + 1, stride):
-        window = {k: v[end_i - WINDOW : end_i] for k, v in cols.items()}
-        feats = store.compute_all_features(symbol, pl.DataFrame(window))
+        window = {k: v[end_i - WINDOW : end_i] for k, v in ohlcv.items()}
+        ts = times[end_i - 1] if times is not None else None
+        feats = store.compute_all_features(symbol, pl.DataFrame(window), timestamp=ts)
         if names is None:
             names = sorted(feats)
         rows.append([float(feats.get(k, 0.0)) for k in names])
@@ -171,13 +202,14 @@ def triple_barrier_labels(
 
 
 def build_dataset(
-    per_symbol_cols: dict[str, dict[str, np.ndarray]],
+    per_symbol_cols: dict[str, BarColumns],
     *,
     stride: int = HORIZON,
     store: FeatureStore | None = None,
     labeling: Labeling = "triple_barrier",
     tb_k_up: float = TB_K,
     tb_k_down: float = TB_K,
+    aux_provider: AuxFeatureProvider | None = None,
 ) -> DatasetSplits:
     """Replay features, label, and split -> pooled train/val arrays.
 
@@ -193,6 +225,10 @@ def build_dataset(
             legacy pooled 30th/70th percentile forward-return thresholds.
         tb_k_up: upper-barrier width multiplier (triple-barrier mode only).
         tb_k_down: lower-barrier width multiplier (triple-barrier mode only).
+        aux_provider: optional market-regime provider. When given (and *store*
+            is not supplied), the internally built ``FeatureStore`` uses it so
+            each replay window gets the aux value as-of its window-end bar time.
+            Default None reproduces today's behavior (aux keys emitted as 0.0).
 
     Returns:
         ``(X_train, y_train, returns_train, X_val, y_val, returns_val,
@@ -204,16 +240,21 @@ def build_dataset(
         ValueError: if no symbol yields usable labeled data, or *labeling* is
             not a recognized mode.
     """
-    store = store if store is not None else FeatureStore(db_session=None, redis=None)
+    store = (
+        store
+        if store is not None
+        else FeatureStore(db_session=None, redis=None, aux_provider=aux_provider)
+    )
 
     per_symbol: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
     names: list[str] = []
     for sym, cols in per_symbol_cols.items():
-        if len(cols["close"]) < MIN_BARS:
+        bar_closes = cols["close"]
+        if bar_closes is None or len(bar_closes) < MIN_BARS:
             continue
         X, closes, n = replay_features(sym, cols, stride, store)
         names = names or n
-        per_symbol.append((sym, X, closes, cols["close"]))
+        per_symbol.append((sym, X, closes, bar_closes))
 
     if not per_symbol:
         raise ValueError("no symbol produced usable training data")
