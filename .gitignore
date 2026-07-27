@@ -61,3 +61,6 @@ frontend/.vite/
 
 # macOS Finder/iCloud duplicate files ("name 2.py") -- broke alembic discovery once already
 * 2.*
+
+# Word lock/temp files
+~$*

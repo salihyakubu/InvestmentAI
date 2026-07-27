@@ -62,6 +62,7 @@ export default function EquityCurve({ data }: EquityCurveProps) {
               fontSize={11}
               tickLine={false}
               tickFormatter={formatEquityTick}
+              domain={['dataMin - 0.5', 'dataMax + 0.5']}
             />
             <Tooltip
               contentStyle={{
