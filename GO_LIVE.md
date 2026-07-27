@@ -596,3 +596,26 @@ equity curve now moves for learning reasons and must be read accordingly.
 Known startup artifact: fills consumed before the first post-restart
 prediction lack prediction attribution (empty prediction_id; P&L logged but
 not fed to the feedback loop) -- steady-state fills are fully attributed.
+
+## Soak review + exploration tuition tuning (2026-07-27)
+Operator asked why equity looked like a straight line with "no trades". The
+review proved the OPPOSITE: equity moved every day (100.00 -> 98.85 over five
+days) and trade_closed events were minutes old. Two defects were HIDING the
+activity, both fixed in PR #54 and verified live:
+- order_sync only UPDATEd rows keyed by DB order ids, so autonomous fills
+  (correlation-id client_order_ids) never reached the orders table -- the
+  entire exploration history was invisible to the Trading page and audit
+  trail. Now inserted as completed Order+Fill rows with the "explore-"/
+  "rebal-" tag preserved in external_id. Verified live minutes after deploy:
+  first autonomous row "DOT/USDT buy filled tag=explore-182cd4e6...".
+- The equity chart's fixed 0-100 y-domain rendered the $1.15 soak move ~8px
+  tall; the axis now hugs the data (dataMin/dataMax +/- 0.5).
+
+TUITION TUNING (operator-approved): the -$1.15/5d bleed was pure exploration
+friction (~5bps slippage per side on ~100 tiny round trips/day). Set
+EXPLORATION_HOLD_MINUTES=60 (env override; code default stays 15) -- ~4x fewer
+round trips, ~0.06%/day expected friction, exit outcomes span a more
+meaningful horizon. Size (3%), cap (2), and margin floor (0.03) unchanged so
+the learning data keeps flowing. Verified live: worker redeployed healthy and
+the first entry under the new hold (BTC/USDT) fired within minutes.
+POLICY unchanged: exploration P&L is learning data, never edge evidence.
