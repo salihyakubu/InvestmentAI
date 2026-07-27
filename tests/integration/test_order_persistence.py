@@ -116,3 +116,41 @@ async def test_non_db_correlation_id_is_ignored() -> None:
         )
     )
     await engine.dispose()  # reaching here without raising is the assertion
+
+@pytest.mark.asyncio
+async def test_autonomous_fill_inserts_completed_order_row() -> None:
+    """Fills carrying a rebalance/exploration correlation id (not a DB order
+    id) must INSERT a completed row -- before this, every autonomous trade was
+    invisible to the orders table and the audit trail."""
+    engine, factory = _make_factory()
+    await _create_tables(engine)
+
+    svc = OrderPersistenceService(
+        event_bus=InProcessEventBus(), session_factory=factory, trading_mode="paper"
+    )
+    await svc.handle_event(
+        OrderFilledEvent(
+            order_id="exec-1",
+            symbol="SOL/USDT",
+            side="buy",
+            fill_price=76.08,
+            fill_quantity=0.0394,
+            commission=0.01,
+            client_order_id="explore-abc123-SOL/USDT",
+            source_service="execution-engine",
+        )
+    )
+
+    async with factory() as session:
+        orders = (await session.execute(select(Order))).scalars().all()
+        fills = (await session.execute(select(Fill))).scalars().all()
+    assert len(orders) == 1 and len(fills) == 1
+    order = orders[0]
+    assert order.symbol == "SOL/USDT"
+    assert order.status == "filled"
+    assert order.asset_class == "crypto"
+    assert order.trading_mode == "paper"
+    assert order.external_id == "explore-abc123-SOL/USDT"  # audit tag preserved
+    assert fills[0].order_id == order.id
+    await engine.dispose()
+

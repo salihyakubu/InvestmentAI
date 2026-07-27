@@ -1,11 +1,13 @@
 """Persist execution outcomes back to the database.
 
 The execution engine runs on in-memory order state and emits lifecycle events
-on the ``orders`` stream. This service subscribes to those events and, keyed by
-the ``client_order_id`` (the originating DB order id), updates the DB order row's
-status and records fills -- so a manually-submitted order's row reflects what
-actually happened. Reporting/audit only; the trade itself and risk/position
-tracking already react to fills directly.
+on the ``orders`` stream. This service subscribes to those events and persists
+them: fills whose ``client_order_id`` is a DB order id (manually-submitted
+orders, which pre-create their row via the API) UPDATE that row; fills carrying
+a rebalance/exploration correlation id (autonomous orders, which have no
+pre-created row) INSERT a completed row so the Trading page and audit trail see
+every trade the platform makes. Reporting/audit only; the trade itself and
+risk/position tracking already react to fills directly.
 """
 
 from __future__ import annotations
@@ -33,9 +35,11 @@ class OrderPersistenceService:
         self,
         event_bus: EventBus,
         session_factory: async_sessionmaker[AsyncSession],
+        trading_mode: str = "paper",
     ) -> None:
         self._event_bus = event_bus
         self._session_factory = session_factory
+        self._trading_mode = trading_mode
 
     async def start(self) -> None:
         await self._event_bus.subscribe(
@@ -73,6 +77,9 @@ class OrderPersistenceService:
     async def _apply_fill(self, event: Event) -> None:
         order_id = self._db_order_id(event)
         if order_id is None:
+            # Autonomous order (rebalance/exploration correlation id, not a DB
+            # row id): insert a completed row so it exists in the audit trail.
+            await self._insert_autonomous_fill(event)
             return
         now = datetime.now(UTC)
         async with self._session_factory() as session:
@@ -108,3 +115,58 @@ class OrderPersistenceService:
             order.updated_at = now
             await session.commit()
             logger.info("order_persisted_status", order_id=str(order_id), status=status.value)
+
+    async def _insert_autonomous_fill(self, event: Event) -> None:
+        """Insert a filled order row for an autonomous (non-API) order.
+
+        ``external_id`` stores the risk correlation id ("rebal-.."/"explore-..")
+        so exploration learning trades stay identifiable in the orders table.
+        """
+        symbol = str(getattr(event, "symbol", "") or event.payload.get("symbol", ""))
+        side = str(getattr(event, "side", "") or event.payload.get("side", ""))
+        quantity = self._to_decimal(getattr(event, "fill_quantity", 0.0))
+        price = self._to_decimal(getattr(event, "fill_price", 0.0))
+        if not symbol or not side or quantity <= 0:
+            return
+        correlation = str(
+            getattr(event, "client_order_id", "")
+            or event.payload.get("client_order_id", "")
+        )
+        now = datetime.now(UTC)
+        try:
+            async with self._session_factory() as session:
+                order = Order(
+                    external_id=correlation[:100] or None,
+                    symbol=symbol,
+                    asset_class="crypto" if "/" in symbol else "stock",
+                    side=side,
+                    order_type="market",
+                    quantity=quantity,
+                    status=OrderStatus.FILLED.value,
+                    trading_mode=self._trading_mode,
+                    filled_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(order)
+                await session.flush()  # assign order.id for the fill row
+                session.add(
+                    Fill(
+                        order_id=order.id,
+                        price=price,
+                        quantity=quantity,
+                        commission=self._to_decimal(getattr(event, "commission", 0.0)),
+                        filled_at=now,
+                        created_at=now,
+                    )
+                )
+                await session.commit()
+            logger.info(
+                "order_persisted_autonomous",
+                symbol=symbol,
+                side=side,
+                correlation_id=correlation,
+            )
+        except Exception:
+            # Persistence must never kill the consumer loop.
+            logger.exception("order_persist_autonomous_failed", symbol=symbol)

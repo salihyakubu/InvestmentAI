@@ -264,7 +264,9 @@ async def _build_services(
     from services.persistence.prediction_sync import PredictionPersistenceService
 
     order_persistence = OrderPersistenceService(
-        event_bus=event_bus, session_factory=session_factory
+        event_bus=event_bus,
+        session_factory=session_factory,
+        trading_mode=settings.trading_mode,
     )
     prediction_persistence = PredictionPersistenceService(
         event_bus=event_bus, session_factory=session_factory
