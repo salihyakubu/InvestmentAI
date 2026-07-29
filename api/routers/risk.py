@@ -35,7 +35,9 @@ async def get_latest_risk_metrics(
     row = result.scalar_one_or_none()
 
     if row is None:
-        return RiskMetricsSchema()
+        # No writer has published risk state: report nothing rather than a
+        # zeroed, all-clear snapshot the UI would render as measured safety.
+        return RiskMetricsSchema(reported=False)
 
     return RiskMetricsSchema(
         var_95=row.var_95,
@@ -44,6 +46,7 @@ async def get_latest_risk_metrics(
         max_drawdown=row.max_drawdown,
         current_drawdown=row.current_drawdown,
         circuit_breaker_active=row.circuit_breaker_active,
+        reported=True,
     )
 
 

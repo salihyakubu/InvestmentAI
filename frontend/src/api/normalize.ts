@@ -39,7 +39,7 @@ const str = (v: unknown, fallback = ''): string =>
   typeof v === 'string' ? v : fallback;
 
 /** Like num(), but absent/garbage stays undefined so the UI can hide it. */
-function numOpt(v: unknown): number | undefined {
+export function numOpt(v: unknown): number | undefined {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string' && v.trim() !== '') {
     const n = Number(v);
@@ -73,13 +73,17 @@ export function normalizePortfolioSummary(raw: Raw): PortfolioSummary {
     total_equity: totalEquity,
     cash,
     market_value: num(raw.positions_value ?? raw.market_value),
-    daily_pnl: num(raw.daily_pnl),
-    daily_pnl_pct: num(raw.daily_pnl_pct ?? raw.daily_return_pct),
-    total_return: num(raw.total_return ?? raw.realized_pnl),
-    total_return_pct: num(raw.total_return_pct),
-    sharpe_ratio: num(raw.sharpe_ratio),
-    max_drawdown: num(raw.max_drawdown),
-    win_rate: num(raw.win_rate),
+    // numOpt, not num: a metric the backend cannot compute must stay absent.
+    // `total_return` is mark-to-market (equity - baseline) and must never
+    // fall back to realized_pnl, which excludes open-position marks.
+    daily_pnl: numOpt(raw.daily_pnl),
+    daily_pnl_pct: numOpt(raw.daily_pnl_pct ?? raw.daily_return_pct),
+    total_return: numOpt(raw.total_return),
+    total_return_pct: numOpt(raw.total_return_pct),
+    sharpe_ratio: numOpt(raw.sharpe_ratio),
+    max_drawdown: numOpt(raw.max_drawdown),
+    win_rate: numOpt(raw.win_rate),
+    closed_trades: num(raw.closed_trades),
     positions_count: num(raw.positions_count ?? raw.position_count),
     open_orders_count: num(raw.open_orders_count),
   };
@@ -139,7 +143,12 @@ export function normalizeRiskMetrics(raw: Raw): RiskMetrics {
     volatility: num(raw.volatility),
     correlation_matrix:
       (raw.correlation_matrix as RiskMetrics['correlation_matrix']) ?? {},
-    circuit_breaker_status: raw.circuit_breaker_active ? 'OPEN' : 'CLOSED',
+    circuit_breaker_status:
+      raw.reported === false || raw.circuit_breaker_active == null
+        ? 'UNKNOWN'
+        : raw.circuit_breaker_active
+          ? 'OPEN'
+          : 'CLOSED',
     circuit_breaker_reason:
       raw.circuit_breaker_reason == null
         ? undefined
@@ -196,7 +205,8 @@ export function normalizePrediction(raw: Raw): Prediction {
     signal: DIRECTION_TO_SIGNAL[str(raw.direction)] ?? 'hold',
     confidence: num(raw.confidence),
     predicted_return: num(raw.expected_return),
-    horizon: '5m',
+    horizon:
+      raw.horizon_minutes == null ? undefined : `${num(raw.horizon_minutes)}m`,
     features: (raw.features as Record<string, number>) ?? {},
     timestamp: str(raw.timestamp),
   };

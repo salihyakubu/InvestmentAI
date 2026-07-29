@@ -69,15 +69,27 @@ export default function Header() {
               <div
                 className={clsx(
                   'text-sm font-bold font-mono',
-                  portfolio.daily_pnl >= 0 ? 'text-green-500' : 'text-red-500',
+                  portfolio.daily_pnl === undefined
+                    ? 'text-gray-500'
+                    : portfolio.daily_pnl >= 0
+                      ? 'text-green-500'
+                      : 'text-red-500',
                 )}
               >
-                {portfolio.daily_pnl >= 0 ? '+' : ''}
-                {formatCurrency(portfolio.daily_pnl)}
-                <span className="text-xs ml-1">
-                  ({portfolio.daily_pnl_pct >= 0 ? '+' : ''}
-                  {portfolio.daily_pnl_pct.toFixed(2)}%)
-                </span>
+                {portfolio.daily_pnl === undefined ? (
+                  '—'
+                ) : (
+                  <>
+                    {portfolio.daily_pnl >= 0 ? '+' : ''}
+                    {formatCurrency(portfolio.daily_pnl)}
+                    {portfolio.daily_pnl_pct !== undefined && (
+                      <span className="text-xs ml-1">
+                        ({portfolio.daily_pnl_pct >= 0 ? '+' : ''}
+                        {portfolio.daily_pnl_pct.toFixed(2)}%)
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           </div>

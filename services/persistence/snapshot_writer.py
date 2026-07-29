@@ -21,6 +21,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.models.portfolio import PortfolioSnapshot
+from services.persistence.broker_state import BrokerStateStore
 
 logger = structlog.get_logger(__name__)
 
@@ -32,9 +33,11 @@ class PortfolioSnapshotWriter:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         trading_mode: str,
+        state_store: BrokerStateStore | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._trading_mode = trading_mode
+        self._state_store = state_store
 
     async def write_once(
         self,
@@ -45,8 +48,13 @@ class PortfolioSnapshotWriter:
         unrealized_pnl: Decimal | float = 0,
         realized_pnl: Decimal | float = 0,
         position_count: int = 0,
+        positions: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Insert a single snapshot row stamped with the current UTC time."""
+        """Insert a snapshot row, and the open book alongside it.
+
+        The position checkpoint shares this transaction so a restore always
+        reads a cash balance and a book that were true at the same instant.
+        """
         snapshot = PortfolioSnapshot(
             time=datetime.now(UTC),
             trading_mode=self._trading_mode,
@@ -59,6 +67,8 @@ class PortfolioSnapshotWriter:
         )
         async with self._session_factory() as session:
             session.add(snapshot)
+            if self._state_store is not None and positions is not None:
+                await self._state_store.checkpoint(positions, session)
             await session.commit()
         logger.debug(
             "portfolio_snapshot_written",
@@ -75,16 +85,26 @@ class PortfolioSnapshotWriter:
         """Background loop: periodically pull the broker account via
         *account_provider* and persist a snapshot, so the equity curve
         accumulates real history. Runs until cancelled; a failed iteration
-        is logged and the loop continues."""
+        is logged and the loop continues.
+
+        The first write happens immediately: sleeping first left a hole of one
+        full interval after every restart, and a worker crash-looping faster
+        than the interval wrote no snapshots at all.
+        """
+        first = True
         while True:
             try:
-                await asyncio.sleep(interval_seconds)
+                if not first:
+                    await asyncio.sleep(interval_seconds)
+                first = False
                 account = await account_provider()
                 if account is None:
                     continue
                 positions_value = Decimal(str(account.get("positions_value", 0) or 0))
-                unrealized_pnl = Decimal("0")
+                unrealized_pnl = Decimal(str(account.get("unrealized_pnl", 0) or 0))
+                realized_pnl = Decimal(str(account.get("realized_pnl", 0) or 0))
                 position_count = 0
+                positions: list[dict[str, Any]] | None = None
                 if positions_provider is not None:
                     positions = await positions_provider()
                     positions_value = Decimal(
@@ -99,7 +119,9 @@ class PortfolioSnapshotWriter:
                     cash=Decimal(str(account["cash"])),
                     positions_value=positions_value,
                     unrealized_pnl=unrealized_pnl,
+                    realized_pnl=realized_pnl,
                     position_count=position_count,
+                    positions=positions,
                 )
             except asyncio.CancelledError:
                 break

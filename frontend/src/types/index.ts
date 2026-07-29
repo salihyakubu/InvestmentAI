@@ -55,7 +55,7 @@ export interface Prediction {
   signal: 'buy' | 'sell' | 'hold';
   confidence: number;
   predicted_return: number;
-  horizon: string;
+  horizon?: string;
   features: Record<string, number>;
   timestamp: string;
 }
@@ -64,13 +64,19 @@ export interface PortfolioSummary {
   total_equity: number;
   cash: number;
   market_value: number;
-  daily_pnl: number;
-  daily_pnl_pct: number;
-  total_return: number;
-  total_return_pct: number;
-  sharpe_ratio: number;
-  max_drawdown: number;
-  win_rate: number;
+  /**
+   * Derived performance. `undefined` means the stored history cannot support
+   * the metric -- render it as unavailable, never as 0, which would be
+   * indistinguishable from a real measurement.
+   */
+  daily_pnl?: number;
+  daily_pnl_pct?: number;
+  total_return?: number;
+  total_return_pct?: number;
+  sharpe_ratio?: number;
+  max_drawdown?: number;
+  win_rate?: number;
+  closed_trades: number;
   positions_count: number;
   open_orders_count: number;
 }
@@ -85,7 +91,7 @@ export interface RiskMetrics {
   beta: number;
   volatility: number;
   correlation_matrix: Record<string, Record<string, number>>;
-  circuit_breaker_status: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  circuit_breaker_status: 'CLOSED' | 'OPEN' | 'HALF_OPEN' | 'UNKNOWN';
   circuit_breaker_reason?: string;
   position_concentration: Record<string, number>;
 }

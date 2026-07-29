@@ -32,6 +32,7 @@ def _to_schema(row: Prediction) -> PredictionSchema:
         confidence=row.confidence,
         expected_return=row.expected_return,
         model_id=row.model_id,
+        horizon_minutes=row.horizon_minutes,
         timestamp=row.predicted_at,
     )
 

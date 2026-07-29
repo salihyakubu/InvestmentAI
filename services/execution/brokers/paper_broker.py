@@ -44,6 +44,11 @@ class PaperBroker(BaseBroker):
         self._initial_cash = initial_cash
         # symbol -> signed quantity (positive = long)
         self._positions: dict[str, Decimal] = defaultdict(Decimal)
+        # symbol -> volume-weighted cost basis of the open position; without it
+        # positions report a zero entry price and P&L cannot be attributed.
+        self._avg_entry: dict[str, Decimal] = {}
+        # Cumulative realised P&L from closed quantity, net of commission.
+        self._realized_pnl = Decimal("0")
         # external_id -> BrokerOrder
         self._orders: dict[str, BrokerOrder] = {}
         # external_id -> status string
@@ -149,31 +154,42 @@ class PaperBroker(BaseBroker):
         }
 
     async def get_positions(self) -> list[dict[str, Any]]:
-        """Return all non-zero positions."""
+        """Return all non-zero positions, marked at the last seen price."""
         positions = []
         for symbol, qty in self._positions.items():
             if qty != Decimal("0"):
-                last_price = self._last_prices.get(symbol, Decimal("0"))
+                avg_entry = self._avg_entry.get(symbol, Decimal("0"))
+                last_price = self._last_prices.get(symbol) or avg_entry
                 positions.append({
                     "symbol": symbol,
                     "quantity": str(qty),
                     "market_value": str(qty * last_price),
-                    "avg_entry_price": "0",  # simplified
-                    "unrealized_pnl": "0",
+                    "avg_entry_price": str(avg_entry),
+                    "current_price": str(last_price),
+                    "unrealized_pnl": str(qty * (last_price - avg_entry)),
                 })
         return positions
 
     async def get_account(self) -> dict[str, Any]:
         """Return simulated account summary."""
-        positions_value = sum(
-            qty * self._last_prices.get(sym, Decimal("0"))
-            for sym, qty in self._positions.items()
-        )
+        positions_value = Decimal("0")
+        unrealized_pnl = Decimal("0")
+        for sym, qty in self._positions.items():
+            if qty == Decimal("0"):
+                continue
+            avg_entry = self._avg_entry.get(sym, Decimal("0"))
+            # Fall back to cost basis rather than zero: an unpriced symbol
+            # would otherwise read as a total loss of the position's value.
+            last_price = self._last_prices.get(sym) or avg_entry
+            positions_value += qty * last_price
+            unrealized_pnl += qty * (last_price - avg_entry)
         equity = self._cash + positions_value
         return {
             "equity": str(equity),
             "cash": str(self._cash),
             "positions_value": str(positions_value),
+            "unrealized_pnl": str(unrealized_pnl),
+            "realized_pnl": str(self._realized_pnl),
             "buying_power": str(self._cash),
             "initial_capital": str(self._initial_cash),
         }
@@ -181,6 +197,100 @@ class PaperBroker(BaseBroker):
     async def health_check(self) -> bool:
         """Paper broker is always healthy."""
         return True
+
+    # ------------------------------------------------------------------
+    # Durable state
+    # ------------------------------------------------------------------
+
+    def restore_state(
+        self,
+        *,
+        cash: Decimal,
+        positions: dict[str, Decimal] | None = None,
+        avg_entry: dict[str, Decimal] | None = None,
+        last_prices: dict[str, Decimal] | None = None,
+        realized_pnl: Decimal | None = None,
+    ) -> None:
+        """Rebuild account state from a durable checkpoint.
+
+        Account state lives in this process, so without a restore every
+        restart silently rebases equity to ``initial_cash`` and orphans the
+        open book.
+
+        *avg_entry* and *last_prices* must both be seeded alongside
+        *positions*. Cost basis is what makes P&L attributable: restored
+        without it, every position reports its whole market value as
+        unrealised profit. And ``get_account`` marks at the last seen price,
+        so an empty price map would report a position-less equity until the
+        next tick and register as a false drawdown.
+        """
+        self._cash = cash
+        self._positions = defaultdict(Decimal)
+        self._avg_entry = {}
+        for symbol, quantity in (positions or {}).items():
+            if quantity != Decimal("0"):
+                self._positions[symbol] = quantity
+        for symbol, entry in (avg_entry or {}).items():
+            if entry:
+                self._avg_entry[symbol] = entry
+        for symbol, price in (last_prices or {}).items():
+            self._last_prices.setdefault(symbol, price)
+        if realized_pnl is not None:
+            self._realized_pnl = realized_pnl
+        logger.info(
+            "paper_state_restored",
+            cash=str(cash),
+            positions=len(self._positions),
+        )
+
+    def apply_external_fill(
+        self, symbol: str, side: str, price: Decimal, quantity: Decimal
+    ) -> None:
+        """Replay a persisted fill onto restored state (checkpoint catch-up)."""
+        self._apply_to_book(symbol, side, price, quantity, Decimal("0"))
+
+    def _apply_to_book(
+        self,
+        symbol: str,
+        side: str,
+        price: Decimal,
+        quantity: Decimal,
+        commission: Decimal,
+    ) -> None:
+        """Apply one fill to cash, position, cost basis and realised P&L.
+
+        Quantity closed against an opposing position realises P&L at the
+        difference to the cost basis; quantity added in the same direction
+        re-averages it. A fill that flips the sign does both.
+        """
+        signed_qty = quantity if side == "buy" else -quantity
+        old_qty = self._positions[symbol]
+        old_avg = self._avg_entry.get(symbol, Decimal("0"))
+        new_qty = old_qty + signed_qty
+
+        if old_qty == Decimal("0") or (old_qty > 0) == (signed_qty > 0):
+            total = abs(old_qty) + abs(signed_qty)
+            new_avg = (
+                (abs(old_qty) * old_avg + abs(signed_qty) * price) / total
+                if total
+                else Decimal("0")
+            )
+        else:
+            closed = min(abs(old_qty), abs(signed_qty))
+            direction = Decimal("1") if old_qty > 0 else Decimal("-1")
+            self._realized_pnl += direction * closed * (price - old_avg)
+            # A flip leaves a fresh position opened at this fill's price.
+            new_avg = price if new_qty != 0 and (old_qty > 0) != (new_qty > 0) else old_avg
+
+        self._positions[symbol] = new_qty
+        if new_qty == Decimal("0"):
+            self._avg_entry.pop(symbol, None)
+        else:
+            self._avg_entry[symbol] = new_avg
+
+        self._cash -= signed_qty * price
+        self._cash -= commission
+        self._realized_pnl -= commission
 
     # ------------------------------------------------------------------
     # Memory retention
@@ -263,10 +373,9 @@ class PaperBroker(BaseBroker):
         )
         self._fills_by_order.setdefault(order.external_id, []).append(fill)
 
-        # Update positions and cash
-        signed_qty = order.quantity if order.side == "buy" else -order.quantity
-        self._positions[order.symbol] += signed_qty
-        self._cash -= signed_qty * fill_price
+        self._apply_to_book(
+            order.symbol, order.side, fill_price, order.quantity, fill.commission
+        )
 
         self._mark_terminal(order.external_id, "filled")
         logger.info(
@@ -316,9 +425,9 @@ class PaperBroker(BaseBroker):
             )
             self._fills_by_order.setdefault(ext_id, []).append(fill)
 
-            signed_qty = order.quantity if order.side == "buy" else -order.quantity
-            self._positions[order.symbol] += signed_qty
-            self._cash -= signed_qty * fill_price
+            self._apply_to_book(
+                order.symbol, order.side, fill_price, order.quantity, fill.commission
+            )
             self._mark_terminal(ext_id, "filled")
 
             logger.info(

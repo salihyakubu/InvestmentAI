@@ -17,7 +17,7 @@ interface DrawdownChartProps {
 export default function DrawdownChart({ data }: DrawdownChartProps) {
   const chartData = data.map((d) => ({
     ...d,
-    dateLabel: format(new Date(d.date), 'MMM dd'),
+    ts: new Date(d.date).getTime(),
     drawdownPct: d.drawdown * 100,
   }));
 
@@ -29,6 +29,21 @@ export default function DrawdownChart({ data }: DrawdownChartProps) {
     );
   }
 
+  // Same adaptive scale as the equity curve: intraday points must not all
+  // collapse onto one repeated date label.
+  const timeSpan = Math.abs(
+    (chartData[chartData.length - 1]?.ts ?? 0) - (chartData[0]?.ts ?? 0),
+  );
+  const formatTime = (ts: number) =>
+    format(
+      new Date(ts),
+      timeSpan < 36 * 3600e3
+        ? 'HH:mm'
+        : timeSpan < 14 * 864e5
+          ? 'MMM d HH:mm'
+          : 'MMM d',
+    );
+
   return (
     <div className="card">
       <div className="card-header">Drawdown</div>
@@ -37,10 +52,14 @@ export default function DrawdownChart({ data }: DrawdownChartProps) {
           <AreaChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
             <XAxis
-              dataKey="dateLabel"
+              dataKey="ts"
+              type="number"
+              scale="time"
+              domain={['dataMin', 'dataMax']}
               stroke="#6b7280"
               fontSize={11}
               tickLine={false}
+              tickFormatter={formatTime}
             />
             <YAxis
               stroke="#6b7280"
@@ -55,6 +74,9 @@ export default function DrawdownChart({ data }: DrawdownChartProps) {
                 borderRadius: '8px',
                 color: '#f3f4f6',
               }}
+              labelFormatter={(ts: number) =>
+                format(new Date(ts), 'MMM d, HH:mm')
+              }
               formatter={(value: number) => [
                 `${value.toFixed(2)}%`,
                 'Drawdown',

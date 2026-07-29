@@ -288,6 +288,50 @@ async def _build_services(
     ]
 
 
+def _account_broker(brokers: dict[str, Any]) -> Any:
+    """Pick the broker that owns account state, deterministically.
+
+    Dict insertion order decides nothing here: in paper/backtest the paper
+    broker is the account, and in live the venue adapter is. Falling through
+    to "first registered" would silently poll the wrong account the moment a
+    second broker is wired.
+    """
+    for name in ("alpaca", "ccxt"):
+        if name in brokers and getattr(brokers[name], "supports_live", False):
+            return brokers[name]
+    return brokers.get("paper") or next(iter(brokers.values()))
+
+
+async def _restore_broker_state(services: list[Any], settings: Settings) -> None:
+    """Restore the simulated broker's cash/book from the last checkpoint.
+
+    Best effort: a restore failure must not stop the worker from booting, but
+    it is loud, because silently continuing means trading from a rebased
+    account.
+    """
+    from core.models.base import get_async_session_factory
+    from services.execution.service import ExecutionEngineService
+    from services.persistence.broker_state import BrokerStateStore
+
+    execution = next(
+        (s for s in services if isinstance(s, ExecutionEngineService)), None
+    )
+    if execution is None or not execution.brokers:
+        return
+    broker = _account_broker(execution.brokers)
+    if not hasattr(broker, "restore_state"):
+        return  # live brokers hold account state at the venue
+    store = BrokerStateStore(
+        session_factory=get_async_session_factory(),
+        trading_mode=settings.trading_mode,
+    )
+    try:
+        outcome = await store.restore(broker)
+        logger.info("worker.broker_state_restore", outcome=outcome)
+    except Exception:
+        logger.exception("worker.broker_state_restore_failed")
+
+
 async def _run() -> None:
     """Main async entry point: build services, start them, wait for shutdown."""
     settings = get_settings()
@@ -299,6 +343,11 @@ async def _run() -> None:
     logger.info("worker.initializing", redis_host=redis_host)
 
     services = await _build_services(event_bus, settings)
+
+    # Rehydrate simulated account state BEFORE anything can trade: the paper
+    # broker holds cash/positions in memory, so an unrestored restart rebases
+    # equity to initial capital and orphans the open book.
+    await _restore_broker_state(services, settings)
 
     # Graceful shutdown handling
     shutdown_event = asyncio.Event()
@@ -327,7 +376,7 @@ async def _run() -> None:
     execution = next((s for s in services if isinstance(s, ExecutionEngineService)), None)
     account_sync_task: asyncio.Task[None] | None = None
     if risk is not None and execution is not None and execution.brokers:
-        broker = next(iter(execution.brokers.values()))
+        broker = _account_broker(execution.brokers)
 
         async def _equity_provider() -> Decimal:
             account = await broker.get_account()
@@ -341,12 +390,18 @@ async def _run() -> None:
     snapshot_task: asyncio.Task[None] | None = None
     if execution is not None and execution.brokers:
         from core.models.base import get_async_session_factory
+        from services.persistence.broker_state import BrokerStateStore
         from services.persistence.snapshot_writer import PortfolioSnapshotWriter
 
-        snapshot_broker = next(iter(execution.brokers.values()))
+        snapshot_broker = _account_broker(execution.brokers)
+        state_store = BrokerStateStore(
+            session_factory=get_async_session_factory(),
+            trading_mode=settings.trading_mode,
+        )
         snapshot_writer = PortfolioSnapshotWriter(
             session_factory=get_async_session_factory(),
             trading_mode=settings.trading_mode,
+            state_store=state_store,
         )
         snapshot_task = asyncio.create_task(
             snapshot_writer.run(

@@ -18,6 +18,11 @@ class Position(UUIDMixin, AsyncBase):
 
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     asset_class: Mapped[str] = mapped_column(String(10), nullable=False)
+    # Scopes the book to its account: a live worker sharing this database must
+    # never restore the paper broker's positions, or the reverse.
+    trading_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="paper"
+    )
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     avg_entry_price: Mapped[Decimal] = mapped_column(
