@@ -19,6 +19,7 @@ class PredictionSchema(BaseModel):
     confidence: float
     expected_return: float | None = None
     model_id: str | None = None
+    horizon_minutes: int | None = None
     timestamp: datetime
 
     model_config = {"from_attributes": True}

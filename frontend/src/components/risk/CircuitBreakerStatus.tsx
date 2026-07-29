@@ -1,8 +1,8 @@
-import { Shield, ShieldAlert, ShieldOff } from 'lucide-react';
+import { Shield, ShieldAlert, ShieldOff, ShieldQuestion } from 'lucide-react';
 import clsx from 'clsx';
 
 interface CircuitBreakerStatusProps {
-  status: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  status: 'CLOSED' | 'OPEN' | 'HALF_OPEN' | 'UNKNOWN';
   reason?: string;
 }
 
@@ -38,10 +38,23 @@ export default function CircuitBreakerStatus({
       borderColor: 'border-yellow-500/30',
       pulseColor: 'bg-yellow-500',
     },
+    // Nothing publishes breaker state yet. Showing CLOSED here would be a
+    // green "all systems normal" invented from missing data -- the one
+    // failure mode a safety indicator must never have.
+    UNKNOWN: {
+      icon: ShieldQuestion,
+      label: 'UNKNOWN',
+      description: 'Breaker state is not being reported by the worker.',
+      color: 'text-gray-500',
+      bgColor: 'bg-gray-500/10',
+      borderColor: 'border-gray-500/30',
+      pulseColor: 'bg-gray-600',
+    },
   };
 
   const cfg = config[status];
   const Icon = cfg.icon;
+  const showPulse = status !== 'UNKNOWN';
 
   return (
     <div className={clsx('card border', cfg.borderColor)}>
@@ -56,12 +69,14 @@ export default function CircuitBreakerStatus({
               {cfg.label}
             </span>
             <span className="relative flex h-3 w-3">
-              <span
-                className={clsx(
-                  'animate-ping absolute inline-flex h-full w-full rounded-full opacity-75',
-                  cfg.pulseColor,
-                )}
-              />
+              {showPulse && (
+                <span
+                  className={clsx(
+                    'animate-ping absolute inline-flex h-full w-full rounded-full opacity-75',
+                    cfg.pulseColor,
+                  )}
+                />
+              )}
               <span
                 className={clsx(
                   'relative inline-flex rounded-full h-3 w-3',

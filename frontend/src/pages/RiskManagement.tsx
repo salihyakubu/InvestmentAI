@@ -7,15 +7,18 @@ export default function RiskManagement() {
   const { data: metrics, isLoading } = useRiskMetrics();
   const { data: equityData } = useEquityCurve();
 
-  // Derive drawdown data from equity curve
-  const drawdownData =
-    equityData?.map((point, i) => {
-      const peak = Math.max(
-        ...equityData.slice(0, i + 1).map((p) => p.equity),
-      );
-      const drawdown = peak > 0 ? (point.equity - peak) / peak : 0;
-      return { date: point.date, drawdown };
-    }) ?? [];
+  // Drawdown against the running peak, in one forward pass. The series
+  // arrives chronologically, so the peak is genuinely the prior maximum --
+  // the previous slice-and-Math.max was both O(n^2) and, on the older
+  // newest-first payload, measured against future equity.
+  let peak = -Infinity;
+  const drawdownData = (equityData ?? []).map((point) => {
+    peak = Math.max(peak, point.equity);
+    return {
+      date: point.date,
+      drawdown: peak > 0 ? (point.equity - peak) / peak : 0,
+    };
+  });
 
   if (isLoading) {
     return (

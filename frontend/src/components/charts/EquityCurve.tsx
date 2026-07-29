@@ -26,10 +26,30 @@ export function formatEquityTick(v: number): string {
   return `$${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`;
 }
 
+/**
+ * Tick precision has to follow the *visible* range, not the account size: a
+ * $100 account moving $1 needs cents on the axis, or every tick rounds to the
+ * same "$100" and the curve reads as a flat line. Built as a factory because
+ * recharts calls `tickFormatter(value, index)` -- an optional second
+ * parameter would silently receive the tick index.
+ */
+export function makeEquityTickFormatter(valueSpan: number) {
+  return (v: number): string => {
+    if (Math.abs(v) >= 10_000) {
+      return `$${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+    }
+    const digits = valueSpan >= 100 ? 0 : valueSpan >= 10 ? 1 : 2;
+    return `$${v.toLocaleString('en-US', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    })}`;
+  };
+}
+
 export default function EquityCurve({ data }: EquityCurveProps) {
   const chartData = data.map((d) => ({
     ...d,
-    dateLabel: format(new Date(d.date), 'MMM dd'),
+    ts: new Date(d.date).getTime(),
   }));
 
   const startEquity = chartData[0]?.equity ?? 0;
@@ -44,6 +64,24 @@ export default function EquityCurve({ data }: EquityCurveProps) {
     );
   }
 
+  // Below the empty guard. Math.abs keeps the label choice correct even if a
+  // caller hands us a descending series.
+  const timeSpan = Math.abs(
+    (chartData[chartData.length - 1]?.ts ?? 0) - (chartData[0]?.ts ?? 0),
+  );
+  const equities = chartData.map((d) => d.equity);
+  const valueSpan = Math.max(...equities) - Math.min(...equities);
+  const formatTick = makeEquityTickFormatter(valueSpan);
+  const formatTime = (ts: number) =>
+    format(
+      new Date(ts),
+      timeSpan < 36 * 3600e3
+        ? 'HH:mm'
+        : timeSpan < 14 * 864e5
+          ? 'MMM d HH:mm'
+          : 'MMM d',
+    );
+
   return (
     <div className="card">
       <div className="card-header">Equity Curve</div>
@@ -52,17 +90,21 @@ export default function EquityCurve({ data }: EquityCurveProps) {
           <AreaChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
             <XAxis
-              dataKey="dateLabel"
+              dataKey="ts"
+              type="number"
+              scale="time"
+              domain={['dataMin', 'dataMax']}
               stroke="#6b7280"
               fontSize={11}
               tickLine={false}
+              tickFormatter={formatTime}
             />
             <YAxis
               stroke="#6b7280"
               fontSize={11}
               tickLine={false}
-              tickFormatter={formatEquityTick}
-              domain={['dataMin - 0.5', 'dataMax + 0.5']}
+              tickFormatter={formatTick}
+              domain={['auto', 'auto']}
             />
             <Tooltip
               contentStyle={{
@@ -71,6 +113,9 @@ export default function EquityCurve({ data }: EquityCurveProps) {
                 borderRadius: '8px',
                 color: '#f3f4f6',
               }}
+              labelFormatter={(ts: number) =>
+                format(new Date(ts), 'MMM d, HH:mm')
+              }
               formatter={(value: number) => [
                 `$${value.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
                 'Equity',

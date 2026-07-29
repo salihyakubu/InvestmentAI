@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import time as _time
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -13,9 +14,67 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.dependencies import get_current_user, get_db
 from api.schemas.common import SuccessResponse
 from api.schemas.portfolio import AllocationSchema, PortfolioSummary
+from config.settings import Settings, get_settings
+from core.models.orders import Fill, Order
 from core.models.portfolio import PortfolioSnapshot
+from services.portfolio.metrics import EquityPoint, LedgerFill, PerformanceMetrics
+from services.portfolio.metrics import compute as compute_metrics
 
 router = APIRouter(prefix="/portfolio")
+
+# Performance is derived from the whole stored history, which the summary
+# endpoint is polled against every few seconds. The inputs move on the
+# snapshot interval (minutes), so a short cache keeps the scan off the hot
+# path without the numbers ever being visibly stale.
+_METRICS_TTL_SECONDS = 60.0
+_METRICS_WINDOW_DAYS = 365
+_METRICS_MAX_ROWS = 200_000
+_metrics_cache: dict[str, tuple[float, PerformanceMetrics]] = {}
+
+
+async def _performance(db: AsyncSession, trading_mode: str) -> PerformanceMetrics:
+    """Compute (and briefly cache) performance over the stored history."""
+    cached = _metrics_cache.get(trading_mode)
+    now = _time.monotonic()
+    if cached is not None and now - cached[0] < _METRICS_TTL_SECONDS:
+        return cached[1]
+
+    since = datetime.now(UTC) - timedelta(days=_METRICS_WINDOW_DAYS)
+    rows = (
+        await db.execute(
+            select(PortfolioSnapshot.time, PortfolioSnapshot.total_equity)
+            .where(
+                PortfolioSnapshot.time >= since,
+                PortfolioSnapshot.trading_mode == trading_mode,
+            )
+            .order_by(PortfolioSnapshot.time)
+            .limit(_METRICS_MAX_ROWS)
+        )
+    ).all()
+    points = [EquityPoint(time=t, equity=Decimal(str(e))) for t, e in rows]
+
+    fill_rows = (
+        await db.execute(
+            select(Order.symbol, Order.side, Fill.price, Fill.quantity, Fill.commission)
+            .join(Fill, Fill.order_id == Order.id)
+            .where(Fill.filled_at >= since, Order.trading_mode == trading_mode)
+            .order_by(Fill.filled_at)
+        )
+    ).all()
+    fills = [
+        LedgerFill(
+            symbol=symbol,
+            side=side,
+            price=Decimal(str(price)),
+            quantity=Decimal(str(quantity)),
+            commission=Decimal(str(commission or 0)),
+        )
+        for symbol, side, price, quantity, commission in fill_rows
+    ]
+
+    metrics = compute_metrics(points, fills)
+    _metrics_cache[trading_mode] = (now, metrics)
+    return metrics
 
 
 @router.get(
@@ -26,10 +85,12 @@ router = APIRouter(prefix="/portfolio")
 async def get_portfolio_summary(
     db: AsyncSession = Depends(get_db),
     _user: dict[str, Any] = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> PortfolioSummary:
-    """Return the latest portfolio snapshot as a summary."""
+    """Return the latest snapshot plus performance over stored history."""
     stmt = (
         select(PortfolioSnapshot)
+        .where(PortfolioSnapshot.trading_mode == settings.trading_mode)
         .order_by(PortfolioSnapshot.time.desc())
         .limit(1)
     )
@@ -44,15 +105,30 @@ async def get_portfolio_summary(
             unrealized_pnl=Decimal("0"),
             realized_pnl=Decimal("0"),
             daily_return_pct=None,
+            total_return_pct=None,
+            daily_pnl_pct=None,
+            sharpe_ratio=None,
+            max_drawdown=None,
+            win_rate=None,
         )
 
+    metrics = await _performance(db, settings.trading_mode)
     return PortfolioSummary(
         total_equity=snapshot.total_equity,
         cash=snapshot.cash,
         positions_value=snapshot.positions_value,
         unrealized_pnl=snapshot.unrealized_pnl,
         realized_pnl=snapshot.realized_pnl,
-        daily_return_pct=snapshot.daily_return_pct,
+        daily_return_pct=metrics.daily_pnl_pct,
+        daily_pnl=metrics.daily_pnl,
+        daily_pnl_pct=metrics.daily_pnl_pct,
+        total_return=metrics.total_return,
+        total_return_pct=metrics.total_return_pct,
+        sharpe_ratio=metrics.sharpe_ratio,
+        max_drawdown=metrics.max_drawdown,
+        win_rate=metrics.win_rate,
+        closed_trades=metrics.closed_trades,
+        position_count=snapshot.position_count,
     )
 
 
@@ -64,10 +140,12 @@ async def get_portfolio_summary(
 async def get_allocations(
     db: AsyncSession = Depends(get_db),
     _user: dict[str, Any] = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> list[AllocationSchema]:
     """Return the current asset allocations from the latest snapshot."""
     stmt = (
         select(PortfolioSnapshot)
+        .where(PortfolioSnapshot.trading_mode == settings.trading_mode)
         .order_by(PortfolioSnapshot.time.desc())
         .limit(1)
     )
@@ -96,23 +174,38 @@ async def get_allocations(
 async def get_snapshots(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=1000),
+    days: int = Query(default=30, ge=1, le=3650),
+    max_points: int = Query(default=750, ge=10, le=5000),
     db: AsyncSession = Depends(get_db),
     _user: dict[str, Any] = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> list[dict[str, Any]]:
-    """Return historical portfolio snapshots."""
+    """Return historical snapshots in CHRONOLOGICAL order.
+
+    Rows are stored on a 5-minute cadence, so a naive row limit covers only
+    hours and every chart label collapses to a single date. The window is
+    therefore expressed in *days* and evenly downsampled to *max_points*,
+    keeping the newest point so the curve always ends at the present.
+    """
+    window_start = start or (datetime.now(UTC) - timedelta(days=days))
     stmt = (
         select(PortfolioSnapshot)
-        .order_by(PortfolioSnapshot.time.desc())
-        .limit(limit)
+        .where(
+            PortfolioSnapshot.time >= window_start,
+            PortfolioSnapshot.trading_mode == settings.trading_mode,
+        )
+        .order_by(PortfolioSnapshot.time)
     )
-    if start is not None:
-        stmt = stmt.where(PortfolioSnapshot.time >= start)
     if end is not None:
         stmt = stmt.where(PortfolioSnapshot.time <= end)
 
     result = await db.execute(stmt)
-    rows = result.scalars().all()
+    rows = list(result.scalars().all())
+
+    if len(rows) > max_points:
+        # Stride from the end so the most recent observation always survives.
+        step = len(rows) // max_points + 1
+        rows = list(reversed(rows[::-1][::step]))
 
     return [
         {

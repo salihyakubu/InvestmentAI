@@ -46,13 +46,23 @@ export function usePositions() {
   });
 }
 
-export function useEquityCurve() {
+/**
+ * Equity history. The window is expressed in days: snapshots land every five
+ * minutes, so the old row-capped default covered barely eight hours and hid
+ * the whole soak behind a single date label. Sorted defensively -- a
+ * descending payload would render the curve mirrored in time.
+ */
+export function useEquityCurve(days = 30) {
   return useQuery<{ date: string; equity: number }[]>({
-    queryKey: ['portfolio', 'snapshots'],
+    queryKey: ['portfolio', 'snapshots', days],
     queryFn: () =>
       apiClient
-        .get('/portfolio/snapshots')
-        .then((r) => (Array.isArray(r.data) ? r.data : []).map(normalizeEquityPoint)),
+        .get('/portfolio/snapshots', { params: { days } })
+        .then((r) =>
+          (Array.isArray(r.data) ? r.data : [])
+            .map(normalizeEquityPoint)
+            .sort((a, b) => +new Date(a.date) - +new Date(b.date)),
+        ),
     refetchInterval: 30_000,
   });
 }
