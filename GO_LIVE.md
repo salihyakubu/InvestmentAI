@@ -619,3 +619,68 @@ meaningful horizon. Size (3%), cap (2), and margin floor (0.03) unchanged so
 the learning data keeps flowing. Verified live: worker redeployed healthy and
 the first entry under the new hold (BTC/USDT) fired within minutes.
 POLICY unchanged: exploration P&L is learning data, never edge evidence.
+
+## Dashboard audit + truthful metrics (2026-07-29) — PR #56
+Operator: "the various dashboard indicate feels like its not functional." The
+screenshot showed $99.94 equity beside +0.00% return, 0.00 Sharpe, 0.0% win
+rate, 0.00% drawdown. A 5-dimension multi-agent audit (45 confirmed defects,
+1 refuted) found none of those four were measurements: the frontend
+normaliser coerced every field the API never sent to 0.
+
+FIXED (PR #56, migration 0007):
+1. EQUITY WAS NOT DURABLE. PaperBroker held cash/positions/cost-basis in
+   process memory, so every deploy rebased the account to initial_capital.
+   Proven in production data -- exactly one upward discontinuity in ten days
+   of snapshots: 2026-07-27 20:40:43Z, 98.8588 -> 100.0000, the redeploy
+   documented in the section above. FIVE DAYS OF SOAK P&L WERE ERASED, and
+   the same thing had silently happened on earlier restarts near 100.00 where
+   no jump was visible. Now: the book is checkpointed into `positions` in the
+   SAME TRANSACTION as its equity snapshot; restore runs before any service
+   starts; fills landing after the checkpoint are replayed. Cost basis and
+   realised P&L are tracked and restored too (a test caught that restoring
+   without cost basis reports a position's whole market value as unrealised
+   profit). `positions` gains trading_mode so a live worker can never restore
+   the paper book; account-broker selection is explicit, not dict order.
+2. /portfolio/summary now carries the KPI contract, derived from stored
+   history: total return MARK-TO-MARKET vs the account baseline (not
+   realized_pnl, which excludes open marks), daily P&L vs the prior close,
+   peak-to-trough drawdown, win rate from FIFO round trips over the fill
+   ledger. Scoped by trading_mode, cached 60s against the 5s poll.
+3. HONESTY GATE: a metric the data cannot support returns null and renders as
+   a grey em-dash, never a coloured zero. Sharpe needs 20+ daily
+   observations, so it reads "—  needs 20+ days". The circuit-breaker tile
+   reads UNKNOWN instead of a green "all systems operating normally" that was
+   synthesised from an unwritten risk_metrics table -- the one failure mode a
+   safety indicator must not have.
+4. The equity curve was served NEWEST-FIRST and drawn mirrored in time, over
+   a 100-row window = 8h20m at the 5-min cadence (hence every x label reading
+   "Jul 28", and the $1.15 move rendering flat). Now chronological, windowed
+   in days with downsampling that keeps the newest point, on a real time axis
+   with span-aware tick precision. The Risk page's drawdown had been measured
+   against a running peak that included FUTURE equity.
+5. Snapshots write immediately instead of sleeping an interval first (a
+   crash-loop restarting faster than 300s wrote none). Prediction cards show
+   their real horizon_minutes instead of a hardcoded '5m'.
+
+VERIFIED LIVE after deploy:
+- alembic head 0007_positions_mode; positions.trading_mode present.
+- The one-time rebase fired exactly once, as designed: equity carried FORWARD
+  at 100.16791081 onto a flat book (not reset to initial capital). Every
+  restart from here is an exact restore.
+- `positions` now holds real open rows (it had been 0 rows forever despite
+  position_count=9), and portfolio_snapshots.unrealized_pnl is non-zero for
+  the first time (0.0365) -- real cost-basis tracking is live.
+
+HONEST CAVEAT RECORDED: the equity series still contains the 2026-07-27
+20:40:43Z synthetic jump, which UNDERSTATES the soak's true loss by ~$1.14.
+Total return and max drawdown are computed across that seam. The series is
+continuous from 2026-07-29 onward; earlier figures must be read as two
+accounts spliced together, not one track record.
+
+STILL OPEN (documented, not shipped): the risk_metrics writer -- VaR/CVaR/
+beta/volatility and the correlation heatmap remain UNAVAILABLE rather than
+zero, and MaxCorrelationRule/MaxVaRRule pass vacuously because
+update_returns() has no caller. Durable round-trip P&L persistence. The
+secondary-page cleanup (order fill prices, Trading price chart 422s on '1D',
+audit-log columns, ML precision/recall/F1, feature-importance chart, retrain
+buttons, notification bell).
