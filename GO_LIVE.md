@@ -782,3 +782,59 @@ GUARD ADDED: `confidence_strata` now excludes unchanged bars from agreement
 and reports the zero fraction it removed; `test_unchanged_bars_do_not_
 manufacture_an_inversion` fails on the exact data shape that fooled me, and a
 companion test proves the detector still catches a genuine inversion.
+
+## CROSS-SECTIONAL RESEARCH (2026-07-30) — real signal found, and it is unharvestable
+Breadth was the #1 item after the live-signal null. Built a 117-symbol hourly
+crypto universe (17,532 bars x 2 years, local research cache, NOT the
+production DB) and tested whether ranking symbols against each other predicts
+their RELATIVE returns -- a different question from the per-symbol "will this
+go up?" the platform asks today.
+
+Tooling: services/backtesting/cross_section.py, scripts/build_universe.py,
+scripts/evaluate_cross_section.py, 20 tests. Same both-ways discipline: the
+harness must find a planted cross-sectional signal AND report the null on
+random walks, or its verdicts mean nothing.
+
+THE FINDING -- the first genuinely stable predictive structure this platform
+has produced:
+  reversal_1h   mean IC +0.0436  t=+20.9  17,530 rebalances
+  quintile ladder is cleanly MONOTONE: -1.38, -0.69, -0.07, +0.53, +1.66 bps
+  6/6 factors kept their IC sign on a chronological holdout never used for
+  selection (IS +0.0466 -> OOS +0.0436 for reversal_1h)
+This is not noise. Short-horizon cross-sectional reversal in crypto is real.
+
+WHY IT IS STILL WORTHLESS TO US -- the breakeven cost:
+  reversal_1h earns +2.73 bps GROSS per rebalance but turns over 3.02 of the
+  book each hour, so it breaks even at 0.90 bps per unit turnover. Binance
+  spot charges ~10 bps PER SIDE at VIP0. The signal is ~11x too small to pay
+  for the spread it must cross to capture it.
+  Horizon sweep (1h..48h) does not rescue it: reversal_1h's turnover stays
+  ~3.0 at every holding period while its IC decays, so breakeven peaks at
+  2.29 bps and then falls.
+INTERPRETATION: this alpha IS the liquidity-provision premium. It can only be
+harvested by POSTING liquidity (maker), never by taking it. That is a
+statement about execution, not about models.
+
+REJECTED -- momentum_168h. It showed the best breakeven in the whole horizon
+sweep (11.05 bps at 48h) and it is a TAIL ARTIFACT: quintile profile
+-2.235, -1.226, -0.210, -0.417, +6.694, i.e. flat middle with one jump into
+the top bucket carrying 80% of the spread. Two guards now catch this
+automatically -- decile monotonicity AND tail_dominance (share of the spread
+in the single largest bucket step). Rank correlation ALONE was not enough:
+the bad profile scores 0.9 on 5-bucket Spearman, which is why the guard is
+a pair, not one number.
+
+METHOD CAVEATS, standing:
+  - SURVIVORSHIP: universe is pairs listed today; delisted losers are absent.
+    Long/short is less exposed than long-only but every figure is an upper
+    bound.
+  - The horizon sweep is 42 cells (6 factors x 7 horizons). Anything picked
+    from it post-hoc is a hypothesis, not a result. reversal_1h is exempt
+    because it was pre-declared and confirmed on the holdout.
+
+WHAT THIS CHANGES: the roadmap ordering. Cost/execution was #3; it is now #1,
+because we no longer lack a signal -- we lack a way to trade one we have.
+The open question is whether a MAKER-ONLY implementation (posting limit
+orders, accepting partial and missed fills) can capture any part of a
+0.9 bps/turnover premium. Adverse selection is the obvious threat: the fills
+you get are disproportionately the ones you did not want.
