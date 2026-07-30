@@ -25,8 +25,11 @@ from services.backtesting.cross_section import (  # noqa: E402
     DEFAULT_COST_BPS,
     build_factors,
     evaluate,
+    format_frontier,
     format_report,
+    forward_returns,
     load_universe,
+    turnover_frontier,
 )
 
 
@@ -37,6 +40,11 @@ def main() -> int:
         "--horizon", type=int, default=1, help="holding period in bars (hours)"
     )
     parser.add_argument("--cost-bps", type=float, default=DEFAULT_COST_BPS)
+    parser.add_argument(
+        "--frontier",
+        default="",
+        help="also sweep turnover-reduction settings for this factor",
+    )
     parser.add_argument(
         "--holdout-fraction",
         type=float,
@@ -109,9 +117,22 @@ def main() -> int:
         "  A factor that flips sign on the holdout was noise, however good its "
         "in-sample t-statistic looked."
     )
+    if args.frontier:
+        if args.frontier not in factors:
+            print(f"\nunknown factor {args.frontier!r}; have: {sorted(factors)}")
+        else:
+            print(f"\n\nTURNOVER REDUCTION -- {args.frontier}")
+            points = turnover_frontier(
+                factors[args.frontier],
+                forward_returns(close, args.horizon),
+                split,
+                args.cost_bps,
+            )
+            print(format_frontier(points, args.cost_bps))
+
     print(
         f"\n  Costs assumed: {args.cost_bps:.0f}bps per unit turnover. Binance spot "
-        "is ~10bps PER SIDE at base tier."
+        "is ~10bps PER SIDE at base tier; futures maker is ~2bps."
     )
     print(f"  Ladder shown: {', '.join(f'{c:.0f}' for c in COST_LADDER_BPS)} bps.")
     return 0

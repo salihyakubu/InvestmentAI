@@ -838,3 +838,54 @@ The open question is whether a MAKER-ONLY implementation (posting limit
 orders, accepting partial and missed fills) can capture any part of a
 0.9 bps/turnover premium. Adverse selection is the obvious threat: the fills
 you get are disproportionately the ones you did not want.
+
+## EXECUTION STUDY (2026-07-30) — turnover reduction does NOT rescue reversal_1h
+Follow-on to the cross-sectional finding. The question was whether the
+0.90 bps/turnover premium can be reached by executing more cheaply.
+
+FEE REALITY, verified against the live exchange (ccxt market metadata):
+  Binance SPOT    maker 10.00 bps   taker 10.00 bps
+  Binance FUTURES maker  2.00 bps   taker  5.00 bps
+Maker execution on SPOT is nearly pointless here: maker and taker fees are
+identical, so posting instead of taking saves only the spread (~1-2 bps), not
+the fee. The real 5x cost reduction is the venue, not the order type.
+
+At 2 bps futures maker fee, reversal_1h still costs 3.02 turnover x 2 bps =
+6.04 bps against 2.73 bps gross -- 2.2x short. So the binding constraint is
+TURNOVER, and the test is whether damping it closes a 2.2x gap.
+
+METHOD: swept 20 configurations -- signal smoothing (EWMA span 1/3/6/12/24)
+x leg-membership buffering (none/0.3/0.4/0.5 exit quantile). Both are
+standard, both reliably cut turnover. Every configuration scored on BOTH the
+in-sample half and the holdout.
+
+RESULT -- and this is the whole point of splitting first:
+  12/20 configurations are PROFITABLE IN SAMPLE at 2 bps.
+  0/20 survive on the HOLDOUT.
+  Best in-sample: smooth 6 / buffer 0.5 -> +0.722 bps per rebalance.
+  Same configuration on holdout: -0.312 bps.
+Had the parameter search been run on the full sample, or had only the winner
+been carried forward, it would have produced a profitable-looking strategy
+that loses money. The sweep IS the overfit; the holdout is the only number
+that meant anything.
+
+WHY IT FAILS: the reversal alpha lives at the very shortest horizon and
+decays fast. Smoothing cuts turnover but discards exactly the component that
+carries the edge -- holdout gross falls 2.733 -> 0.106 as smoothing goes
+1 -> 24, and turns NEGATIVE beyond that. There is no setting where enough
+alpha survives to pay even 2 bps.
+
+VERDICT: reversal_1h is real (IC +0.0436, t=+20.9, monotone, holdout-
+confirmed) and is NOT harvestable by this platform at any tested combination
+of venue, order type and turnover damping. Recorded as a closed question, not
+an open one.
+
+NOT TESTED, and honestly out of reach without new data: true maker-fill
+modelling. Estimating what fraction of posted orders actually fill, and how
+adversely selected those fills are, needs order-book or trade-level data the
+platform does not collect. Assuming clean fills would manufacture a fake
+edge, so the study was not faked -- it was scoped out and said so.
+
+TOOLING: turnover_frontier() + format_frontier() in cross_section.py report
+in-sample and holdout for every configuration by construction, and print an
+explicit warning when in-sample winners have no holdout survivors. 529 tests.
