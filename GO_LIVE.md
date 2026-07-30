@@ -708,12 +708,11 @@ FINDING 1 -- the 5-minute signal has NO EDGE, gross or net.
   decile ladder non-monotonic; 0/12 symbols pass
   This is NOT a cost problem. There is no gross signal to rescue.
 
-FINDING 2 -- confidence is INVERTED. Directional agreement falls monotonically
-as the model's own confidence rises: Q1 48.4% -> Q3 45.2% -> Q5 41.7%, and the
-top-confidence quintile has a significantly NEGATIVE IC (-0.0646, p=0.001).
-Where the ensemble is most confident it is most wrong, which means the
-conformal abstention gate is discarding the better predictions and keeping the
-worse ones. This is a defect, not a tuning parameter.
+FINDING 2 -- *** RETRACTED 2026-07-30, see the correction section below. ***
+The claim was: "confidence is INVERTED -- directional agreement falls
+monotonically as the model's own confidence rises (Q1 48.4% -> Q5 41.7%), and
+the top quintile has a significantly negative IC (-0.0646, p=0.001)."
+It was an artifact of unchanged price bars, not a defect in the models.
 
 FINDING 3 -- a real but UNECONOMIC signal appears at ~60 minutes.
   mean IC by hold: 5m +0.005, 15m +0.055, 30m +0.074, 60m +0.117, 240m -0.001
@@ -735,3 +734,51 @@ traded horizon there is nothing to eat. Cost reduction only matters for the
 
 IMPLICATION FOR TRADING_MODE: unchanged and reinforced. Nothing here supports
 risking capital. The operator's live decision stays exactly where it was.
+
+## CORRECTION (2026-07-30) — the "confidence inversion" was an artifact
+Finding 2 of the edge verdict above is RETRACTED. It was published in PR #58
+and it was wrong. Recording the retraction with the same prominence as the
+original claim, because a platform whose whole differentiator is honest
+measurement cannot quietly delete a bad result.
+
+WHAT WAS CLAIMED: directional agreement falls as the model's confidence rises,
+so the abstention gate keeps the worse predictions.
+
+WHY IT WAS WRONG -- two compounding mistakes, both mine:
+
+1. MISREAD FIELD SEMANTICS. `EnsemblePredictor._combine` sets
+   `confidence = combined_probs[best_direction]`, then OVERWRITES it with
+   `combined_probs["flat"]` whenever the agreement vote or conformal gate
+   flattens the signal. ~100% of stored predictions are flattened, so the
+   recorded "confidence" is p(flat) -- the model's belief that price will NOT
+   move. It is an abstention score, not directional confidence. 98.4% of rows
+   have p(flat) >= 1/3 (genuinely flat); only 1.6% are suppressed directional
+   views.
+
+2. ZERO-RETURN CONTAMINATION. Low-priced assets with coarse ticks leave the
+   price literally unchanged over a 5-minute window: DOT 32.8% of bars, ADA
+   18.0%, SOL 6.3% (BTC/ETH/equities all < 1%). `np.sign(0)` is 0 and matches
+   no position, so every unchanged bar counts as a disagreement. That fraction
+   rises with p(flat) BY CONSTRUCTION -- p(flat) is precisely the model
+   predicting no move -- which manufactures a clean monotone "inversion" out
+   of a model that was RIGHT about flatness.
+
+THE EVIDENCE THAT SETTLES IT (unchanged bars excluded, de-overlapped):
+  agreement by p(flat) quintile: 50.40%, 50.09%, 49.59%, 50.11%, 49.69%
+    -- flat across strata; the apparent decline tracked the zero fraction
+       rising 3.5% -> 14.4% exactly.
+  P(up | expected_return ABOVE median) = 48.80%  (n=5,516)
+  P(up | expected_return BELOW median) = 48.80%  (n=5,529)
+    difference +0.01pp, z=+0.01. The signal carries ZERO directional
+    information -- which STRENGTHENS Finding 1, the real result.
+
+FINDING 1 (no edge at the traded horizon) is unaffected and reinforced.
+FINDING 3 (60-minute signal) re-checked against the same artifact and SURVIVES:
+  ADA +0.203 (p=0.017), BTC +0.193 (p=0.019), SOL +0.204 (p=0.013) with
+  unchanged bars excluded; DOT and ETH remain ~0. Its own caveats stand --
+  post-hoc horizon choice, deflated Sharpe below bar, holdout unconfirmed.
+
+GUARD ADDED: `confidence_strata` now excludes unchanged bars from agreement
+and reports the zero fraction it removed; `test_unchanged_bars_do_not_
+manufacture_an_inversion` fails on the exact data shape that fooled me, and a
+companion test proves the detector still catches a genuine inversion.

@@ -170,18 +170,28 @@ def calibration_report(predictions: list[Prediction], overlap: int) -> str:
     strata = confidence_strata(conf, sig, out, overlap=overlap)
     if not strata:
         return "  confidence calibration: too few predictions to assess"
-    lines = ["  confidence quintile -> directional agreement:"]
-    lines.append("      quintile   range            n   agree      IC       p")
+    lines = [
+        "  abstention score p(flat) -> directional agreement",
+        "  (stored 'confidence' is p(flat) for gated predictions -- see module docs;",
+        "   unchanged bars are excluded from agreement or they fake an inversion):",
+    ]
+    lines.append("      quintile   p(flat) range        n   zero%   agree      IC       p")
     for s in strata:
         lines.append(
             f"      Q{int(s['stratum'])}       "
-            f"[{s['conf_lo']:.3f},{s['conf_hi']:.3f}] {int(s['n']):>7} "
+            f"[{s['conf_lo']:.3f},{s['conf_hi']:.3f}] {int(s['n']):>8} "
+            f"{s['zero_return_fraction'] * 100:6.1f}% "
             f"{s['sign_agreement'] * 100:6.1f}% {s['ic']:+8.4f} {s['p_value']:7.3f}"
         )
     if confidence_is_inverted(strata):
         lines.append(
-            "      INVERTED: accuracy FALLS as confidence rises. The abstention "
-            "gate is keeping the wrong predictions."
+            "      INVERTED: accuracy FALLS as p(flat) rises even with unchanged "
+            "bars excluded -- the abstention gate is keeping the wrong predictions."
+        )
+    else:
+        lines.append(
+            "      No inversion: agreement is flat across strata once unchanged "
+            "bars are excluded."
         )
     return "\n".join(lines)
 

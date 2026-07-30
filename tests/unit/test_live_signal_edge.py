@@ -298,3 +298,67 @@ def test_confidence_strata_detects_inverted_calibration() -> None:
 
 def test_confidence_strata_needs_enough_data() -> None:
     assert confidence_strata(np.zeros(50), np.zeros(50), np.zeros(50)) == []
+
+
+# ---------------------------------------------------------------------------
+# The zero-return artifact (this cost a retracted finding -- see GO_LIVE.md)
+# ---------------------------------------------------------------------------
+
+
+def test_unchanged_bars_do_not_manufacture_an_inversion() -> None:
+    """The regression test for a wrong published finding.
+
+    Low-priced assets with coarse ticks leave the price literally unchanged in
+    a third of DOT's 5-minute windows. sign(0) matches no position, so
+    including those bars drags agreement below 50% in proportion to how often
+    price stood still -- and that fraction rises with p(flat) BY CONSTRUCTION,
+    because p(flat) is the model predicting exactly that. The result looks
+    identical to inverted calibration. It is the opposite: the model was right.
+    """
+    rng = np.random.default_rng(20)
+    n = 30_000
+    confidence = rng.uniform(0.3, 0.75, n)  # this is p(flat) in stored data
+    signal = rng.normal(0, 0.001, n)
+    # Direction is pure noise: there is NO calibration effect to find.
+    outcome = rng.normal(0, 0.0018, n)
+    # ...but unchanged bars get commoner exactly as p(flat) rises.
+    zero_prob = (confidence - 0.3) / 0.45 * 0.35
+    outcome[rng.random(n) < zero_prob] = 0.0
+
+    strata = confidence_strata(confidence, signal, outcome)
+    assert len(strata) == 5
+    # The artifact must be visible...
+    assert strata[-1]["zero_return_fraction"] > strata[0]["zero_return_fraction"]
+    # ...and must NOT be reported as inverted calibration.
+    assert confidence_is_inverted(strata) is False
+    for s in strata:
+        assert 0.45 < s["sign_agreement"] < 0.55
+
+
+def test_zero_returns_are_excluded_from_agreement() -> None:
+    """A stratum that is half unchanged bars still reports honest agreement."""
+    rng = np.random.default_rng(21)
+    n = 5_000
+    confidence = rng.uniform(0.4, 0.6, n)
+    signal = rng.normal(0, 0.001, n)
+    outcome = np.sign(signal) * 0.001  # perfectly predicted where it moves
+    outcome[: n // 2] = 0.0  # half the bars did not move at all
+    strata = confidence_strata(confidence, signal, outcome, n_strata=2)
+    for s in strata:
+        # Not exactly 1.0: the signal is re-centred on its own median, which
+        # flips the handful of observations sitting closest to it.
+        assert s["sign_agreement"] > 0.95
+        assert s["zero_return_fraction"] > 0.2
+
+
+def test_a_genuine_inversion_is_still_caught_through_the_zero_guard() -> None:
+    """Excluding zeros must not blind the detector to a real inversion."""
+    rng = np.random.default_rng(22)
+    n = 30_000
+    confidence = rng.uniform(0.3, 0.75, n)
+    signal = rng.normal(0, 0.001, n)
+    flip = np.where(confidence > 0.52, -1.0, 1.0)
+    outcome = signal * flip + rng.normal(0, 0.0003, n)
+    outcome[rng.random(n) < (confidence - 0.3) / 0.45 * 0.3] = 0.0
+    strata = confidence_strata(confidence, signal, outcome)
+    assert confidence_is_inverted(strata) is True

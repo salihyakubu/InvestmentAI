@@ -299,10 +299,23 @@ def confidence_strata(
 ) -> list[dict[str, float]]:
     """Does the model's own confidence identify where it is right?
 
-    A calibrated model should be more accurate where it is more confident. If
-    accuracy FALLS with confidence the calibration is inverted, which is worse
-    than an uninformative signal: the abstention gate would then be keeping
-    the wrong predictions and discarding the right ones.
+    WHAT ``confidence`` ACTUALLY IS on this platform: ``EnsemblePredictor``
+    sets ``confidence = combined_probs[best_direction]``, and whenever the
+    agreement vote or the conformal gate flattens a signal it is overwritten
+    with ``combined_probs["flat"]``. Since ~100% of stored predictions are
+    flattened, the recorded value is **p(flat)** -- the model's belief that
+    price will NOT move -- not its confidence in a direction. Read it as an
+    abstention score.
+
+    ZERO-RETURN GUARD (this cost a retracted finding): low-priced assets with
+    coarse ticks produce genuinely unchanged bars -- 32.8% of DOT's and 18.0%
+    of ADA's 5-minute windows. ``np.sign(0)`` is 0 and matches no position, so
+    including them drags agreement below 50% in exact proportion to how often
+    the price stood still. That correlates with p(flat) BY CONSTRUCTION, and
+    manufactures a textbook-looking "confidence is inverted" result out of a
+    model that was simply right about flatness. Agreement is therefore
+    computed only where the price actually moved, and the zero fraction is
+    reported so the reader can see the effect that was removed.
     """
     if confidence.size < n_strata * 100:
         return []
@@ -315,16 +328,22 @@ def confidence_strata(
         )
         if mask.sum() < 100:
             continue
-        centred = signal[mask] - np.median(signal[mask])
-        out = outcome[mask]
-        ic, p = information_coefficient(deoverlap(centred, overlap), deoverlap(out, overlap))
-        agreement = float((np.sign(centred) == np.sign(out)).mean())
+        centred = deoverlap(signal[mask] - np.median(signal[mask]), overlap)
+        out = deoverlap(outcome[mask], overlap)
+        moved = out != 0.0
+        ic, p = information_coefficient(centred[moved], out[moved])
+        agreement = (
+            float((np.sign(centred[moved]) == np.sign(out[moved])).mean())
+            if moved.any()
+            else float("nan")
+        )
         rows.append(
             {
                 "stratum": float(i + 1),
                 "conf_lo": float(lo),
                 "conf_hi": float(hi),
                 "n": float(mask.sum()),
+                "zero_return_fraction": float((~moved).mean()),
                 "sign_agreement": agreement,
                 "ic": ic,
                 "p_value": p,
