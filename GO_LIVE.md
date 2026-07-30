@@ -684,3 +684,54 @@ update_returns() has no caller. Durable round-trip P&L persistence. The
 secondary-page cleanup (order fill prices, Trading price chart 422s on '1D',
 audit-log columns, ML precision/recall/F1, feature-importance chart, retrain
 buttons, notification bell).
+
+## LIVE SIGNAL EDGE VERDICT (2026-07-30) — NO EDGE at the traded horizon
+The platform's only published edge verdict ("EDGE STABLE across 2/3 symbols",
+2026-07-23) came from the DAILY harness in services/backtesting/edge.py. It
+had never been pointed at the 5-minute ensemble that actually trades. This
+closes that gap, using the strongest evidence available: 60,732 of the
+platform's OWN recorded predictions, emitted live and resolved by the
+learning loop -- genuinely point-in-time and out-of-sample, no re-simulation.
+
+Tooling: services/backtesting/live_signal.py + scripts/evaluate_live_edge.py.
+Self-tested BOTH ways before being trusted (tests/unit/test_live_signal_edge.py,
+24 tests): it must return NO EDGE on noise AND detect a planted edge. That
+second test caught a real bug in my own deflated-Sharpe implementation, which
+had been reporting NO EDGE for a signal with IC +0.96 because the
+expected-maximum benchmark was not scaled by the Sharpe estimator's standard
+error. A tool that can only say "no" proves nothing.
+
+FINDING 1 -- the 5-minute signal has NO EDGE, gross or net.
+  IC +0.0066, p=0.466, 95% CI [-0.0088, +0.0237] (straddles zero)
+  12,147 independent observations after removing 5x overlap
+  gross expectancy -0.141 bps/period (SE ~0.16 -> indistinguishable from 0)
+  decile ladder non-monotonic; 0/12 symbols pass
+  This is NOT a cost problem. There is no gross signal to rescue.
+
+FINDING 2 -- confidence is INVERTED. Directional agreement falls monotonically
+as the model's own confidence rises: Q1 48.4% -> Q3 45.2% -> Q5 41.7%, and the
+top-confidence quintile has a significantly NEGATIVE IC (-0.0646, p=0.001).
+Where the ensemble is most confident it is most wrong, which means the
+conformal abstention gate is discarding the better predictions and keeping the
+worse ones. This is a defect, not a tuning parameter.
+
+FINDING 3 -- a real but UNECONOMIC signal appears at ~60 minutes.
+  mean IC by hold: 5m +0.005, 15m +0.055, 30m +0.074, 60m +0.117, 240m -0.001
+  at 60m: ADA +0.196*, BTC +0.193*, SOL +0.206* (p<0.05); DOT and ETH ~0
+  pooled net: +5.08 bps/hold GROSS (t=+2.68), +0.27 at 5bps, -4.54 at 10bps
+  deflated Sharpe <= 0.19 everywhere (bar is 0.95); second-half holdout does
+  not confirm (only BTC marginal, p=0.05)
+  Read honestly: there is ~5bps of gross edge per hour, and the execution path
+  costs 5-10bps per round trip. It breaks even at best-case paper slippage and
+  loses at realistic venue costs. The horizon was CHOSEN AFTER seeing the
+  5-minute null, so it is a hypothesis generated from the same data -- it must
+  be confirmed on a window this scan never saw before it is traded.
+
+CORRECTION TO EARLIER ADVICE (recorded deliberately): I had ranked "fix the
+cost/horizon mismatch" as the highest-leverage move, on the assumption that
+slippage was eating a real 5-minute edge. The data says otherwise -- at the
+traded horizon there is nothing to eat. Cost reduction only matters for the
+60-minute signal, and only if that signal survives out-of-sample confirmation.
+
+IMPLICATION FOR TRADING_MODE: unchanged and reinforced. Nothing here supports
+risking capital. The operator's live decision stays exactly where it was.
