@@ -64,3 +64,6 @@ frontend/.vite/
 
 # Word lock/temp files
 ~$*
+
+# Local research cache (universe bars). Not production data.
+data/
