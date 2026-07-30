@@ -207,34 +207,96 @@ def period_ic(signal: np.ndarray, forward: np.ndarray) -> np.ndarray:
     return ics
 
 
+def smooth_signal(signal: np.ndarray, span: int) -> np.ndarray:
+    """Exponentially-weighted average of the signal over past periods only.
+
+    Churn is the enemy here: a signal that re-ranks completely every hour pays
+    the fee every hour. Smoothing trades a little responsiveness for a lot of
+    turnover. Strictly causal -- period t uses t and earlier, never later.
+    """
+    if span <= 1:
+        return signal
+    alpha = 2.0 / (span + 1.0)
+    out = np.full_like(signal, np.nan, dtype=float)
+    state = np.full(signal.shape[1], np.nan)
+    for t in range(signal.shape[0]):
+        row = signal[t]
+        fresh = np.isfinite(row)
+        seeded = fresh & ~np.isfinite(state)
+        state[seeded] = row[seeded]
+        update = fresh & np.isfinite(state) & ~seeded
+        state[update] = alpha * row[update] + (1 - alpha) * state[update]
+        out[t] = state
+    return out
+
+
 def long_short_returns(
-    signal: np.ndarray, forward: np.ndarray, quantile: float = 0.2
+    signal: np.ndarray,
+    forward: np.ndarray,
+    quantile: float = 0.2,
+    exit_quantile: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Dollar-neutral top-vs-bottom portfolio returns and per-period turnover.
 
     Weights are equal within each leg and sum to +1 long / -1 short, so the
     result is a spread, not a market bet. Turnover is the L1 change in weights
     between consecutive rebalances -- the thing that actually pays the fee.
+
+    *exit_quantile* adds hysteresis (the standard index-construction buffer):
+    a symbol ENTERS a leg from the top *quantile* but is only dropped once it
+    falls outside the wider *exit_quantile*. Without it, symbols oscillating
+    across the boundary are bought and sold repeatedly for no reason -- pure
+    fee. With a real signal the alpha cost is small and the turnover saving is
+    large, which is exactly the trade this strategy needs.
     """
     n_periods, n_symbols = signal.shape
     returns = np.full(n_periods, np.nan)
     turnover = np.full(n_periods, np.nan)
     previous = np.zeros(n_symbols)
+    prev_long: list[int] = []
+    prev_short: list[int] = []
+
     for t in range(n_periods):
         usable = np.isfinite(signal[t]) & np.isfinite(forward[t])
         count = int(usable.sum())
         if count < MIN_SYMBOLS_PER_PERIOD:
             previous = np.zeros(n_symbols)
+            prev_long, prev_short = [], []
             continue
         idx = np.flatnonzero(usable)
         order = idx[np.argsort(signal[t][idx])]
         k = max(1, int(round(count * quantile)))
+
+        if exit_quantile is None:
+            longs = list(order[-k:])
+            shorts = list(order[:k])
+        else:
+            keep = max(k, int(round(count * exit_quantile)))
+            long_zone = set(order[-keep:].tolist())
+            short_zone = set(order[:keep].tolist())
+            # Incumbents that are still inside the wider zone stay put.
+            longs = [s for s in prev_long if s in long_zone][:k]
+            shorts = [s for s in prev_short if s in short_zone][:k]
+            for candidate in reversed(order.tolist()):  # strongest first
+                if len(longs) >= k:
+                    break
+                if candidate not in longs and candidate not in shorts:
+                    longs.append(candidate)
+            for candidate in order.tolist():  # weakest first
+                if len(shorts) >= k:
+                    break
+                if candidate not in shorts and candidate not in longs:
+                    shorts.append(candidate)
+
         weights = np.zeros(n_symbols)
-        weights[order[-k:]] = 1.0 / k
-        weights[order[:k]] = -1.0 / k
+        if longs:
+            weights[longs] = 1.0 / len(longs)
+        if shorts:
+            weights[shorts] = -1.0 / len(shorts)
         returns[t] = float(np.dot(weights[usable], forward[t][usable]))
         turnover[t] = float(np.abs(weights - previous).sum())
         previous = weights
+        prev_long, prev_short = longs, shorts
     return returns, turnover
 
 
@@ -467,6 +529,110 @@ def format_report(report: CrossSectionReport, cost_bps: float = DEFAULT_COST_BPS
     for note in report.notes:
         lines.append(f"    - {note}")
     lines.append("=" * 88)
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class FrontierPoint:
+    """One turnover-reduction configuration, scored in and out of sample."""
+
+    smoothing: int
+    buffer: float | None
+    is_gross_bps: float
+    is_turnover: float
+    is_net_bps: float
+    oos_gross_bps: float
+    oos_turnover: float
+    oos_net_bps: float
+    breakeven_bps: float
+
+
+def turnover_frontier(
+    signal: np.ndarray,
+    forward: np.ndarray,
+    split: int,
+    cost_bps: float,
+    spans: tuple[int, ...] = (1, 3, 6, 12, 24),
+    buffers: tuple[float | None, ...] = (None, 0.3, 0.4, 0.5),
+) -> list[FrontierPoint]:
+    """Sweep turnover-reduction settings, scoring EVERY point in and out of sample.
+
+    Turnover is the binding constraint on a high-churn factor, so the obvious
+    move is to damp it: smooth the signal, and buffer leg membership so
+    symbols oscillating across the boundary are not churned. Both reliably
+    cut turnover.
+
+    The reason both halves are reported for every configuration, rather than
+    the best in-sample one being carried forward, is that this sweep is a
+    parameter search over ~20 settings. Picking the winner on the first half
+    and quoting its number is precisely how a backtest is overfitted. If a
+    configuration is real, it is profitable on data that had no say in
+    choosing it.
+    """
+    points: list[FrontierPoint] = []
+    for span in spans:
+        smoothed = smooth_signal(signal, span) if span > 1 else signal
+        for buffer in buffers:
+            row: list[float] = []
+            for lo, hi in ((0, split), (split, signal.shape[0])):
+                returns, turns = long_short_returns(
+                    smoothed[lo:hi], forward[lo:hi], exit_quantile=buffer
+                )
+                keep = np.isfinite(returns)
+                returns, turns = returns[keep], turns[keep]
+                if returns.size == 0:
+                    row.extend([0.0, 0.0, 0.0])
+                    continue
+                gross = float(returns.mean() * 1e4)
+                turnover = float(turns.mean())
+                net = float((returns - turns * (cost_bps / 1e4)).mean() * 1e4)
+                row.extend([gross, turnover, net])
+            breakeven = row[0] / row[1] if row[1] > 0 else 0.0
+            points.append(
+                FrontierPoint(
+                    smoothing=span,
+                    buffer=buffer,
+                    is_gross_bps=row[0],
+                    is_turnover=row[1],
+                    is_net_bps=row[2],
+                    oos_gross_bps=row[3],
+                    oos_turnover=row[4],
+                    oos_net_bps=row[5],
+                    breakeven_bps=breakeven,
+                )
+            )
+    return points
+
+
+def format_frontier(points: list[FrontierPoint], cost_bps: float) -> str:
+    """Render the frontier, with the in-sample/holdout disagreement visible."""
+    lines = [
+        f"  turnover reduction frontier at {cost_bps:.0f}bps per unit turnover",
+        "  (a configuration is only real if the HOLDOUT column is positive)",
+        "",
+        f"  {'smooth':>7} {'buffer':>7} {'IS gross':>9} {'IS turn':>8} {'IS net':>8}"
+        f" | {'OOS gross':>10} {'OOS turn':>9} {'OOS net':>8}",
+    ]
+    for p in points:
+        tag = "none" if p.buffer is None else f"{p.buffer:.1f}"
+        lines.append(
+            f"  {p.smoothing:>7d} {tag:>7} {p.is_gross_bps:>9.3f} "
+            f"{p.is_turnover:>8.2f} {p.is_net_bps:>8.3f} | "
+            f"{p.oos_gross_bps:>10.3f} {p.oos_turnover:>9.2f} {p.oos_net_bps:>8.3f}"
+        )
+    is_winners = [p for p in points if p.is_net_bps > 0]
+    oos_winners = [p for p in points if p.oos_net_bps > 0]
+    lines.append("")
+    lines.append(
+        f"  {len(is_winners)}/{len(points)} configurations are profitable IN SAMPLE; "
+        f"{len(oos_winners)}/{len(points)} survive on the HOLDOUT."
+    )
+    if is_winners and not oos_winners:
+        lines.append(
+            "  NONE survives. The in-sample winners are a parameter search "
+            "fitting noise -- selecting the best of them would have produced a "
+            "profitable-looking strategy that loses money."
+        )
     return "\n".join(lines)
 
 

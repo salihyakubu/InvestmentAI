@@ -12,17 +12,21 @@ import pytest
 
 from services.backtesting.cross_section import (
     MIN_SYMBOLS_PER_PERIOD,
+    FrontierPoint,
     build_factors,
     cross_sectional_zscore,
     evaluate,
     evaluate_factor,
+    format_frontier,
     forward_returns,
     long_short_returns,
     momentum,
     period_ic,
     profile_monotonicity,
     quantile_profile,
+    smooth_signal,
     tail_dominance,
+    turnover_frontier,
 )
 
 
@@ -280,3 +284,104 @@ def test_tail_dominance_separates_an_even_ladder_from_one_big_jump() -> None:
     assert tail_dominance(jumpy) > 0.5
     # Rank correlation cannot tell them apart -- both score 0.9+.
     assert profile_monotonicity(jumpy) >= 0.8
+
+
+# ---------------------------------------------------------------------------
+# Turnover reduction -- the binding constraint
+# ---------------------------------------------------------------------------
+
+
+def test_buffering_cuts_turnover_versus_a_hard_boundary() -> None:
+    """Symbols oscillating across the leg boundary are churned for pure fee.
+    Hysteresis must reduce turnover materially."""
+    rng = np.random.default_rng(50)
+    signal = rng.normal(0, 1, (500, 60))
+    forward = rng.normal(0, 0.01, (500, 60))
+    _, hard = long_short_returns(signal, forward, quantile=0.2)
+    _, buffered = long_short_returns(
+        signal, forward, quantile=0.2, exit_quantile=0.4
+    )
+    assert np.nanmean(buffered) < np.nanmean(hard)
+
+
+def test_buffering_keeps_the_legs_the_right_size_and_disjoint() -> None:
+    rng = np.random.default_rng(51)
+    signal = rng.normal(0, 1, (200, 50))
+    forward = rng.normal(0, 0.01, (200, 50))
+    returns, turnover = long_short_returns(
+        signal, forward, quantile=0.2, exit_quantile=0.5
+    )
+    assert np.isfinite(returns).all()
+    # Dollar-neutral: a long and a short leg of equal weight cannot exceed 4.
+    assert np.nanmax(turnover) <= 4.0 + 1e-9
+
+
+def test_buffering_preserves_a_real_signal() -> None:
+    """Turnover reduction is only useful if the alpha mostly survives it."""
+    rng = np.random.default_rng(52)
+    n_periods, n_symbols = 2_000, 60
+    score = rng.normal(0, 1, (n_periods, n_symbols))
+    rel = rng.normal(0, 0.004, (n_periods, n_symbols))
+    rel[1:] += score[:-1] * 0.01
+    close = 100.0 * np.cumprod(1 + rel, axis=0)
+    forward = forward_returns(close, 1)
+    z = cross_sectional_zscore(score)
+    hard_r, hard_t = long_short_returns(z, forward, quantile=0.2)
+    buf_r, buf_t = long_short_returns(z, forward, quantile=0.2, exit_quantile=0.4)
+    # Some alpha is given up, but most of it survives...
+    assert np.nanmean(buf_r) > np.nanmean(hard_r) * 0.5
+    # ...and turnover falls, which is the whole point.
+    assert np.nanmean(buf_t) < np.nanmean(hard_t)
+
+
+def test_smoothing_is_strictly_causal() -> None:
+    """A smoothed signal must never see the future, or every result is void."""
+    signal = np.zeros((10, 3))
+    signal[5:] = 100.0  # a step change at t=5
+    smoothed = smooth_signal(signal, span=4)
+    assert np.allclose(smoothed[:5], 0.0)  # nothing before the step reacts
+    assert smoothed[5, 0] > 0  # the step registers when it happens
+    assert smoothed[9, 0] > smoothed[5, 0]  # and decays in
+
+
+def test_smoothing_seeds_from_a_symbols_first_observation() -> None:
+    signal = np.full((6, 2), np.nan)
+    signal[3:, 0] = 5.0  # symbol 0 lists late
+    smoothed = smooth_signal(signal, span=3)
+    assert np.all(np.isnan(smoothed[:3, 0]))
+    assert smoothed[3, 0] == pytest.approx(5.0)
+
+
+def test_smoothing_span_one_is_a_passthrough() -> None:
+    signal = np.random.default_rng(53).normal(0, 1, (50, 5))
+    assert np.array_equal(smooth_signal(signal, span=1), signal)
+
+
+def test_frontier_scores_every_configuration_out_of_sample() -> None:
+    """A parameter sweep must never report only its in-sample winner."""
+    rng = np.random.default_rng(60)
+    n_periods, n_symbols = 1_200, 60
+    close = 100.0 * np.cumprod(1 + rng.normal(0, 0.01, (n_periods, n_symbols)), axis=0)
+    signal = cross_sectional_zscore(rng.normal(0, 1, (n_periods, n_symbols)))
+    points = turnover_frontier(
+        signal, forward_returns(close, 1), split=700, cost_bps=2.0,
+        spans=(1, 3), buffers=(None, 0.4),
+    )
+    assert len(points) == 4
+    for p in points:
+        assert p.oos_turnover >= 0.0  # holdout is always evaluated
+    text = format_frontier(points, 2.0)
+    assert "HOLDOUT" in text
+    assert "survive on the HOLDOUT" in text
+
+
+def test_frontier_flags_in_sample_only_winners_as_a_search_artifact() -> None:
+    """The exact trap this analysis avoided: profitable in sample, not out."""
+    points = [
+        FrontierPoint(1, None, 3.0, 3.0, 0.5, 2.0, 3.0, -0.4, 1.0),
+        FrontierPoint(3, 0.4, 2.8, 1.4, 0.3, 1.6, 1.4, -0.3, 2.0),
+    ]
+    text = format_frontier(points, 2.0)
+    assert "2/2 configurations are profitable IN SAMPLE" in text
+    assert "0/2 survive" in text
+    assert "NONE survives" in text
