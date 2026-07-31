@@ -1004,3 +1004,33 @@ to 30 days, annualised and comparable, plus blends. FIFTH honest null.
 Nothing at any level passes the edge gate on available data. The binding
 constraints by band: costs at intraday, statistics (n and survivorship) at
 multi-week.
+
+## PRE-REGISTRATION (2026-07-31, before the survivorship-free data was fetched)
+PR #62 rejected "fade high funding" and observed that the REVERSED direction
+looked spectacular (+18.7 bps per 8h rebalance on the holdout) but refused to
+claim it because the universe was survivorship-biased. Discovery: Binance's
+public archive (data.binance.vision) retains DELISTED contracts -- 788 USDT
+perpetuals ever vs 726 trading today -- with full funding and kline history.
+The survivorship hole can therefore be closed for free.
+
+Registered BEFORE evaluation, so nothing below can be adjusted after seeing
+results:
+
+  H1 (primary): on the survivorship-FREE universe (all contracts ever listed,
+      including delisted), the factor +funding_carry_24h (HIGH funding
+      predicts relative OUTPERFORMANCE -- the reverse of the PR #62 prior)
+      evaluated at a 24h horizon on an 8h grid, 2 bps cost, 40% chronological
+      holdout, judged by the standard gate (|IC| > 0.01, |t| > 3, net > 0,
+      DSR > 0.95, monotone, tail < 0.5) on BOTH halves.
+  H2 (the survivorship measurement): the same factor evaluated on the
+      survivors-only subset of the SAME period must show a MORE positive
+      IC than on the full universe. The difference IS the survivorship bias,
+      measured directly.
+  PREDICTION, stated now: if PR #62's reversal was a survivorship artifact,
+      H1 fails (effect attenuates toward zero when the delisted losers are
+      restored) and H2 shows a material gap. If H1 passes in full, the effect
+      is real and was hiding behind the wrong prior.
+  Funding rates are normalised to per-8h equivalents (the archive reveals
+      some contracts fund every 4h; per-stamp rates are not comparable
+      without this).
+  Everything else in the run is EXPLORATORY and will be labelled as such.
