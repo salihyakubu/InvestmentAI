@@ -949,3 +949,58 @@ RUNNING TALLY OF HONEST NULLS: live 5-min signal (no edge), cross-sectional
 reversal (real, uneconomic), turnover damping (in-sample only), funding
 (hypothesis rejected). Four negative results, each costing hours rather than
 months. Nothing tradeable has been found. That is the state of the evidence.
+
+## HORIZON LADDER (2026-07-31) — every level measured; none passes
+Operator direction: the platform should mix ALL levels, not live in one band.
+Correct critique -- every prior pass sat inside 1h-48h, exactly where cost per
+rebalance dominates. Closed by building the full ladder:
+
+  hourly cache  2y x 117 symbols: 1h, 4h, 12h, 24h, 72h
+  daily cache   5y x  53 symbols: 1d, 3d, 7d, 14d, 30d   (fetched fresh)
+  + a signal-level multi-factor blend per band, holdout-only
+
+TWO COMPARABILITY FIXES REQUIRED FIRST, both of which would otherwise have
+manufactured results out of arithmetic:
+  - bps-per-rebalance is meaningless across horizons (2.7bps hourly and
+    2.7bps weekly differ by three orders of magnitude annually). Everything
+    is now annualised via an explicit bars_per_year parameter.
+  - the harness hardcoded hours-per-year; on daily bars that overstates every
+    Sharpe by sqrt(24). Now a required, tested parameter.
+  - rungs with < 60 non-overlapping rebalances are marked UNJUDGED (a 30-day
+    hold over 5y is ~24 observations; no statistic on 24 points may reach a
+    capital decision).
+
+RESULT: 60 (factor, horizon) cells scored on both halves. 5 rungs were
+positive in both halves with a stable IC sign -- and EVERY ONE fails the full
+guard battery, in the most instructive way possible:
+
+  rung                    OOS ann%   OOS IC      t    tail   DSR
+  momentum_168h @ 12h      +151.8   -0.0017   -0.23   0.50  0.79
+  momentum_168h @ 24h      +125.0   -0.0001   -0.01   0.78  0.58
+  momentum_24h  @  1d       +65.9   -0.0154   -1.71   0.80  0.36
+  volume_surge  @  3d       +60.1   -0.0054   -0.48   0.62  0.39
+  reversal_1h   @  7d        +5.6   +0.0021   +0.10   1.84  0.03
+
+Read that table carefully: triple-digit annual returns sitting next to ZERO
+or NEGATIVE information coefficients. Money without ranking skill means the
+P&L comes from a handful of extreme names, not from the factor -- confirmed
+by tail dominance 0.50-1.84. On a survivorship-biased universe (the daily
+cache DOUBLY so: 5 years of history is only possessed by 5-year survivors),
+this is precisely the shape of fake edge the guards were built to refuse. A
+plain equity-curve backtest would have showed +65.9%/yr at Sharpe 1.2 and
+called it a strategy.
+
+BLEND: mean pairwise correlation of the six factors is ~0.0 in both bands --
+genuinely diversifiable -- but there is nothing to diversify: blend Sharpe
+0.26/0.49 vs best component 1.52/1.22, DSR 0.03/0.08. "Blend does NOT beat
+its best component" in both bands.
+
+NAMING CAVEAT recorded: factor lookbacks are in BARS, so on the daily cache
+"momentum_24h" is 24-DAY momentum, "reversal_1h" is 1-day reversal. The
+labels lie on daily bars; the arithmetic does not.
+
+VERDICT: the gap is closed -- the platform measures every level from 1 hour
+to 30 days, annualised and comparable, plus blends. FIFTH honest null.
+Nothing at any level passes the edge gate on available data. The binding
+constraints by band: costs at intraday, statistics (n and survivorship) at
+multi-week.
