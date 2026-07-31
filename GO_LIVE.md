@@ -889,3 +889,63 @@ edge, so the study was not faked -- it was scoped out and said so.
 TOOLING: turnover_frontier() + format_frontier() in cross_section.py report
 in-sample and holdout for every configuration by construction, and print an
 explicit warning when in-sample winners have no holdout survivors. 529 tests.
+
+## FUNDING-RATE RESEARCH (2026-07-31) — declared hypothesis REJECTED
+Fourth research pass, and the first using an input that is not in the price
+series. Built a 117-perpetual cache (13,149 hourly bars x 1.5 years) with
+matched 8-hourly funding history, forward-filled strictly causally onto the
+hourly grid.
+
+PRE-DECLARED HYPOTHESIS (written into the module before any evaluation):
+persistently positive funding marks crowded long positioning, and crowded
+positioning underperforms -- so the signal is NEGATED funding. The direction
+was declared up front precisely so it could not be chosen after the fact.
+
+RESULT -- rejected, consistently:
+              factor            IS t-stat   OOS t-stat   sign
+  funding_carry_24h                 -1.83        -3.24   consistently NEGATIVE
+  funding_carry_72h                 -1.74        -3.53   consistently NEGATIVE
+  funding_level                     -1.31        -3.34   consistently NEGATIVE
+  funding_zscore_7d                 +0.63        -0.21   flips -> noise
+Under the declared sign convention a negative IC means the hypothesis is
+backwards: high-funding contracts OUTPERFORMED in this sample. No funding
+factor passed the edge gate on either half.
+
+CONTROL -- funding lost to the price factors it was meant to beat:
+  in-sample  best |t|: funding 1.8  vs price 6.5
+  holdout    best |t|: funding 3.5  vs price 5.8
+The new data source did not add information the price series lacked.
+
+THE STRUCTURAL CLAIM DID HOLD, and is worth keeping. Funding factors turn
+over 0.35-1.88 per rebalance against reversal's 2.94-2.98 -- up to 8x lower,
+exactly as an 8-hourly input should. The architecture reasoning was right;
+there was simply no alpha to carry through it.
+
+WHAT IS DELIBERATELY NOT CLAIMED. Reversing the sign would turn the holdout
+into roughly +18.7 bps per 8h rebalance at 0.35 turnover -- a breakeven near
+54 bps, which would be a spectacular strategy. It is not claimed, for three
+reasons, any one of which is sufficient:
+  1. SURVIVORSHIP. The universe is contracts listed today. Assets that
+     sustained high funding AND survived are winners by construction, and
+     69.5% price coverage means many contracts listed mid-sample. "High
+     funding predicts outperformance" is the exact result this bias
+     manufactures.
+  2. INSTABILITY. Gross magnitude differs ~5x between halves (-3.68 vs
+     -18.02 bps for carry_24h). A real effect of this size should not.
+  3. IT WOULD BE THE SEARCH I FORBADE. The sign was pre-declared in the
+     module docstring specifically so it could not be flipped after seeing
+     the data. Flipping it now doubles the search and halves the meaning.
+The reversed direction is a NEW hypothesis. Testing it honestly requires a
+survivorship-free universe with point-in-time listings including delisted
+contracts -- a data problem, not a modelling one.
+
+BUG CAUGHT BY THE TESTS: trailing_std returns ~6.5e-19 rather than 0 for a
+constant series, which passed a `std > 0` guard and produced order-1 garbage
+z-scores. Because those scores feed a cross-sectional RANKING, one
+numerically degenerate contract could have landed at the top or bottom of the
+book on pure float residue. Guarded with an explicit _MIN_STD floor.
+
+RUNNING TALLY OF HONEST NULLS: live 5-min signal (no edge), cross-sectional
+reversal (real, uneconomic), turnover damping (in-sample only), funding
+(hypothesis rejected). Four negative results, each costing hours rather than
+months. Nothing tradeable has been found. That is the state of the evidence.
