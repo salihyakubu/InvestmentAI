@@ -538,6 +538,11 @@ class RiskManagerService:
             except Exception:
                 logger.exception("Account sync iteration failed")
 
+    @property
+    def positions(self) -> dict[str, float]:
+        """Current position dollar values (symbol -> value). Copy, not live."""
+        return dict(self._positions)
+
     def update_returns(self, symbol: str, returns: list[float]) -> None:
         """Set the historical return series for a symbol."""
         self._returns_history[symbol] = returns
@@ -586,6 +591,47 @@ class RiskManagerService:
             portfolio_value=1.0,
         )
         return cvar_dollar
+
+    def extended_metrics(self) -> dict[str, float | None]:
+        """Tail and dispersion metrics beyond the 95% figures in RiskReport.
+
+        Used by the risk-metrics writer to persist what the dashboard renders.
+        Every value is None -- never zero -- when the return history cannot
+        support it: a fabricated 0.00 VaR reads as "no risk", which is the
+        exact lie the dashboard used to tell.
+        """
+        rets = self._aggregate_portfolio_returns()
+        if rets.size < 2:
+            return {
+                "var_99": None,
+                "cvar_99": None,
+                "volatility": None,
+                "correlation_max": None,
+            }
+        equity = float(self._equity) if float(self._equity) > 0 else 1.0
+        var_99 = self.var_calculator.historical_var(
+            rets, confidence=0.99, portfolio_value=1.0
+        )
+        cvar_99 = self.var_calculator.cvar(rets, confidence=0.99, portfolio_value=1.0)
+        volatility = float(np.std(rets, ddof=1))
+
+        correlation_max: float | None = None
+        returns_dict = {
+            s: np.array(r) for s, r in self._returns_history.items() if len(r) >= 2
+        }
+        if len(returns_dict) >= 2:
+            matrix = self.correlation_monitor.compute_correlation_matrix(returns_dict)
+            arr = np.asarray(matrix, dtype=float)
+            off_diagonal = arr[~np.eye(arr.shape[0], dtype=bool)]
+            if off_diagonal.size:
+                correlation_max = float(np.nanmax(np.abs(off_diagonal)))
+
+        return {
+            "var_99": float(var_99 * equity),
+            "cvar_99": float(cvar_99 * equity),
+            "volatility": volatility,
+            "correlation_max": correlation_max,
+        }
 
     def _aggregate_portfolio_returns(self) -> np.ndarray:
         """Compute weighted portfolio returns from per-asset returns."""

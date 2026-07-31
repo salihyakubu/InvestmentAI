@@ -82,14 +82,20 @@ export interface PortfolioSummary {
 }
 
 export interface RiskMetrics {
-  var_95: number;
-  var_99: number;
-  cvar_95: number;
-  cvar_99: number;
-  max_drawdown: number;
-  current_drawdown: number;
-  beta: number;
-  volatility: number;
+  /**
+   * Undefined means the risk engine has not reported the metric -- render it
+   * as unavailable, never as 0 (a 0.00 VaR reads as "no risk"). Beta was
+   * removed entirely: nothing computes it, so nothing may display it.
+   */
+  var_95?: number;
+  var_99?: number;
+  cvar_95?: number;
+  cvar_99?: number;
+  max_drawdown?: number;
+  current_drawdown?: number;
+  volatility?: number;
+  correlation_max?: number;
+  concentration_max?: number;
   correlation_matrix: Record<string, Record<string, number>>;
   circuit_breaker_status: 'CLOSED' | 'OPEN' | 'HALF_OPEN' | 'UNKNOWN';
   circuit_breaker_reason?: string;
