@@ -1108,3 +1108,35 @@ Design properties, each pinned by a test:
   - Funding normalised to per-8h equivalents live, same as the study.
 The watch has no opinion; it counts. Nothing in it places orders or touches
 account state.
+
+## RISK METRICS WRITER (2026-07-31) — breaker visible, vacuous rules re-armed
+The circuit breaker always worked; nothing reported it. risk_metrics had
+readers and NO writer (0 rows ever), so the dashboard showed a false green
+until PR #56 made it an honest grey UNKNOWN. And the quieter, worse defect:
+update_returns()/update_position() had no callers, so the risk engine's
+return history was permanently empty -- VaR/CVaR computed to 0.0
+STRUCTURALLY, and MaxVaRRule + MaxCorrelationRule approved every order
+without checking anything.
+
+Built (PR #66): RiskMetricsWriter in the worker. Every 120s (first write
+immediate) it: syncs the engine's position map to the broker's book
+(including removing closed positions, so stale exposure cannot inflate VaR
+forever); feeds ~200 1m returns per held symbol from stored bars; runs
+check_portfolio_risk() + new RiskManagerService.extended_metrics() (VaR/CVaR
+99%, volatility, correlation max); and inserts a risk_metrics row with the
+breaker state string and failed-rule names in details JSONB.
+
+THE TEST THAT MATTERS: with a tiny VaR cap, MaxVaRRule passes VACUOUSLY
+before the first writer cycle (VaR 0.0) and REJECTS after it. The pre-trade
+guards are armed again, and that property is pinned in CI
+(test_the_vacuous_rules_are_re_armed).
+
+HONESTY CARRIED THROUGH: an unsupported metric is NULL end to end -- writer
+writes NULL, API serves null, UI renders a grey em-dash. Beta has NO
+producer, so the tile was DELETED rather than shipped as 0.00, and the
+column stays NULL by explicit comment. The breaker card now prefers the
+engine's own state string (closed/open/half_open), keeps UNKNOWN for
+absence, and shows failed rule names as the reason line.
+
+No migration needed: the table has existed since 0001; it was simply never
+written.

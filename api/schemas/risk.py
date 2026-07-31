@@ -17,9 +17,16 @@ class RiskMetricsSchema(BaseModel):
     var_95: float | None = None
     var_99: float | None = None
     cvar_95: float | None = None
+    cvar_99: float | None = None
     max_drawdown: float | None = None
     current_drawdown: float | None = None
+    volatility: float | None = None
+    correlation_max: float | None = None
+    concentration_max: float | None = None
+    daily_pnl_pct: float | None = None
     circuit_breaker_active: bool | None = None
+    circuit_breaker_state: str | None = None
+    circuit_breaker_reason: str | None = None
     reported: bool = False
 
 

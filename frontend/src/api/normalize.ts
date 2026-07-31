@@ -133,22 +133,33 @@ export function normalizeOrder(raw: Raw): Order {
 
 export function normalizeRiskMetrics(raw: Raw): RiskMetrics {
   return {
-    var_95: num(raw.var_95),
-    var_99: num(raw.var_99),
-    cvar_95: num(raw.cvar_95),
-    cvar_99: num(raw.cvar_99),
-    max_drawdown: num(raw.max_drawdown),
-    current_drawdown: num(raw.current_drawdown),
-    beta: num(raw.beta),
-    volatility: num(raw.volatility),
+    // numOpt: an unreported risk metric must stay absent, not become 0.00.
+    var_95: numOpt(raw.var_95),
+    var_99: numOpt(raw.var_99),
+    cvar_95: numOpt(raw.cvar_95),
+    cvar_99: numOpt(raw.cvar_99),
+    max_drawdown: numOpt(raw.max_drawdown),
+    current_drawdown: numOpt(raw.current_drawdown),
+    volatility: numOpt(raw.volatility),
+    correlation_max: numOpt(raw.correlation_max),
+    concentration_max: numOpt(raw.concentration_max),
     correlation_matrix:
       (raw.correlation_matrix as RiskMetrics['correlation_matrix']) ?? {},
+    // Prefer the engine's own state string (closed/open/half_open); fall
+    // back to the boolean; absent stays UNKNOWN.
     circuit_breaker_status:
-      raw.reported === false || raw.circuit_breaker_active == null
+      raw.reported === false
         ? 'UNKNOWN'
-        : raw.circuit_breaker_active
-          ? 'OPEN'
-          : 'CLOSED',
+        : raw.circuit_breaker_state
+          ? (String(raw.circuit_breaker_state).toUpperCase() as
+              | 'CLOSED'
+              | 'OPEN'
+              | 'HALF_OPEN')
+          : raw.circuit_breaker_active == null
+            ? 'UNKNOWN'
+            : raw.circuit_breaker_active
+              ? 'OPEN'
+              : 'CLOSED',
     circuit_breaker_reason:
       raw.circuit_breaker_reason == null
         ? undefined

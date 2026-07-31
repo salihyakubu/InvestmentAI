@@ -425,6 +425,23 @@ async def _run() -> None:
         )
         logger.info("worker.snapshot_writer_started")
 
+    # Risk state lives in the worker; the API reads the risk_metrics table.
+    # Without this writer that table is empty forever and the dashboard's
+    # breaker card can only say UNKNOWN -- and, worse, the risk engine's
+    # return history is never fed, so MaxVaRRule/MaxCorrelationRule pass
+    # vacuously. The writer feeds inputs each cycle, then persists.
+    risk_metrics_task: asyncio.Task[None] | None = None
+    if risk is not None and execution is not None and execution.brokers:
+        from services.persistence.risk_metrics_writer import RiskMetricsWriter
+
+        risk_metrics_writer = RiskMetricsWriter(
+            session_factory=get_async_session_factory(),
+            risk_service=risk,
+            positions_provider=_account_broker(execution.brokers).get_positions,
+        )
+        risk_metrics_task = asyncio.create_task(risk_metrics_writer.run())
+        logger.info("worker.risk_metrics_writer_started")
+
     # Liveness endpoint for platform healthchecks (no-op when PORT is unset).
     health_task = _start_health_server()
 
@@ -437,6 +454,8 @@ async def _run() -> None:
         health_task.cancel()
     if snapshot_task is not None:
         snapshot_task.cancel()
+    if risk_metrics_task is not None:
+        risk_metrics_task.cancel()
     if account_sync_task is not None:
         account_sync_task.cancel()
     stop_tasks = []

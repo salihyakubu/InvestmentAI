@@ -39,13 +39,24 @@ async def get_latest_risk_metrics(
         # zeroed, all-clear snapshot the UI would render as measured safety.
         return RiskMetricsSchema(reported=False)
 
+    details = row.details or {}
+    failed_rules = details.get("rules_failed") or []
     return RiskMetricsSchema(
         var_95=row.var_95,
         var_99=row.var_99,
         cvar_95=row.cvar_95,
+        cvar_99=row.cvar_99,
         max_drawdown=row.max_drawdown,
         current_drawdown=row.current_drawdown,
+        volatility=details.get("volatility"),
+        correlation_max=row.correlation_max,
+        concentration_max=row.concentration_max,
+        daily_pnl_pct=details.get("daily_pnl_pct"),
         circuit_breaker_active=row.circuit_breaker_active,
+        circuit_breaker_state=details.get("circuit_breaker_state"),
+        circuit_breaker_reason=(
+            f"failed rules: {', '.join(failed_rules)}" if failed_rules else None
+        ),
         reported=True,
     )
 
