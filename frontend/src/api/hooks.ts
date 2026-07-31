@@ -67,6 +67,15 @@ export function useEquityCurve(days = 30) {
   });
 }
 
+// Research: walk-forward adjudication record (read-only)
+export function useFundingWatch() {
+  return useQuery<import('../components/ml/ResearchWatch').FundingWatch>({
+    queryKey: ['research', 'funding-watch'],
+    queryFn: () => apiClient.get('/research/funding-watch').then((r) => r.data),
+    refetchInterval: 300_000, // ICs resolve every 8h; 5min is plenty
+  });
+}
+
 // Orders
 export function useOrders(status?: string) {
   return useQuery<Order[]>({

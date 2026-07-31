@@ -24,6 +24,7 @@ from api.routers import (
     portfolio,
     positions,
     predictions,
+    research,
     risk,
 )
 from api.websockets.streams import router as ws_router
@@ -129,6 +130,7 @@ app.include_router(models.router, prefix=API_V1, tags=["models"])
 app.include_router(config_router.router, prefix=API_V1, tags=["config"])
 app.include_router(audit.router, prefix=API_V1, tags=["audit"])
 app.include_router(backtest.router, prefix=API_V1, tags=["backtest"])
+app.include_router(research.router, prefix=API_V1, tags=["research"])
 app.include_router(ws_router, prefix=API_V1, tags=["websockets"])
 
 

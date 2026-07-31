@@ -1083,3 +1083,28 @@ SIXTH consecutive honest verdict. The evidence tally: no tradeable edge
 found anywhere; one real-but-uneconomic factor (reversal); one measured
 near-zero bias (survivorship on funding long/short); one regime-dependent
 factor identified and parked for walk-forward adjudication.
+
+## WALK-FORWARD WATCH LIVE (2026-07-31) — the adjudicator is now a platform component
+The regime hypothesis parked in PR #64 needed a judge that cannot be leaned
+on. Built (PR #65): FundingWatchService + factor_watch table (migration
+0008) + /api/v1/research/funding-watch + a "Walk-Forward Watch" card on the
+ML Models page.
+
+Design properties, each pinned by a test:
+  - POINT-IN-TIME BY CONSTRUCTION: each cycle observes whatever perpetuals
+    are TRADING at that moment; a stamp's IC is computed once, when its 24h
+    forward window closes, and INSERTED IMMUTABLY. Recomputing history from
+    a later listing set would quietly reintroduce survivorship bias into the
+    adjudication record itself -- the test plants a delisting and asserts
+    the stored rows do not move.
+  - CAUSAL: the factor at stamp t uses funding up to t only (a planted
+    future-only relationship scores ~0); open windows are never scored.
+  - REGISTRATION BOUNDARY ENFORCED IN CODE: stamps before 2026-07-01 (data
+    the study saw) are refused at insert time. The registered bar -- FOUR
+    consecutive positive calendar quarters on unseen data -- is restated in
+    the API response, and the UI card is deliberately undramatic: purple,
+    "registered hypothesis -- not a strategy", verdict text verbatim from
+    the API.
+  - Funding normalised to per-8h equivalents live, same as the study.
+The watch has no opinion; it counts. Nothing in it places orders or touches
+account state.
