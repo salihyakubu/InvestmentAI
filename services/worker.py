@@ -193,6 +193,16 @@ async def _build_services(
         event_bus=event_bus, settings=settings, execution_service_ref=execution,
     )
 
+    # -- Walk-forward research watch (registered funding-regime hypothesis) --
+    if settings.funding_watch_enabled:
+        from services.research.funding_watch import FundingWatchService
+
+        services_extra_funding_watch = FundingWatchService(
+            session_factory=session_factory
+        )
+    else:
+        services_extra_funding_watch = None
+
     # -- Continuous Learning --
     from services.continuous_learning.drift_detector import DataDriftDetector
     from services.continuous_learning.evaluator import ModelEvaluator
@@ -272,7 +282,7 @@ async def _build_services(
         event_bus=event_bus, session_factory=session_factory
     )
 
-    return [
+    services = [
         data_ingestion,
         aux_market,
         feature_engineering,
@@ -286,6 +296,9 @@ async def _build_services(
         order_persistence,
         prediction_persistence,
     ]
+    if settings.funding_watch_enabled and services_extra_funding_watch is not None:
+        services.append(services_extra_funding_watch)
+    return services
 
 
 def _account_broker(brokers: dict[str, Any]) -> Any:

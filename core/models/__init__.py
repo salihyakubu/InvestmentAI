@@ -9,6 +9,7 @@ from core.models.orders import Fill, Order
 from core.models.portfolio import PortfolioSnapshot
 from core.models.positions import Position
 from core.models.predictions import Prediction
+from core.models.research import FactorWatchObservation
 from core.models.risk import RiskMetric
 from core.models.users import APIKey, User
 
@@ -24,6 +25,7 @@ __all__ = [
     "Fill",
     "Position",
     "Prediction",
+    "FactorWatchObservation",
     "PortfolioSnapshot",
     "RiskMetric",
     "ModelMetadata",

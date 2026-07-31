@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     circuit_breaker_loss_pct: float = 0.07
     circuit_breaker_cooldown_minutes: int = 30
 
+    # Research telemetry: live walk-forward adjudication of the registered
+    # funding-regime hypothesis (GO_LIVE.md 2026-07-31). Read-only research;
+    # never trades.
+    funding_watch_enabled: bool = True
+
     # ML
     model_artifact_path: str = "model_artifacts"
     retrain_interval_hours: int = 168
