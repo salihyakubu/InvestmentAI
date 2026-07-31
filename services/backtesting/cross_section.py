@@ -47,8 +47,12 @@ from services.backtesting.live_signal import deflated_sharpe
 COST_LADDER_BPS = (0.0, 2.0, 5.0, 10.0, 20.0)
 DEFAULT_COST_BPS = 10.0
 
-# Hours per year, for annualising an hourly-period Sharpe.
-_HOURS_PER_YEAR = 365.25 * 24
+# Bars per year for each supported bar size. Passing the wrong one silently
+# rescales every annualised figure -- using the hourly constant on daily bars
+# would overstate Sharpe by sqrt(24) and invent a strategy out of arithmetic.
+HOURS_PER_YEAR = 365.25 * 24
+DAYS_PER_YEAR = 365.25
+_HOURS_PER_YEAR = HOURS_PER_YEAR  # backwards-compatible alias
 
 # A cross-section thinner than this is not a cross-section.
 MIN_SYMBOLS_PER_PERIOD = 20
@@ -74,6 +78,8 @@ class FactorResult:
     breakeven_bps: float
     monotonicity: float
     tail_dominance: float
+    rebalances_per_year: float
+    annual_net_pct: float
     sharpe: float
     deflated_sharpe: float
     has_edge: bool
@@ -359,6 +365,7 @@ def evaluate_factor(
     horizon: int,
     cost_bps: float,
     n_trials: int,
+    bars_per_year: float = HOURS_PER_YEAR,
 ) -> FactorResult:
     """Score one factor on IC, net-of-cost spread and a deflated Sharpe."""
     # Subsample to non-overlapping rebalances FIRST, then build the
@@ -388,7 +395,8 @@ def evaluate_factor(
     priced = gross - turn * (cost_bps / 1e4) if gross.size else np.array([])
     sd = float(priced.std(ddof=1)) if priced.size > 1 else 0.0
     per_period = float(priced.mean() / sd) if sd > 0 else 0.0
-    sharpe = per_period * np.sqrt(_HOURS_PER_YEAR / horizon) if sd > 0 else 0.0
+    periods_per_year = bars_per_year / horizon
+    sharpe = per_period * np.sqrt(periods_per_year) if sd > 0 else 0.0
     dsr = deflated_sharpe(per_period, priced.size, n_trials)
 
     # The single most decision-relevant number: the per-unit-turnover cost at
@@ -414,6 +422,11 @@ def evaluate_factor(
         and abs(mono) >= 0.8
         and tail < 0.5
     )
+    # Per-rebalance figures are NOT comparable across horizons: 2.7 bps every
+    # hour and 2.7 bps every week are three orders of magnitude apart in
+    # annual terms. Every cross-horizon comparison must use this field.
+    annual_net_pct = net_by_cost.get(cost_bps, 0.0) * periods_per_year / 100.0
+
     return FactorResult(
         name=name,
         periods=int(ics.size),
@@ -427,6 +440,8 @@ def evaluate_factor(
         breakeven_bps=float(breakeven),
         monotonicity=mono,
         tail_dominance=tail,
+        rebalances_per_year=float(periods_per_year),
+        annual_net_pct=float(annual_net_pct),
         sharpe=float(sharpe),
         deflated_sharpe=dsr,
         has_edge=has_edge,
@@ -439,6 +454,7 @@ def evaluate(
     horizon: int = 1,
     cost_bps: float = DEFAULT_COST_BPS,
     factors: dict[str, np.ndarray] | None = None,
+    bars_per_year: float = HOURS_PER_YEAR,
 ) -> CrossSectionReport:
     """Test the factor battery cross-sectionally. May well return NO EDGE."""
     signals = factors if factors is not None else build_factors(close, volume)
@@ -448,7 +464,9 @@ def evaluate(
     n_trials = max(1, len(signals))
 
     results = [
-        evaluate_factor(name, sig, forward, horizon, cost_bps, n_trials)
+        evaluate_factor(
+            name, sig, forward, horizon, cost_bps, n_trials, bars_per_year
+        )
         for name, sig in sorted(signals.items())
     ]
     results.sort(key=lambda r: abs(r.ic_t_stat), reverse=True)
@@ -508,14 +526,13 @@ def format_report(report: CrossSectionReport, cost_bps: float = DEFAULT_COST_BPS
     lines.append("")
     lines.append(
         f"  {'factor':<20} {'periods':>8} {'mean IC':>9} {'t-stat':>8} "
-        f"{'gross':>8} {'net':>8} {'turn':>6} {'breakeven':>10} {'mono':>6} {'tail':>6}"
+        f"{'gross':>8} {'net':>8} {'turn':>6} {'breakeven':>10} {'ann.net%':>9}"
     )
     for r in report.factors:
         lines.append(
             f"  {r.name:<20} {r.periods:>8} {r.mean_ic:>+9.4f} {r.ic_t_stat:>+8.2f} "
             f"{r.gross_bps:>+8.2f} {r.net_bps.get(cost_bps, 0.0):>+8.2f} "
-            f"{r.turnover:>6.2f} {r.breakeven_bps:>9.2f}bps {r.monotonicity:>+6.2f} "
-            f"{r.tail_dominance:>6.2f}"
+            f"{r.turnover:>6.2f} {r.breakeven_bps:>9.2f}bps {r.annual_net_pct:>+9.1f}"
         )
     lines.append("")
     if report.factors:
