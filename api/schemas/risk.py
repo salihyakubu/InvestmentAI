@@ -26,7 +26,11 @@ class RiskMetricsSchema(BaseModel):
     daily_pnl_pct: float | None = None
     circuit_breaker_active: bool | None = None
     circuit_breaker_state: str | None = None
+    # Reserved for WHY THE BREAKER TRIPPED. Pre-trade rule failures are a
+    # different fact and live in failing_rules -- mixing them once produced a
+    # card reading "all systems normal" and "failed rules" in the same breath.
     circuit_breaker_reason: str | None = None
+    failing_rules: list[str] = []
     reported: bool = False
 
 

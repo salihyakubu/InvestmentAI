@@ -117,10 +117,29 @@ export default function RiskDashboard({ metrics }: RiskDashboardProps) {
             Value-at-risk not reported yet
           </div>
         )}
-        <CircuitBreakerStatus
-          status={metrics.circuit_breaker_status}
-          reason={metrics.circuit_breaker_reason}
-        />
+        <div className="space-y-4">
+          <CircuitBreakerStatus
+            status={metrics.circuit_breaker_status}
+            reason={metrics.circuit_breaker_reason}
+          />
+          {metrics.failing_rules.length > 0 && (
+            <div className="card border border-amber-500/30">
+              <div className="flex items-center gap-2 mb-1">
+                <AlertTriangle className="w-4 h-4 text-amber-500" />
+                <span className="text-xs text-gray-500 uppercase tracking-wider">
+                  Pre-trade rules failing
+                </span>
+              </div>
+              <div className="text-sm font-mono text-amber-400">
+                {metrics.failing_rules.join(', ')}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                New orders breaching these limits are rejected. This does not
+                trip the circuit breaker or close existing positions.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -164,6 +164,9 @@ export function normalizeRiskMetrics(raw: Raw): RiskMetrics {
       raw.circuit_breaker_reason == null
         ? undefined
         : str(raw.circuit_breaker_reason),
+    failing_rules: Array.isArray(raw.failing_rules)
+      ? raw.failing_rules.map(String)
+      : [],
     position_concentration:
       (raw.position_concentration as RiskMetrics['position_concentration']) ??
       {},
