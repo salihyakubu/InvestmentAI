@@ -40,7 +40,14 @@ async def get_latest_risk_metrics(
         return RiskMetricsSchema(reported=False)
 
     details = row.details or {}
-    failed_rules = details.get("rules_failed") or []
+    failed_rules = [str(r) for r in (details.get("rules_failed") or [])]
+    state = details.get("circuit_breaker_state")
+    daily_pnl = details.get("daily_pnl_pct")
+    # The reason line belongs to the breaker alone: populated only when it is
+    # actually tripped, from what the engine recorded about the trip.
+    reason = None
+    if state and state != "closed" and daily_pnl is not None:
+        reason = f"daily P&L {daily_pnl * 100:+.2f}% breached the loss limit"
     return RiskMetricsSchema(
         var_95=row.var_95,
         var_99=row.var_99,
@@ -53,10 +60,9 @@ async def get_latest_risk_metrics(
         concentration_max=row.concentration_max,
         daily_pnl_pct=details.get("daily_pnl_pct"),
         circuit_breaker_active=row.circuit_breaker_active,
-        circuit_breaker_state=details.get("circuit_breaker_state"),
-        circuit_breaker_reason=(
-            f"failed rules: {', '.join(failed_rules)}" if failed_rules else None
-        ),
+        circuit_breaker_state=state,
+        circuit_breaker_reason=reason,
+        failing_rules=failed_rules,
         reported=True,
     )
 

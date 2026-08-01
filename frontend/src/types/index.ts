@@ -99,6 +99,8 @@ export interface RiskMetrics {
   correlation_matrix: Record<string, Record<string, number>>;
   circuit_breaker_status: 'CLOSED' | 'OPEN' | 'HALF_OPEN' | 'UNKNOWN';
   circuit_breaker_reason?: string;
+  /** Pre-trade rules currently failing -- a separate fact from the breaker. */
+  failing_rules: string[];
   position_concentration: Record<string, number>;
 }
 

@@ -105,9 +105,39 @@ def test_a_written_row_carries_the_engines_state(client) -> None:
     assert body["reported"] is True
     assert body["circuit_breaker_state"] == "open"
     assert body["circuit_breaker_active"] is True
-    assert "MaxDailyDrawdownRule" in body["circuit_breaker_reason"]
+    # Failing rules are their own field; the reason belongs to the breaker.
+    assert body["failing_rules"] == ["MaxDailyDrawdownRule"]
+    assert "breached the loss limit" in body["circuit_breaker_reason"]
     assert body["var_99"] == pytest.approx(2.34)
     assert body["cvar_99"] == pytest.approx(2.9)
     assert body["volatility"] == pytest.approx(0.0123)
     # beta stays null on the wire: nothing computes it.
     assert "beta" not in body or body.get("beta") is None
+
+
+def test_failing_rules_on_a_closed_breaker_do_not_forge_a_reason(client) -> None:
+    """The Aug 1 dashboard bug: a green CLOSED card must never carry a
+    'Reason: failed rules' line. Rule failures are reported separately."""
+    c, factory = client
+
+    async def _seed() -> None:
+        async with factory() as session:
+            session.add(
+                RiskMetric(
+                    time=datetime.now(UTC),
+                    var_95=0.01,
+                    circuit_breaker_active=False,
+                    details={
+                        "circuit_breaker_state": "closed",
+                        "daily_pnl_pct": -0.003,
+                        "rules_failed": ["MaxPositionSize", "MaxConcentration"],
+                    },
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_seed())
+    body = c.get("/api/v1/risk/metrics/latest").json()
+    assert body["circuit_breaker_state"] == "closed"
+    assert body["circuit_breaker_reason"] is None
+    assert body["failing_rules"] == ["MaxPositionSize", "MaxConcentration"]

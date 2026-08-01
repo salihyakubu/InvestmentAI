@@ -1140,3 +1140,36 @@ absence, and shows failed rule names as the reason line.
 
 No migration needed: the table has existed since 0001; it was simply never
 written.
+
+## FIRST CONVICTION TRADE (2026-08-01 18:49Z) + breaker-card fix (PR #67)
+MILESTONE, recorded with its honest frame: at 18:49Z the platform executed
+its FIRST conviction-path trade ever -- a rebal-tagged buy of 0.003835
+ETH/USDT (~$7), meaning the calibrated edge-margin gate (p_long - p_short >=
+0.10) was cleared for the first time in ~90k live predictions. Order-tag mix
+over the surrounding 36h: 130 explore vs 3 rebal. The optimizer sized ETH at
+the 10% cap; with the existing exploration lot the position is ~$10.05 =
+10.1% of equity, and effective_positions = 1.00 (the rest of the book is
+dust).
+
+NOT edge evidence: one gate-clearing signal is one observation. What it IS:
+proof the conviction path works end to end in production (signal -> gate ->
+optimizer -> risk -> execution -> persistence), which had never been
+exercised outside drills.
+
+THE RISK SYSTEM RESPONDED CORRECTLY AND VISIBLY: from 18:50Z every risk row
+shows MaxPositionSize (max_weight 0.101 > 0.10, price drift on a cap-sized
+position) and MaxConcentration (a one-position book) failing -- 66 rows and
+counting. These pre-trade rules now REJECT further ETH adds; they do not
+trim existing positions (by design -- caps gate entries, the liquidation
+manager handles exits).
+
+BUG FIXED (mine, introduced in PR #66): the API stuffed failing-rule names
+into circuit_breaker_reason, so the dashboard card read "CLOSED -- all
+systems operating normally" AND "Reason: failed rules: ..." in the same
+breath. Two unrelated facts on one line. Now: circuit_breaker_reason is
+reserved for WHY THE BREAKER TRIPPED (populated only when state != closed);
+failing rules are their own field end to end (schema failing_rules -> UI
+amber "Pre-trade rules failing" notice on the Risk page, with an explicit
+note that they gate new orders and neither trip the breaker nor close
+positions). Regression test pins the exact Aug 1 shape: closed breaker +
+failed rules -> reason must be None.
