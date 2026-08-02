@@ -1173,3 +1173,48 @@ amber "Pre-trade rules failing" notice on the Risk page, with an explicit
 note that they gate new orders and neither trip the breaker nor close
 positions). Regression test pins the exact Aug 1 shape: closed breaker +
 failed rules -> reason must be None.
+
+## PRE-REGISTRATION (2026-08-02, before any gauntlet run) — auditing the
+## "EDGE STABLE, Sharpe 1.17" daily-harness claim
+The claim under audit, recovered verbatim from the production backtest_jobs
+record: edge_harness on AAPL/MSFT/SPY, 2018-01-01..2025-12-31, 5 bps -> AAPL
+pass (Sharpe 1.03), SPY pass (Sharpe 1.20, hit 64.5%), MSFT fail; portfolio
++52.2% OOS, Sharpe 1.166, verdict "EDGE STABLE across 2/3 symbols". Graded
+2026-07-23, BEFORE the deflated Sharpe, tail guards, beta controls,
+survivorship measurement and pre-registration existed. Its OOS window (last
+30% of bars, ~2023-07..2025-12) is a strong bull era, and its universe is
+three hand-picked mega-cap survivors.
+
+Registered now, unchangeable after results are seen:
+
+UNIVERSE (fixed): the original three plus 61 liquid US names/ETFs across
+sectors: AAPL MSFT SPY QQQ AMZN GOOGL META NVDA TSLA JPM BAC WFC GS XOM CVX
+COP JNJ PFE MRK UNH ABBV LLY PG KO PEP WMT COST HD MCD NKE DIS NFLX CRM ORCL
+ADBE INTC AMD QCOM CSCO IBM T VZ CMCSA BA CAT GE MMM HON UPS FDX LMT RTX DE
+F GM V MA PYPL AXP BRK-B IWM DIA XLF XLE GLD. Survivorship caveat: these are
+today's liquid names, i.e. survivors -> every pass statistic is an UPPER
+BOUND, stated in all outputs.
+
+LEGS (claim survives only if ALL pass):
+  R1 REPRODUCTION: identical 3-symbol config must reproduce the pass/fail
+     pattern (AAPL+SPY pass, MSFT fail); Sharpes within +/-0.15 (Yahoo data
+     revisions tolerated, pattern is not).
+  H1 BREADTH: over the fixed universe (2018-01-01..2025-12-31, 5 bps,
+     harness's own gate), pass fraction among judged symbols must be >=
+     0.60 -- the harness's OWN MIN_SYMBOL_PASS_FRAC, now applied to a
+     universe that was not chosen after the fact.
+  H2 BETA CONTROL: strategy OOS Sharpe must beat buy-and-hold Sharpe on the
+     SAME symbols over the SAME OOS periods for a MAJORITY of judged
+     symbols. If not, the "edge" is market beta wearing a model.
+  H3 UNSEEN ERA: OOS periods dated strictly AFTER 2025-12-31 (data the
+     original run never saw, ~7 months). Pooled equal-weight per-period net
+     return across the universe must be positive.
+  DSR: equal-weight portfolio per-period Sharpe over the broad universe,
+     deflated for n_trials = 24 (declared: Stage-2 feature/threshold/horizon
+     decisions plus symbol picks), must exceed 0.95.
+
+PREDICTION, stated now: R1 reproduces; H1 fails well below 0.60; H2 fails
+(SPY-era hit rates are beta); the claim is DEMOTED from "edge stable" to
+"selection + beta, honestly retired". If instead all five legs pass, the
+strategy graduates to a registered walk-forward watch before any capital
+discussion.
