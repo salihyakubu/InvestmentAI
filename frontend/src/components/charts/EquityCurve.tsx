@@ -1,7 +1,8 @@
 import {
   ResponsiveContainer,
-  AreaChart,
+  ComposedChart,
   Area,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -11,6 +12,12 @@ import { format } from 'date-fns';
 
 interface EquityCurveProps {
   data: { date: string; equity: number }[];
+  /**
+   * The do-nothing benchmark (equal-weight buy-and-hold since inception),
+   * sampled at the same snapshot times. Drawn as a dashed reference line so
+   * the account's decisions are always judged against doing nothing.
+   */
+  benchmark?: { time: string; benchmark_equity: number }[];
 }
 
 /**
@@ -46,11 +53,15 @@ export function makeEquityTickFormatter(valueSpan: number) {
   };
 }
 
-export default function EquityCurve({ data }: EquityCurveProps) {
-  const chartData = data.map((d) => ({
-    ...d,
-    ts: new Date(d.date).getTime(),
-  }));
+export default function EquityCurve({ data, benchmark }: EquityCurveProps) {
+  const benchmarkByTs = new Map(
+    (benchmark ?? []).map((b) => [new Date(b.time).getTime(), b.benchmark_equity]),
+  );
+  const chartData = data.map((d) => {
+    const ts = new Date(d.date).getTime();
+    return { ...d, ts, benchmark: benchmarkByTs.get(ts) };
+  });
+  const hasBenchmark = chartData.some((d) => d.benchmark !== undefined);
 
   const startEquity = chartData[0]?.equity ?? 0;
   const endEquity = chartData[chartData.length - 1]?.equity ?? 0;
@@ -87,7 +98,7 @@ export default function EquityCurve({ data }: EquityCurveProps) {
       <div className="card-header">Equity Curve</div>
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={chartData}>
+          <ComposedChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
             <XAxis
               dataKey="ts"
@@ -116,9 +127,9 @@ export default function EquityCurve({ data }: EquityCurveProps) {
               labelFormatter={(ts: number) =>
                 format(new Date(ts), 'MMM d, HH:mm')
               }
-              formatter={(value: number) => [
+              formatter={(value: number, name: string) => [
                 `$${value.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
-                'Equity',
+                name === 'benchmark' ? 'Do-nothing benchmark' : 'Equity',
               ]}
             />
             <defs>
@@ -142,7 +153,18 @@ export default function EquityCurve({ data }: EquityCurveProps) {
               fill="url(#equityGrad)"
               strokeWidth={2}
             />
-          </AreaChart>
+            {hasBenchmark && (
+              <Line
+                type="monotone"
+                dataKey="benchmark"
+                stroke="#64748b"
+                strokeDasharray="6 4"
+                strokeWidth={1.5}
+                dot={false}
+                connectNulls
+              />
+            )}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     </div>

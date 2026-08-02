@@ -236,3 +236,114 @@ def test_rollup_mean_not_last_value_decides_the_sign() -> None:
 
 def test_rollup_of_nothing_is_empty() -> None:
     assert quarterly_rollup([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-factor registry (registered 2026-08-02)
+# ---------------------------------------------------------------------------
+
+
+def test_registry_is_pinned_to_the_registration() -> None:
+    """Names, boundaries and history requirements are fixed by GO_LIVE.md.
+    Editing them after the fact is the move the registration forbids."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    by_name = {f.name: f for f in WATCHED_FACTORS}
+    assert set(by_name) == {
+        "funding_carry_24h_plus",
+        "reversal_8h_minus",
+        "momentum_72h_minus",
+        "low_vol_7d_minus",
+    }
+    assert by_name["funding_carry_24h_plus"].unseen_from == datetime(2026, 7, 1, tzinfo=UTC)
+    for name in ("reversal_8h_minus", "momentum_72h_minus", "low_vol_7d_minus"):
+        assert by_name[name].unseen_from == datetime(2026, 8, 2, tzinfo=UTC)
+    assert by_name["low_vol_7d_minus"].min_history == 22
+
+
+def test_reversal_signal_fades_the_last_move_causally() -> None:
+    """A contract that just jumped must score LOW (fade), and the signal at t
+    must depend only on closes up to t."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "reversal_8h_minus").build
+    close = np.full((10, 2), 100.0)
+    close[5, 0] = 110.0  # symbol 0 jumps at t=5
+    signal = build(close, np.zeros_like(close))
+    assert signal[5, 0] < signal[5, 1]  # the jumper is faded
+    assert np.allclose(signal[1:5, 0], signal[1:5, 1])  # nothing before t=5 reacts
+    assert np.all(np.isnan(signal[0]))  # no prior close -> no signal
+
+
+def test_momentum_fade_uses_the_9_stamp_lookback() -> None:
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "momentum_72h_minus").build
+    close = np.full((15, 2), 100.0)
+    close[:, 0] = np.linspace(100, 150, 15)  # steady riser
+    signal = build(close, np.zeros_like(close))
+    assert np.all(np.isnan(signal[:9]))
+    assert signal[12, 0] < signal[12, 1]  # the riser is faded
+
+
+def test_low_vol_prefers_the_quiet_contract() -> None:
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    rng = np.random.default_rng(30)
+    build = next(f for f in WATCHED_FACTORS if f.name == "low_vol_7d_minus").build
+    n = 40
+    close = np.empty((n, 2))
+    close[:, 0] = 100 * np.cumprod(1 + rng.normal(0, 0.05, n))  # wild
+    close[:, 1] = 100 * np.cumprod(1 + rng.normal(0, 0.001, n))  # quiet
+    signal = build(close, np.zeros_like(close))
+    assert signal[-1, 1] > signal[-1, 0]  # quiet scores higher
+
+
+@pytest.mark.asyncio
+async def test_each_factor_respects_its_own_unseen_boundary() -> None:
+    """Stamps in July are legitimate for the funding factor but SEEN data for
+    the three factors registered on Aug 2 -- one dataset, different verdicts."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    engine, factory = await _factory()
+
+    class _MultiStub(FundingWatchService):
+        def __init__(self, session_factory, dataset):
+            super().__init__(session_factory)
+            self._dataset = dataset
+
+        async def observe_once(self) -> int:  # type: ignore[override]
+            from services.research.funding_watch import compute_signal_ics
+
+            grid, close, funding = self._dataset
+            inserted = 0
+            async with self._session_factory() as session:
+                now = datetime.now(UTC)
+                for f in WATCHED_FACTORS:
+                    signal = f.build(close, funding)
+                    for stamp_ms, ic, n_symbols in compute_signal_ics(
+                        grid, close, signal, HORIZON_STAMPS, f.min_history
+                    ):
+                        when = datetime.fromtimestamp(stamp_ms / 1000, UTC)
+                        if when < f.unseen_from:
+                            continue
+                        session.add(
+                            FactorWatchObservation(
+                                time=when, factor=f.name,
+                                horizon_stamps=HORIZON_STAMPS, ic=ic,
+                                n_symbols=n_symbols, resolved_at=now,
+                            )
+                        )
+                        inserted += 1
+                await session.commit()
+            return inserted
+
+    # A July window: 40 stamps starting Jul 3 -- unseen for funding, seen
+    # for the Aug-2 registrations.
+    watch = _MultiStub(factory, _dataset(40, start=datetime(2026, 7, 3, tzinfo=UTC)))
+    await watch.observe_once()
+    async with factory() as session:
+        rows = (await session.execute(select(FactorWatchObservation))).scalars().all()
+    factors_present = {r.factor for r in rows}
+    assert factors_present == {"funding_carry_24h_plus"}
+    await engine.dispose()

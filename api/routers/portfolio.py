@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -220,6 +221,125 @@ async def get_snapshots(
         }
         for row in rows
     ]
+
+
+# The do-nothing benchmark (registered GO_LIVE.md 2026-08-02): equal weight
+# across these, bought once at inception and never touched. The platform's
+# own gauntlet showed buy-and-hold beating its models on 2/3 of symbols;
+# this puts that bar on the dashboard, where it can indict or absolve every
+# strategy live.
+BENCHMARK_SYMBOLS = ("BTC/USDT", "ETH/USDT", "SPY")
+BENCHMARK_INCEPTION = datetime(2026, 8, 2, tzinfo=UTC)
+
+
+@router.get(
+    "/benchmark",
+    summary="Do-nothing benchmark equity (equal-weight buy-and-hold)",
+)
+async def get_benchmark(
+    days: int = Query(default=30, ge=1, le=3650),
+    max_points: int = Query(default=750, ge=10, le=5000),
+    db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> list[dict[str, Any]]:
+    """Benchmark equity sampled at the portfolio's own snapshot times.
+
+    Normalised to the account's equity AT INCEPTION, so the two curves start
+    from the same dollar and diverge only by decisions. Each symbol
+    contributes its last known 1m close at or before each snapshot time
+    (strictly causal); before inception the series is empty rather than
+    backfilled -- a benchmark that predates its own creation would be
+    hindsight.
+    """
+    from sqlalchemy import and_
+
+    window_start = max(
+        BENCHMARK_INCEPTION, datetime.now(UTC) - timedelta(days=days)
+    )
+    snap_rows = (
+        await db.execute(
+            select(PortfolioSnapshot.time, PortfolioSnapshot.total_equity)
+            .where(
+                PortfolioSnapshot.time >= window_start,
+                PortfolioSnapshot.trading_mode == settings.trading_mode,
+            )
+            .order_by(PortfolioSnapshot.time)
+        )
+    ).all()
+    if not snap_rows:
+        return []
+
+    from core.models.market_data import OHLCVRecord
+
+    def _aware(dt: datetime) -> datetime:
+        # sqlite hands back naive datetimes, postgres aware ones; comparisons
+        # against the aware inception constant must work on both.
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+    series: dict[str, tuple[list[datetime], list[float]]] = {}
+    for symbol in BENCHMARK_SYMBOLS:
+        rows = (
+            await db.execute(
+                select(OHLCVRecord.time, OHLCVRecord.close)
+                .where(
+                    and_(
+                        OHLCVRecord.symbol == symbol,
+                        OHLCVRecord.timeframe == "1m",
+                        OHLCVRecord.time >= BENCHMARK_INCEPTION - timedelta(days=3),
+                    )
+                )
+                .order_by(OHLCVRecord.time)
+            )
+        ).all()
+        if rows:
+            series[symbol] = (
+                [_aware(r[0]) for r in rows],
+                [float(r[1]) for r in rows],
+            )
+    if len(series) < 2:  # a one-symbol "benchmark" is not the registered one
+        return []
+
+    import bisect
+
+    def last_close(symbol: str, when: datetime) -> float | None:
+        times, closes = series[symbol]
+        i = bisect.bisect_right(times, when) - 1
+        return closes[i] if i >= 0 else None
+
+    # Base price per symbol: last close at or before inception (or first
+    # available after, for symbols that begin trading post-inception).
+    base: dict[str, float] = {}
+    for symbol in series:
+        price = last_close(symbol, BENCHMARK_INCEPTION)
+        if price is None:
+            price = series[symbol][1][0]
+        base[symbol] = price
+
+    inception_equity: float | None = None
+    out: list[dict[str, Any]] = []
+    for raw_when, equity in snap_rows:
+        when = _aware(raw_when)
+        if inception_equity is None:
+            inception_equity = float(equity)
+        ratios = []
+        for symbol in series:
+            price = last_close(symbol, when)
+            if price is not None:
+                ratios.append(price / base[symbol])
+        if not ratios:
+            continue
+        out.append(
+            {
+                "time": when.isoformat(),
+                "benchmark_equity": inception_equity * float(np.mean(ratios)),
+            }
+        )
+
+    if len(out) > max_points:
+        step = len(out) // max_points + 1
+        out = list(reversed(out[::-1][::step]))
+    return out
 
 
 @router.post(

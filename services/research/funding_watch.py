@@ -32,8 +32,9 @@ optimizer, or touches account state.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import structlog
@@ -54,8 +55,113 @@ _MS_8H = 8 * 3_600_000
 _MIN_SYMBOLS = 20
 # One cycle per 8h stamp, with slack for fetch time.
 _CYCLE_SECONDS = 8 * 3600.0
-# ~10 days of stamps per fetch: enough to heal several missed cycles.
-_FETCH_STAMPS = 30
+# ~13 days of stamps per fetch: covers the deepest factor lookback
+# (low_vol_7d: 21 stamps) plus the horizon plus healing slack.
+_FETCH_STAMPS = 40
+
+
+@dataclass(frozen=True)
+class WatchedFactor:
+    """One registered hypothesis under live adjudication.
+
+    ``unseen_from`` is each factor's own registration boundary: stamps before
+    it were visible to the study that generated the hypothesis and can never
+    count toward its adjudication. ``min_history`` stamps of data must exist
+    behind a stamp before its signal is scored.
+    """
+
+    name: str
+    unseen_from: datetime
+    min_history: int
+    build: SignalBuilder
+
+
+class SignalBuilder(Protocol):
+    def __call__(self, close: np.ndarray, funding: np.ndarray) -> np.ndarray: ...
+
+
+def _carry_signal(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+    from services.backtesting.funding_factors import trailing_mean
+
+    return trailing_mean(funding, CARRY_LOOKBACK_STAMPS)
+
+
+def _reversal_8h(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+    signal = np.full_like(close, np.nan, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signal[1:] = -(close[1:] / close[:-1] - 1.0)
+    return signal
+
+
+def _momentum_72h_fade(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+    signal = np.full_like(close, np.nan, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signal[9:] = -(close[9:] / close[:-9] - 1.0)
+    return signal
+
+
+def _low_vol_7d(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+    from services.backtesting.funding_factors import trailing_std
+
+    returns = np.full_like(close, np.nan, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        returns[1:] = close[1:] / close[:-1] - 1.0
+    return -trailing_std(returns, 21)
+
+
+# The registry. Definitions, signs and boundaries are fixed by the
+# pre-registrations in GO_LIVE.md (funding: 2026-07-31; the other three:
+# 2026-08-02) and must not be edited after the fact -- the universe test
+# pins them.
+WATCHED_FACTORS: tuple[WatchedFactor, ...] = (
+    WatchedFactor(FACTOR_NAME, UNSEEN_FROM, CARRY_LOOKBACK_STAMPS, _carry_signal),
+    WatchedFactor(
+        "reversal_8h_minus", datetime(2026, 8, 2, tzinfo=UTC), 2, _reversal_8h
+    ),
+    WatchedFactor(
+        "momentum_72h_minus", datetime(2026, 8, 2, tzinfo=UTC), 10, _momentum_72h_fade
+    ),
+    WatchedFactor(
+        "low_vol_7d_minus", datetime(2026, 8, 2, tzinfo=UTC), 22, _low_vol_7d
+    ),
+)
+
+
+def compute_signal_ics(
+    times_ms: np.ndarray,
+    close: np.ndarray,
+    signal: np.ndarray,
+    horizon: int,
+    min_history: int = 1,
+) -> list[tuple[int, float, int]]:
+    """Generic core: [(stamp_ms, ic, n_symbols)] for any signal matrix.
+
+    A stamp is resolvable when its forward window has fully closed and the
+    signal has *min_history* stamps behind it. Outcome is the cross-
+    sectionally demeaned forward return, so market direction cannot score.
+    Spearman is rank-based, so signal builders need no normalisation.
+    """
+    from scipy import stats
+
+    results: list[tuple[int, float, int]] = []
+    n_periods = times_ms.size
+    for t in range(min_history - 1, n_periods - horizon):
+        row = signal[t]
+        entry = close[t]
+        exit_ = close[t + horizon]
+        usable = np.isfinite(row) & np.isfinite(entry) & np.isfinite(exit_)
+        if int(usable.sum()) < _MIN_SYMBOLS:
+            continue
+        forward = exit_[usable] / entry[usable] - 1.0
+        forward = forward - forward.mean()
+        sig = row[usable]
+        if sig.std() == 0 or forward.std() == 0:
+            continue
+        rho = stats.spearmanr(sig, forward)
+        if np.isnan(rho.statistic):
+            continue
+        results.append((int(times_ms[t]), float(rho.statistic), int(usable.sum())))
+    return results
 
 
 def compute_resolvable_ics(
@@ -73,27 +179,19 @@ def compute_resolvable_ics(
     the cross-sectionally demeaned forward return, so market direction
     cannot score.
     """
-    from scipy import stats
+    import warnings
 
-    results: list[tuple[int, float, int]] = []
-    n_periods = times_ms.size
-    for t in range(lookback - 1, n_periods - horizon):
-        carry = np.nanmean(funding[t - lookback + 1 : t + 1], axis=0)
-        entry = close[t]
-        exit_ = close[t + horizon]
-        usable = np.isfinite(carry) & np.isfinite(entry) & np.isfinite(exit_)
-        if int(usable.sum()) < _MIN_SYMBOLS:
-            continue
-        forward = exit_[usable] / entry[usable] - 1.0
-        forward = forward - forward.mean()
-        signal = carry[usable]
-        if signal.std() == 0 or forward.std() == 0:
-            continue
-        rho = stats.spearmanr(signal, forward)
-        if np.isnan(rho.statistic):
-            continue
-        results.append((int(times_ms[t]), float(rho.statistic), int(usable.sum())))
-    return results
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        carry = np.stack(
+            [
+                np.nanmean(funding[max(0, t - lookback + 1) : t + 1], axis=0)
+                for t in range(times_ms.size)
+            ]
+        )
+    # The lookback gate is enforced via min_history so partial windows at the
+    # start are never scored, matching the original behaviour exactly.
+    return compute_signal_ics(times_ms, close, carry, horizon, min_history=lookback)
 
 
 def _fetch_recent(max_stamps: int = _FETCH_STAMPS) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -183,41 +281,47 @@ class FundingWatchService:
             await asyncio.sleep(_CYCLE_SECONDS)
 
     async def observe_once(self) -> int:
-        """Fetch, resolve, and insert any not-yet-recorded stamps."""
+        """Fetch once, then resolve and insert for EVERY registered factor."""
         grid, close, funding = await asyncio.to_thread(_fetch_recent)
         if grid.size == 0:
             return 0
-        candidates = compute_resolvable_ics(grid, close, funding)
-        if not candidates:
-            return 0
 
+        inserted = 0
         async with self._session_factory() as session:
-            existing = await self._existing_stamps(session)
-            inserted = 0
             now = datetime.now(UTC)
-            for stamp_ms, ic, n_symbols in candidates:
-                when = datetime.fromtimestamp(stamp_ms / 1000, UTC)
-                if when < UNSEEN_FROM or when in existing:
-                    continue
-                session.add(
-                    FactorWatchObservation(
-                        time=when,
-                        factor=FACTOR_NAME,
-                        horizon_stamps=HORIZON_STAMPS,
-                        ic=ic,
-                        n_symbols=n_symbols,
-                        resolved_at=now,
-                    )
+            for factor in WATCHED_FACTORS:
+                signal = factor.build(close, funding)
+                candidates = compute_signal_ics(
+                    grid, close, signal, HORIZON_STAMPS, factor.min_history
                 )
-                inserted += 1
+                if not candidates:
+                    continue
+                existing = await self._existing_stamps(session, factor.name)
+                for stamp_ms, ic, n_symbols in candidates:
+                    when = datetime.fromtimestamp(stamp_ms / 1000, UTC)
+                    if when < factor.unseen_from or when in existing:
+                        continue
+                    session.add(
+                        FactorWatchObservation(
+                            time=when,
+                            factor=factor.name,
+                            horizon_stamps=HORIZON_STAMPS,
+                            ic=ic,
+                            n_symbols=n_symbols,
+                            resolved_at=now,
+                        )
+                    )
+                    inserted += 1
             if inserted:
                 await session.commit()
         return inserted
 
-    async def _existing_stamps(self, session: AsyncSession) -> set[datetime]:
+    async def _existing_stamps(
+        self, session: AsyncSession, factor: str = FACTOR_NAME
+    ) -> set[datetime]:
         result = await session.execute(
             select(FactorWatchObservation.time).where(
-                FactorWatchObservation.factor == FACTOR_NAME
+                FactorWatchObservation.factor == factor
             )
         )
         return {row[0].replace(tzinfo=UTC) if row[0].tzinfo is None else row[0]

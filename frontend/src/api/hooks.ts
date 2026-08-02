@@ -67,6 +67,18 @@ export function useEquityCurve(days = 30) {
   });
 }
 
+// Do-nothing benchmark: the live bar every strategy must beat.
+export function useBenchmark(days = 30) {
+  return useQuery<{ time: string; benchmark_equity: number }[]>({
+    queryKey: ['portfolio', 'benchmark', days],
+    queryFn: () =>
+      apiClient
+        .get('/portfolio/benchmark', { params: { days } })
+        .then((r) => (Array.isArray(r.data) ? r.data : [])),
+    refetchInterval: 300_000,
+  });
+}
+
 // Research: walk-forward adjudication record (read-only)
 export function useFundingWatch() {
   return useQuery<import('../components/ml/ResearchWatch').FundingWatch>({
