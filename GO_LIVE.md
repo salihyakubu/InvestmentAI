@@ -1218,3 +1218,47 @@ PREDICTION, stated now: R1 reproduces; H1 fails well below 0.60; H2 fails
 "selection + beta, honestly retired". If instead all five legs pass, the
 strategy graduates to a registered walk-forward watch before any capital
 discussion.
+
+## GAUNTLET RESULT (2026-08-02) — the "EDGE STABLE, Sharpe 1.17" claim is RETIRED
+Executed exactly as registered (commit cc85ae5, before the run). One prose
+correction: the registration text said "the original three plus 61" names;
+the registered LIST (authoritative, pinned by test) contains 65. The claim
+FAILED four of five legs:
+
+  R1 REPRODUCTION: FAIL. On dividend-adjusted closes MSFT flips to PASS
+     (Sharpe 0.81, stability 0.75) where the original recorded FAIL (0.47,
+     0.50); AAPL/SPY magnitudes reproduce. The pass/fail pattern is not
+     stable under routine data adjustment -- the gate verdict sits on a
+     knife edge, which is itself disqualifying for a capital decision.
+  H1 BREADTH: FAIL. 37/65 judged symbols pass (56.9%) vs the harness's own
+     required 60% -- and that is an UPPER BOUND (survivor universe).
+  H2 BETA CONTROL: FAIL, and this is the mechanism. Only 22/65 (33.8%)
+     beat costless buy-and-hold on the same OOS periods. The flagship
+     exhibits are the exposé: SPY strategy 1.20 vs B&H 1.35; GLD 1.71 vs
+     2.33; GE 1.95 vs 2.02; JPM 1.53 vs 1.56. The model is a long-tilted
+     beta proxy that captures MOST of buy-and-hold while paying costs to
+     do it. Two-thirds of "edge" symbols made less than doing nothing.
+  H3 UNSEEN ERA: PASS as registered (+41.7 bps/period, t=+2.41, 28
+     portfolio periods after 2025-12-31) -- but the leg as registered has
+     no beta control, and given H2, its positivity is explained by a rising
+     market, not skill. Recorded as passed; not repurposed as evidence.
+  DSR: FAIL. Pooled portfolio Sharpe +2.11 (itself beta-inflated) deflates
+     to 0.891 over 120 periods at the declared 24 trials -- below the 0.95
+     bar.
+
+VERDICT: the 2026-07-23 "EDGE STABLE across 2/3 symbols" job result is
+DEMOTED from evidence to artifact: selection (3 mega-cap survivors) + beta
+(a bull-era OOS window) + a knife-edge gate. The edge.py HARNESS remains a
+valid research tool -- non-overlap, net-of-cost and stability logic are
+sound; what is retired is this specific claim. Without the gauntlet, this
+was the one number on the books an operator might have funded, and it
+underperforms buy-and-hold on its own flagship symbol.
+
+CONSEQUENCE: the platform now carries ZERO unaudited positive performance
+claims. Every number either passed the modern gauntlet, is labelled
+exploratory, or sits in a registered walk-forward watch. Seventh
+consecutive honest verdict.
+
+METHOD NOTE for future daily-harness work: any equity daily-bar result must
+include the H2 beta control BY DEFAULT -- long-capable strategies evaluated
+on 2023-2025 US equities are measuring the era unless proven otherwise.
