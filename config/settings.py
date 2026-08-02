@@ -38,7 +38,11 @@ class Settings(BaseSettings):
     # Trading
     trading_mode: str = "paper"  # backtest, paper, live
     initial_capital: Decimal = Decimal("100.00")
-    active_symbols_stocks: list[str] = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+    # SPY is required by the registered do-nothing benchmark (GO_LIVE.md
+    # 2026-08-02): without live SPY bars the benchmark cannot include it.
+    active_symbols_stocks: list[str] = [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "SPY",
+    ]
     active_symbols_crypto: list[str] = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT", "DOT/USDT"]
 
     # Risk rules (tuned for $100 micro-account)

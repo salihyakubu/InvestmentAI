@@ -286,7 +286,10 @@ async def get_benchmark(
                     and_(
                         OHLCVRecord.symbol == symbol,
                         OHLCVRecord.timeframe == "1m",
-                        OHLCVRecord.time >= BENCHMARK_INCEPTION - timedelta(days=3),
+                        # 10 days of lookback: a weekend plus a holiday plus
+                        # an ingestion hiccup must not drop an equity symbol
+                        # out of the benchmark -- its last close forward-fills.
+                        OHLCVRecord.time >= BENCHMARK_INCEPTION - timedelta(days=10),
                     )
                 )
                 .order_by(OHLCVRecord.time)
