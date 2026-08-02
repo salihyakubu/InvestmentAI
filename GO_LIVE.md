@@ -1262,3 +1262,40 @@ consecutive honest verdict.
 METHOD NOTE for future daily-harness work: any equity daily-bar result must
 include the H2 beta control BY DEFAULT -- long-capable strategies evaluated
 on 2023-2025 US equities are measuring the era unless proven otherwise.
+
+## PRE-REGISTRATION (2026-08-02) — three additional walk-forward watches +
+## the July backfill of the funding watch
+Direction accepted by the operator: profit cannot come from the current
+(measured no-edge) live models, so the pipeline of registered, free options
+on future edge is widened. Registered BEFORE any of these factors is
+computed on live data:
+
+NEW WATCHED FACTORS -- all on the existing 8h perpetual grid, horizon 3
+stamps (24h), cross-sectional Spearman IC vs demeaned forward return, same
+integrity properties as the funding watch (append-only, causal, open windows
+never scored). Signs and definitions are fixed NOW; provenance is the spot
+hourly study (PR #60) where each kept its IC sign 6/6 across chronological
+halves. That study was a different venue and grid, so these are HYPOTHESES,
+not results; the watch adjudicates.
+  reversal_8h_minus    signal = -(close_t/close_{t-1} - 1)      [fade the last 8h move]
+  momentum_72h_minus   signal = -(close_t/close_{t-9} - 1)      [fade the 3-day move]
+  low_vol_7d_minus     signal = -std(1-stamp returns, 21 stamps) [prefer quiet contracts]
+UNSEEN BOUNDARY for the three new factors: 2026-08-02 (this registration).
+Stamps before it never count toward their adjudication. Bar per factor,
+identical to the funding watch: four consecutive positive calendar quarters
+of mean IC on unseen data before any trading proposal may cite it.
+
+JULY BACKFILL of funding_carry_24h_plus (unchanged factor, unchanged bar):
+its registered unseen boundary is 2026-07-01 but the live watch only reaches
+~10 days back, leaving Jul 1-21 unrecorded. Those stamps are backfilled ONCE
+from the data.binance.vision monthly archive (verified published for
+2026-07), which retains contracts delisted mid-month -- i.e. the
+survivorship-safe source. Existing rows are never touched (append-only
+holds); the backfilled rows are identifiable by their resolved_at date.
+
+BENCHMARK BOOK (accepted alongside): a do-nothing paper benchmark -- equal
+weight BTC/USDT, ETH/USDT, SPY, inception at this registration -- computed
+from stored bars and drawn on the equity chart. It is the live bar any
+future strategy must beat; the platform's own gauntlet showed buy-and-hold
+beating its models on 2/3 of symbols, and that fact belongs on the
+dashboard, not only in the runbook.
