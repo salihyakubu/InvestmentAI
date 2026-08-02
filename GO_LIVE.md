@@ -1299,3 +1299,39 @@ from stored bars and drawn on the equity chart. It is the live bar any
 future strategy must beat; the platform's own gauntlet showed buy-and-hold
 beating its models on 2/3 of symbols, and that fact belongs on the
 dashboard, not only in the runbook.
+
+## PIPELINE WIDENED + BENCHMARK LIVE (2026-08-02) — PRs #69, #70
+Executed per registration 74c5b07, in response to the operator's correct
+observation that the platform makes no profit. The live models are measured
+no-edge; profit can only come from the registered-hypothesis pipeline, so
+the pipeline was widened from one watched factor to four, the funding
+record was completed, and the do-nothing bar went on the dashboard.
+
+WATCH REGISTRY LIVE: reversal_8h_minus, momentum_72h_minus, low_vol_7d_minus
+join funding_carry_24h_plus on the 8h perp grid -- one fetch, per-factor
+unseen boundaries (the three new: 2026-08-02), same append-only/causal
+contract, all pinned by tests including one proving the same July dataset is
+accepted for the funding factor and refused for the new three. First
+post-deploy cycle logged new_observations=0, which is CORRECT: the new
+factors' first stamps cannot resolve until their 24h windows close.
+
+JULY BACKFILL EXECUTED: 63 observations for Jul 1-21 inserted from the
+data.binance.vision monthly archive (800 contracts incl. delisted), existing
+rows untouched, provenance visible in resolved_at. The funding factor's Q3
+record is now COMPLETE: n=95 (Jul 1 - Aug 1), mean IC +0.0124, t=+1.52,
+60/95 positive -- the regime leans positive on unseen data but is not yet
+significant, and no one may call it before the quarter closes.
+
+BENCHMARK LIVE: /portfolio/benchmark serves equal-weight BTC/ETH/SPY from
+inception 2026-08-02, normalised to the account's inception equity, sampled
+at snapshot times, drawn dashed on the equity chart. Found and fixed in the
+process (PR #70): SPY was never in live ingestion -- its bars were a stale
+one-off backfill -- so the registered three-asset benchmark would have
+silently degraded to a crypto pair. SPY now streams; the close-lookup window
+is 10 days so weekends/holidays forward-fill instead of dropping a leg.
+
+THE SCOREBOARD THE OPERATOR NOW HAS: four independent registered shots at a
+promotable edge, each adjudicated by unseen data at zero cost; a complete
+Q3 funding record; and a dashboard where every strategy is judged, live,
+against doing nothing. Profit remains zero because edge remains unproven --
+and the machinery to change that honestly is now running at full width.
