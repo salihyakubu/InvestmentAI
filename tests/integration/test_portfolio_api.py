@@ -28,6 +28,7 @@ from api.dependencies import get_current_user, get_db
 from api.main import app
 from core.enums import OrderStatus
 from core.models.base import AsyncBase
+from core.models.market_data import OHLCVRecord
 from core.models.orders import Fill, Order
 from core.models.portfolio import PortfolioSnapshot
 
@@ -37,7 +38,12 @@ def _compile_jsonb_sqlite(type_, compiler, **kw):  # noqa: ANN001, ANN003, ANN20
     return "JSON"
 
 
-_TABLES = [PortfolioSnapshot.__table__, Order.__table__, Fill.__table__]
+_TABLES = [
+    PortfolioSnapshot.__table__,
+    Order.__table__,
+    Fill.__table__,
+    OHLCVRecord.__table__,
+]
 
 
 @pytest.fixture
@@ -239,3 +245,86 @@ def test_old_snapshots_fall_outside_the_default_window(client) -> None:
     assert [r["total_equity"] for r in rows] == [100.0]
     wide = c.get("/api/v1/portfolio/snapshots", params={"days": 365}).json()
     assert [r["total_equity"] for r in wide] == [50.0, 100.0]
+
+
+def test_benchmark_starts_at_account_equity_and_tracks_holdings(client) -> None:
+    """The do-nothing benchmark: normalised to the account's equity at
+    inception, moving only with the held symbols' prices."""
+    from api.routers.portfolio import BENCHMARK_INCEPTION
+
+    c, factory = client
+    t0 = BENCHMARK_INCEPTION
+
+    async def _seed() -> None:
+        async with factory() as session:
+            for hours, equity in ((0, "100.00"), (6, "99.50"), (12, "99.00")):
+                session.add(
+                    PortfolioSnapshot(
+                        time=t0 + timedelta(hours=hours),
+                        trading_mode="paper",
+                        total_equity=Decimal(equity),
+                        cash=Decimal(equity),
+                        positions_value=Decimal("0"),
+                        unrealized_pnl=Decimal("0"),
+                        realized_pnl=Decimal("0"),
+                        position_count=0,
+                    )
+                )
+            # Two benchmark symbols with bars: both +10% by hour 12.
+            for symbol, base in (("BTC/USDT", 50000.0), ("ETH/USDT", 2000.0)):
+                for hours, mult in ((-1, 1.0), (6, 1.05), (12, 1.10)):
+                    when = t0 + timedelta(hours=hours)
+                    price = Decimal(str(base * mult))
+                    session.add(
+                        OHLCVRecord(
+                            time=when, symbol=symbol, timeframe="1m",
+                            open=price, high=price, low=price, close=price,
+                            volume=Decimal("1"), source="test",
+                            asset_class="crypto", ingested_at=when,
+                        )
+                    )
+            await session.commit()
+
+    asyncio.run(_seed())
+    rows = c.get("/api/v1/portfolio/benchmark", params={"days": 30}).json()
+    assert len(rows) == 3
+    # Starts at the account's inception equity ($100), NOT at the asset price.
+    assert rows[0]["benchmark_equity"] == pytest.approx(100.0)
+    # Both symbols +10% -> benchmark +10%, regardless of what the account did.
+    assert rows[-1]["benchmark_equity"] == pytest.approx(110.0)
+    times = [r["time"] for r in rows]
+    assert times == sorted(times)
+
+
+def test_benchmark_refuses_to_exist_on_one_symbol(client) -> None:
+    """A single-symbol 'benchmark' is not the registered one; serve nothing
+    rather than something that looks like the benchmark and is not."""
+    from api.routers.portfolio import BENCHMARK_INCEPTION
+
+    c, factory = client
+    t0 = BENCHMARK_INCEPTION
+
+    async def _seed() -> None:
+        async with factory() as session:
+            session.add(
+                PortfolioSnapshot(
+                    time=t0 + timedelta(hours=1), trading_mode="paper",
+                    total_equity=Decimal("100"), cash=Decimal("100"),
+                    positions_value=Decimal("0"), unrealized_pnl=Decimal("0"),
+                    realized_pnl=Decimal("0"), position_count=0,
+                )
+            )
+            when = t0
+            session.add(
+                OHLCVRecord(
+                    time=when, symbol="BTC/USDT", timeframe="1m",
+                    open=Decimal("50000"), high=Decimal("50000"),
+                    low=Decimal("50000"), close=Decimal("50000"),
+                    volume=Decimal("1"), source="test",
+                    asset_class="crypto", ingested_at=when,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_seed())
+    assert c.get("/api/v1/portfolio/benchmark").json() == []

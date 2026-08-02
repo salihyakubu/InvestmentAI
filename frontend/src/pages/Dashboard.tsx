@@ -7,6 +7,7 @@ import {
   usePortfolioSummary,
   usePositions,
   useEquityCurve,
+  useBenchmark,
   usePredictions,
   useRiskMetrics,
 } from '../api/hooks';
@@ -15,6 +16,7 @@ export default function Dashboard() {
   const { data: portfolio, isLoading: portfolioLoading } = usePortfolioSummary();
   const { data: positions } = usePositions();
   const { data: equityData } = useEquityCurve();
+  const { data: benchmarkData } = useBenchmark();
   const { data: predictions } = usePredictions();
   const { data: riskMetrics } = useRiskMetrics();
 
@@ -44,7 +46,9 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          {equityData && <EquityCurve data={equityData} />}
+          {equityData && (
+            <EquityCurve data={equityData} benchmark={benchmarkData} />
+          )}
         </div>
         <div>
           {riskMetrics && (
