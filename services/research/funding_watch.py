@@ -77,36 +77,101 @@ class WatchedFactor:
 
 
 class SignalBuilder(Protocol):
-    def __call__(self, close: np.ndarray, funding: np.ndarray) -> np.ndarray: ...
+    def __call__(
+        self, close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+    ) -> np.ndarray: ...
 
 
-def _carry_signal(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+def _carry_signal(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
     from services.backtesting.funding_factors import trailing_mean
 
-    return trailing_mean(funding, CARRY_LOOKBACK_STAMPS)
+    return np.asarray(trailing_mean(funding, CARRY_LOOKBACK_STAMPS), dtype=float)
 
 
-def _reversal_8h(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+def _reversal_8h(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
     signal = np.full_like(close, np.nan, dtype=float)
     with np.errstate(invalid="ignore", divide="ignore"):
         signal[1:] = -(close[1:] / close[:-1] - 1.0)
     return signal
 
 
-def _momentum_72h_fade(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+def _momentum_72h_fade(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
     signal = np.full_like(close, np.nan, dtype=float)
     with np.errstate(invalid="ignore", divide="ignore"):
         signal[9:] = -(close[9:] / close[:-9] - 1.0)
     return signal
 
 
-def _low_vol_7d(close: np.ndarray, funding: np.ndarray) -> np.ndarray:
+def _low_vol_7d(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
     from services.backtesting.funding_factors import trailing_std
 
     returns = np.full_like(close, np.nan, dtype=float)
     with np.errstate(invalid="ignore", divide="ignore"):
         returns[1:] = close[1:] / close[:-1] - 1.0
     return -trailing_std(returns, 21)
+
+
+def _momentum_24h_fade(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    signal = np.full_like(close, np.nan, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signal[3:] = -(close[3:] / close[:-3] - 1.0)
+    return signal
+
+
+def _volume_surge_fade(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    from services.backtesting.funding_factors import trailing_mean
+
+    baseline = trailing_mean(volume, 21)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        surge = np.where(baseline > 0, volume / baseline, np.nan)
+    return np.asarray(-surge, dtype=float)
+
+
+def _funding_delta_fade(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    from services.backtesting.funding_factors import trailing_mean
+
+    return np.asarray(-(funding - trailing_mean(funding, 21)), dtype=float)
+
+
+def _blend_registered_v1(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    """Frozen equal-weight z-score blend of the four 2026-07/08 factors.
+
+    Weights are equal and FROZEN at registration (cb700cc): re-weighting
+    after seeing which component performs would be selection wearing a
+    blend. A cell where every component is absent stays absent.
+    """
+    from services.backtesting.cross_section import cross_sectional_zscore
+
+    components = [
+        _carry_signal(close, funding, volume),
+        _reversal_8h(close, funding, volume),
+        _momentum_72h_fade(close, funding, volume),
+        _low_vol_7d(close, funding, volume),
+    ]
+    stack = np.stack([cross_sectional_zscore(c) for c in components])
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        blend = np.nanmean(stack, axis=0)
+    blend[np.all(~np.isfinite(stack), axis=0)] = np.nan
+    return np.asarray(blend, dtype=float)
 
 
 # The registry. Definitions, signs and boundaries are fixed by the
@@ -123,6 +188,18 @@ WATCHED_FACTORS: tuple[WatchedFactor, ...] = (
     ),
     WatchedFactor(
         "low_vol_7d_minus", datetime(2026, 8, 2, tzinfo=UTC), 22, _low_vol_7d
+    ),
+    WatchedFactor(
+        "momentum_24h_minus", datetime(2026, 8, 7, tzinfo=UTC), 4, _momentum_24h_fade
+    ),
+    WatchedFactor(
+        "volume_surge_minus", datetime(2026, 8, 7, tzinfo=UTC), 22, _volume_surge_fade
+    ),
+    WatchedFactor(
+        "funding_delta_minus", datetime(2026, 8, 7, tzinfo=UTC), 22, _funding_delta_fade
+    ),
+    WatchedFactor(
+        "blend_registered_v1", datetime(2026, 8, 7, tzinfo=UTC), 22, _blend_registered_v1
     ),
 )
 
@@ -194,7 +271,9 @@ def compute_resolvable_ics(
     return compute_signal_ics(times_ms, close, carry, horizon, min_history=lookback)
 
 
-def _fetch_recent(max_stamps: int = _FETCH_STAMPS) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _fetch_recent(
+    max_stamps: int = _FETCH_STAMPS,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Blocking fetch of recent 8h closes + per-8h funding for live perps.
 
     Runs in a worker thread. Uses only public endpoints; no keys involved.
@@ -209,7 +288,7 @@ def _fetch_recent(max_stamps: int = _FETCH_STAMPS) -> tuple[np.ndarray, np.ndarr
         and m.get("quote") == "USDT"
     )
 
-    per_symbol_bars: dict[str, dict[int, float]] = {}
+    per_symbol_bars: dict[str, dict[int, tuple[float, float]]] = {}
     per_symbol_funding: dict[str, dict[int, float]] = {}
     for symbol in symbols:
         try:
@@ -220,7 +299,7 @@ def _fetch_recent(max_stamps: int = _FETCH_STAMPS) -> tuple[np.ndarray, np.ndarr
         except Exception:
             continue  # one flaky symbol must not kill the cycle
         per_symbol_bars[symbol] = {
-            (int(b[0]) // _MS_8H) * _MS_8H: float(b[4]) for b in bars
+            (int(b[0]) // _MS_8H) * _MS_8H: (float(b[4]), float(b[5])) for b in bars
         }
         rates: dict[int, float] = {}
         for row in history:
@@ -237,13 +316,15 @@ def _fetch_recent(max_stamps: int = _FETCH_STAMPS) -> tuple[np.ndarray, np.ndarr
     )
     kept = sorted(per_symbol_bars)
     close = np.full((grid.size, len(kept)), np.nan)
+    volume = np.full((grid.size, len(kept)), np.nan)
     funding = np.full((grid.size, len(kept)), np.nan)
     index_of = {stamp: i for i, stamp in enumerate(grid)}
     for j, symbol in enumerate(kept):
-        for stamp, price in per_symbol_bars[symbol].items():
+        for stamp, (price, vol) in per_symbol_bars[symbol].items():
             i = index_of.get(stamp)
             if i is not None:
                 close[i, j] = price
+                volume[i, j] = vol
         rates = per_symbol_funding.get(symbol, {})
         last = np.nan
         for i, stamp in enumerate(grid):
@@ -251,7 +332,7 @@ def _fetch_recent(max_stamps: int = _FETCH_STAMPS) -> tuple[np.ndarray, np.ndarr
                 last = rates[stamp]
             if np.isfinite(close[i, j]):
                 funding[i, j] = last
-    return grid, close, funding
+    return grid, close, funding, volume
 
 
 class FundingWatchService:
@@ -282,7 +363,7 @@ class FundingWatchService:
 
     async def observe_once(self) -> int:
         """Fetch once, then resolve and insert for EVERY registered factor."""
-        grid, close, funding = await asyncio.to_thread(_fetch_recent)
+        grid, close, funding, volume = await asyncio.to_thread(_fetch_recent)
         if grid.size == 0:
             return 0
 
@@ -290,7 +371,7 @@ class FundingWatchService:
         async with self._session_factory() as session:
             now = datetime.now(UTC)
             for factor in WATCHED_FACTORS:
-                signal = factor.build(close, funding)
+                signal = factor.build(close, funding, volume)
                 candidates = compute_signal_ics(
                     grid, close, signal, HORIZON_STAMPS, factor.min_history
                 )

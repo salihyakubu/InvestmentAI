@@ -45,6 +45,22 @@ _HYPOTHESES = {
         "Quiet contracts outperform volatile ones "
         "(sign from the spot study; registered 2026-08-02)"
     ),
+    "momentum_24h_minus": (
+        "Fading the 24h move predicts relative return "
+        "(sign from the spot study; registered 2026-08-07)"
+    ),
+    "volume_surge_minus": (
+        "Fading volume spikes predicts relative return "
+        "(sign from the spot study; registered 2026-08-07)"
+    ),
+    "funding_delta_minus": (
+        "Rising funding marks building crowding; fade it "
+        "(economic prior only -- weakest provenance; registered 2026-08-07)"
+    ),
+    "blend_registered_v1": (
+        "The frozen equal-weight blend of the four prior registered factors "
+        "beats its best component (registered 2026-08-07)"
+    ),
 }
 
 
