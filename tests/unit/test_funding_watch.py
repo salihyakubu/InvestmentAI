@@ -254,10 +254,21 @@ def test_registry_is_pinned_to_the_registration() -> None:
         "reversal_8h_minus",
         "momentum_72h_minus",
         "low_vol_7d_minus",
+        "momentum_24h_minus",
+        "volume_surge_minus",
+        "funding_delta_minus",
+        "blend_registered_v1",
     }
     assert by_name["funding_carry_24h_plus"].unseen_from == datetime(2026, 7, 1, tzinfo=UTC)
     for name in ("reversal_8h_minus", "momentum_72h_minus", "low_vol_7d_minus"):
         assert by_name[name].unseen_from == datetime(2026, 8, 2, tzinfo=UTC)
+    for name in (
+        "momentum_24h_minus",
+        "volume_surge_minus",
+        "funding_delta_minus",
+        "blend_registered_v1",
+    ):
+        assert by_name[name].unseen_from == datetime(2026, 8, 7, tzinfo=UTC)
     assert by_name["low_vol_7d_minus"].min_history == 22
 
 
@@ -269,7 +280,7 @@ def test_reversal_signal_fades_the_last_move_causally() -> None:
     build = next(f for f in WATCHED_FACTORS if f.name == "reversal_8h_minus").build
     close = np.full((10, 2), 100.0)
     close[5, 0] = 110.0  # symbol 0 jumps at t=5
-    signal = build(close, np.zeros_like(close))
+    signal = build(close, np.zeros_like(close), np.ones_like(close))
     assert signal[5, 0] < signal[5, 1]  # the jumper is faded
     assert np.allclose(signal[1:5, 0], signal[1:5, 1])  # nothing before t=5 reacts
     assert np.all(np.isnan(signal[0]))  # no prior close -> no signal
@@ -281,7 +292,7 @@ def test_momentum_fade_uses_the_9_stamp_lookback() -> None:
     build = next(f for f in WATCHED_FACTORS if f.name == "momentum_72h_minus").build
     close = np.full((15, 2), 100.0)
     close[:, 0] = np.linspace(100, 150, 15)  # steady riser
-    signal = build(close, np.zeros_like(close))
+    signal = build(close, np.zeros_like(close), np.ones_like(close))
     assert np.all(np.isnan(signal[:9]))
     assert signal[12, 0] < signal[12, 1]  # the riser is faded
 
@@ -295,7 +306,7 @@ def test_low_vol_prefers_the_quiet_contract() -> None:
     close = np.empty((n, 2))
     close[:, 0] = 100 * np.cumprod(1 + rng.normal(0, 0.05, n))  # wild
     close[:, 1] = 100 * np.cumprod(1 + rng.normal(0, 0.001, n))  # quiet
-    signal = build(close, np.zeros_like(close))
+    signal = build(close, np.zeros_like(close), np.ones_like(close))
     assert signal[-1, 1] > signal[-1, 0]  # quiet scores higher
 
 
@@ -320,7 +331,7 @@ async def test_each_factor_respects_its_own_unseen_boundary() -> None:
             async with self._session_factory() as session:
                 now = datetime.now(UTC)
                 for f in WATCHED_FACTORS:
-                    signal = f.build(close, funding)
+                    signal = f.build(close, funding, np.ones_like(close))
                     for stamp_ms, ic, n_symbols in compute_signal_ics(
                         grid, close, signal, HORIZON_STAMPS, f.min_history
                     ):
@@ -347,3 +358,61 @@ async def test_each_factor_respects_its_own_unseen_boundary() -> None:
     factors_present = {r.factor for r in rows}
     assert factors_present == {"funding_carry_24h_plus"}
     await engine.dispose()
+
+
+
+def test_volume_surge_fades_the_spiking_contract() -> None:
+    """A contract trading 5x its trailing volume must score LOW (fade)."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "volume_surge_minus").build
+    n = 40
+    close = np.full((n, 2), 100.0)
+    volume = np.full((n, 2), 10.0)
+    volume[-1, 0] = 50.0  # symbol 0 spikes to 5x
+    signal = build(close, np.zeros_like(close), volume)
+    assert signal[-1, 0] < signal[-1, 1]
+    # Causality: nothing before the spike reacts differently across symbols.
+    assert np.allclose(signal[25:-1, 0], signal[25:-1, 1])
+
+
+def test_funding_delta_fades_building_crowding() -> None:
+    """Funding rising above its own 7d mean scores LOW; the level alone,
+    however high, scores neutral -- delta is the thing, not level."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "funding_delta_minus").build
+    n = 40
+    close = np.full((n, 2), 100.0)
+    funding = np.zeros((n, 2))
+    funding[:, 0] = 0.001          # high but CONSTANT -> delta ~ 0
+    funding[-1, 1] = 0.0008        # low level but RISING from 0
+    signal = build(close, funding, np.ones_like(close))
+    assert signal[-1, 1] < signal[-1, 0]  # the riser is faded, not the level
+
+
+def test_blend_is_the_frozen_equal_weight_of_registered_components() -> None:
+    """One symbol strong on every component must top the blend; a cell absent
+    in all components stays absent instead of becoming a tradeable zero."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    rng = np.random.default_rng(41)
+    build = next(f for f in WATCHED_FACTORS if f.name == "blend_registered_v1").build
+    n, m = 60, 30
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, (n, m)), axis=0)
+    funding = rng.normal(0, 0.0005, (n, m))
+    volume = rng.lognormal(3, 0.5, (n, m))
+    # Symbol 0: engineered to score high on ALL components at the last stamp:
+    # highest funding carry, just fell (reversal+), fell over 3d (momentum
+    # fade+), and quiet.
+    funding[-5:, 0] = 0.004
+    close[-10:, 0] = np.linspace(100, 92, 10)  # steady decline, low vol
+    signal = build(close, funding, volume)
+    assert np.nanargmax(signal[-1]) == 0
+    # An all-absent column stays absent.
+    close2 = close.copy()
+    close2[:, 1] = np.nan
+    funding2 = funding.copy()
+    funding2[:, 1] = np.nan
+    signal2 = build(close2, funding2, volume)
+    assert np.all(np.isnan(signal2[:, 1]))
