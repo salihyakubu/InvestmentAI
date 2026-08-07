@@ -1335,3 +1335,33 @@ promotable edge, each adjudicated by unseen data at zero cost; a complete
 Q3 funding record; and a dashboard where every strategy is judged, live,
 against doing nothing. Profit remains zero because edge remains unproven --
 and the machinery to change that honestly is now running at full width.
+
+## PRE-REGISTRATION (2026-08-07) — the pipeline doubles again: four more watches
+Operator direction, recorded precisely: asked what would double the
+platform's return in a day, the measured answer was "nothing legitimate --
+leverage at doubling scale is ruin in 2-13 median days" (see the 2026-08-06
+analysis). The only thing this platform may double in a day is registered
+hypotheses. Pipeline goes 4 -> 8. Registered BEFORE implementation; unseen
+boundary for all four: 2026-08-07.
+
+NEW WATCHED FACTORS -- same 8h perp grid, 24h horizon, same integrity
+contract (append-only, causal, per-factor boundary, open windows unscored):
+  momentum_24h_minus   signal = -(close_t/close_{t-3} - 1)
+      provenance: spot hourly study (PR #60), sign held both halves.
+  volume_surge_minus   signal = -(volume_t / trailing_mean(volume, 21))
+      provenance: spot study volume_surge IC negative in BOTH halves ->
+      fading volume spikes scored positive. Requires volume in the watch
+      fetch (available from the same OHLCV call, no extra requests).
+  funding_delta_minus  signal = -(funding_t - trailing_mean(funding, 21))
+      provenance: economic prior only, stated now -- RISING funding marks
+      BUILDING crowding; fade it. No prior study; weakest provenance of the
+      eight, labelled as such.
+  blend_registered_v1  signal = mean of the FOUR 2026-07/08-registered
+      factors' cross-sectional z-scores (funding_carry_24h_plus,
+      reversal_8h_minus, momentum_72h_minus, low_vol_7d_minus), weights
+      equal and FROZEN at this registration.
+      provenance: diversification -- a blend of weakly correlated signals
+      can beat its best component; the meta-hypothesis is that the
+      registered book is better than any single registered factor.
+Bar per factor, unchanged: four consecutive positive calendar quarters of
+mean IC on data after its own boundary. Nothing here trades.
