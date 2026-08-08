@@ -2,18 +2,140 @@
 
 from __future__ import annotations
 
+import time as _time
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import extract, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, get_db
 from api.schemas.common import SuccessResponse
 from core.models.ml_models import ModelMetadata
+from core.models.predictions import Prediction
 
 router = APIRouter(prefix="/models")
+
+# Learning metrics scan the full resolved history; the inputs move on the
+# resolution cadence (minutes), so a short cache keeps the scan off the
+# 5-second dashboard poll.
+_LEARNING_TTL_SECONDS = 300.0
+_learning_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+@router.get(
+    "/learning-metrics",
+    summary="Does the learning loop learn? Live signal quality by model era",
+)
+async def get_learning_metrics(
+    db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Live out-of-sample quality of the served signal, era by era.
+
+    De-overlapping happens AT FETCH TIME: predictions are emitted per minute
+    against a 5-minute horizon, so sampling minute %% 5 == 0 yields
+    independent observations and cuts the scan 5x in one stroke.
+    """
+    cached = _learning_cache.get("all")
+    now = _time.monotonic()
+    if cached is not None and now - cached[0] < _LEARNING_TTL_SECONDS:
+        return cached[1]
+
+    from services.continuous_learning.learning_metrics import (
+        ResolvedPrediction,
+        build_report,
+    )
+
+    rows = (
+        await db.execute(
+            select(
+                Prediction.predicted_at,
+                Prediction.symbol,
+                Prediction.expected_return,
+                Prediction.confidence,
+                Prediction.direction,
+                Prediction.actual_return,
+                Prediction.actual_direction,
+            )
+            .where(
+                Prediction.actual_return.is_not(None),
+                Prediction.expected_return.is_not(None),
+                extract("minute", Prediction.predicted_at) % 5 == 0,
+            )
+            .order_by(Prediction.predicted_at)
+        )
+    ).all()
+    resolved = [
+        ResolvedPrediction(
+            predicted_at=r[0],
+            symbol=r[1],
+            expected_return=float(r[2]),
+            confidence=float(r[3] or 0.0),
+            direction=str(r[4]),
+            actual_return=float(r[5]),
+            actual_direction=str(r[6] or ""),
+        )
+        for r in rows
+    ]
+
+    promo_rows = (
+        await db.execute(select(ModelMetadata.created_at))
+    ).scalars().all()
+    report = build_report(resolved, list(promo_rows))
+
+    # Throughput/health over the last 7 days, from the FULL (unsampled) set.
+    from datetime import UTC, datetime, timedelta
+
+    since = datetime.now(UTC) - timedelta(days=7)
+    from sqlalchemy import func
+
+    health = (
+        await db.execute(
+            select(func.count()).select_from(Prediction).where(
+                Prediction.predicted_at >= since
+            )
+        )
+    ).scalar()
+
+    payload: dict[str, Any] = {
+        "eras": [
+            {
+                "label": e.label,
+                "start": e.start.isoformat(),
+                "end": e.end.isoformat() if e.end else None,
+                "days": e.days,
+                "n": e.n,
+                "mean_ic": None if e.mean_ic is None else round(e.mean_ic, 5),
+                "ic_t_stat": None if e.ic_t_stat is None else round(e.ic_t_stat, 2),
+                "mean_brier": None if e.mean_brier is None else round(e.mean_brier, 4),
+                "sign_agreement": None
+                if e.sign_agreement is None
+                else round(e.sign_agreement, 4),
+            }
+            for e in report.eras
+        ],
+        "daily": [
+            {
+                "day": d.day.isoformat(),
+                "n": d.n,
+                "ic": None if d.ic is None else round(d.ic, 5),
+                "sign_agreement": None
+                if d.sign_agreement is None
+                else round(d.sign_agreement, 4),
+                "abstention_rate": round(d.abstention_rate, 4),
+                "brier_flat": None if d.brier_flat is None else round(d.brier_flat, 4),
+            }
+            for d in report.daily[-14:]
+        ],
+        "calibration": report.calibration,
+        "predictions_last_7d": int(health or 0),
+        "observations_used": len(resolved),
+        "notes": report.notes,
+    }
+    _learning_cache["all"] = (now, payload)
+    return payload
 
 
 @router.get(
