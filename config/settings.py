@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # funding-regime hypothesis (GO_LIVE.md 2026-07-31). Read-only research;
     # never trades.
     funding_watch_enabled: bool = True
+    # Live p(flat) recalibration (GO_LIVE.md 2026-08-09): isotonic layer
+    # fitted on the platform's own resolved outcomes. Kill switch is the
+    # operator's; identity mapping when disabled.
+    live_calibration_enabled: bool = True
 
     # ML
     model_artifact_path: str = "model_artifacts"

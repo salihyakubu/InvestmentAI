@@ -163,8 +163,24 @@ async def _build_services(
     # reconcile model_metadata to what actually serves. Never raises.
     await restore_and_reconcile(model_registry, session_factory)
     model_server = ModelServer(registry=model_registry)
+
+    # Live p(flat) recalibration (GO_LIVE.md 2026-08-09): isotonic layer
+    # fitted on the platform's own resolved outcomes, refit every 6h, fitted
+    # at boot from stored data. Identity until enough live pairs exist.
+    live_calibrator = None
+    if settings.live_calibration_enabled:
+        from services.continuous_learning.live_calibration import LiveCalibrator
+
+        live_calibrator = LiveCalibrator(
+            session_factory=session_factory,
+            enabled=settings.live_calibration_enabled,
+        )
+
     prediction = PredictionService(
-        event_bus=event_bus, settings=settings, model_server=model_server
+        event_bus=event_bus,
+        settings=settings,
+        model_server=model_server,
+        calibrator=live_calibrator,
     )
 
     # -- Portfolio Optimizer --
@@ -298,6 +314,8 @@ async def _build_services(
     ]
     if settings.funding_watch_enabled and services_extra_funding_watch is not None:
         services.append(services_extra_funding_watch)
+    if live_calibrator is not None:
+        services.append(live_calibrator)
     return services
 
 
