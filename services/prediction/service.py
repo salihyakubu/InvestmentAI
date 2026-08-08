@@ -54,10 +54,15 @@ class PredictionService:
         event_bus: EventBus,
         settings: Any = None,
         model_server: ModelServer | None = None,
+        calibrator: Any = None,
     ) -> None:
         self._event_bus = event_bus
         self._settings = settings
         self._model_server = model_server
+        # Live p(flat) recalibration layer (GO_LIVE.md 2026-08-09). Applied
+        # to the ensemble's output before gating and publishing; identity
+        # when absent, disabled, or unfitted.
+        self._calibrator = calibrator
         # Bounded audit buffer: the only consumer reads the last 100, so an
         # unbounded list would just leak memory over a long soak.
         self._prediction_history: deque[Prediction] = deque(maxlen=1000)
@@ -209,6 +214,9 @@ class PredictionService:
                 features_flat=features_flat,
                 features_sequence=None,
             )
+
+        if self._calibrator is not None:
+            output = self._calibrator.recalibrate(output)
 
         active_types = (
             ",".join(self._model_server.active_model_types)
