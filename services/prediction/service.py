@@ -63,6 +63,10 @@ class PredictionService:
         # to the ensemble's output before gating and publishing; identity
         # when absent, disabled, or unfitted.
         self._calibrator = calibrator
+        # Served-feature persistence cadence (GO_LIVE.md 2026-08-09 phase 2):
+        # attach the ordered feature vector only on minutes divisible by this,
+        # matching the de-overlap convention and bounding storage growth.
+        self._feature_sample_minutes = 5
         # Bounded audit buffer: the only consumer reads the last 100, so an
         # unbounded list would just leak memory over a long soak.
         self._prediction_history: deque[Prediction] = deque(maxlen=1000)
@@ -120,6 +124,7 @@ class PredictionService:
 
         try:
             prediction = self.predict(symbol, feature_vector)
+            served_features, served_hash = self._sampled_features(feature_vector)
 
             # Publish downstream
             pred_event = PredictionReadyEvent(
@@ -129,6 +134,8 @@ class PredictionService:
                 expected_return=prediction.expected_return,
                 model_id=prediction.model_id,
                 probabilities=prediction.probabilities,
+                features=served_features,
+                features_hash=served_hash,
                 source_service="prediction-service",
             )
             await self._event_bus.publish(_PREDICTIONS_STREAM, pred_event)
@@ -246,6 +253,35 @@ class PredictionService:
         )
         self._prediction_history.append(prediction)
         return prediction
+
+    def _sampled_features(
+        self, features: dict[str, float]
+    ) -> tuple[list[float] | None, str | None]:
+        """The served feature vector, on sampled minutes only.
+
+        Foundation for the registered live-transfer promotion gate: only a
+        COMPLETE vector in the trained column order is persisted (a partial
+        one could not be replayed through a challenger), rounded to 6
+        significant digits, and tagged with a hash of the feature-name
+        ordering so replays refuse rows from a different pipeline generation.
+        """
+        if not self._should_persist_features(datetime.now(UTC)):
+            return None, None
+        feature_order = (
+            self._model_server.feature_names if self._model_server else None
+        )
+        if not feature_order:
+            return None, None
+        if any(name not in features for name in feature_order):
+            return None, None
+        import hashlib
+
+        vector = [float(f"{float(features[n]):.6g}") for n in feature_order]
+        digest = hashlib.sha256(",".join(feature_order).encode()).hexdigest()[:16]
+        return vector, digest
+
+    def _should_persist_features(self, now: datetime) -> bool:
+        return now.minute % self._feature_sample_minutes == 0
 
     # ------------------------------------------------------------------
     # Queries

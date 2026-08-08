@@ -68,6 +68,19 @@ class PredictionPersistenceService:
         # row and startup rehydration can rebuild drift state from resolved rows.
         event_id = str(getattr(event, "event_id", "") or event.payload.get("event_id", ""))
 
+        # Served feature vector (sampled minutes only): the foundation for
+        # the registered live-transfer promotion gate. {"v": vector in the
+        # trained column order, "h": feature-ordering hash}.
+        features = getattr(event, "features", None) or event.payload.get("features")
+        features_hash = str(
+            getattr(event, "features_hash", "") or event.payload.get("features_hash", "")
+        )
+        features_used = (
+            {"v": [float(x) for x in features], "h": features_hash}
+            if features and features_hash
+            else None
+        )
+
         now = datetime.now(UTC)
         try:
             async with self._session_factory() as session:
@@ -87,6 +100,7 @@ class PredictionPersistenceService:
                         horizon_minutes=5,
                         created_at=now,
                         event_id=event_id[:64] or None,
+                        features_used=features_used,
                     )
                 )
                 await session.commit()

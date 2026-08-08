@@ -99,3 +99,44 @@ async def test_none_expected_return_persists_as_null() -> None:
     assert rows[0].expected_return is None
     assert rows[0].symbol == "BTCUSDT"
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_served_features_persist_when_present() -> None:
+    """Phase 2a of the live-transfer gate (GO_LIVE.md 2026-08-09): a sampled
+    event's ordered feature vector lands in features_used with its ordering
+    hash, so future challengers can be replayed on true live pairs."""
+    engine, factory = _make_factory()
+    await _create_tables(engine)
+
+    svc = PredictionPersistenceService(event_bus=InProcessEventBus(), session_factory=factory)
+    await svc.handle_event(
+        PredictionReadyEvent(
+            symbol="BTC/USDT", direction="flat", confidence=0.41,
+            expected_return=0.001, model_id="ensemble:test",
+            features=[1.5, -0.25, 3.0], features_hash="abcd1234ef567890",
+            source_service="prediction-service",
+        )
+    )
+    row = (await _fetch_predictions(factory))[0]
+    assert row.features_used == {"v": [1.5, -0.25, 3.0], "h": "abcd1234ef567890"}
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unsampled_events_persist_null_features() -> None:
+    """Most minutes are unsampled: the column stays NULL, not empty junk."""
+    engine, factory = _make_factory()
+    await _create_tables(engine)
+
+    svc = PredictionPersistenceService(event_bus=InProcessEventBus(), session_factory=factory)
+    await svc.handle_event(
+        PredictionReadyEvent(
+            symbol="BTC/USDT", direction="flat", confidence=0.41,
+            expected_return=0.001, model_id="ensemble:test",
+            source_service="prediction-service",
+        )
+    )
+    row = (await _fetch_predictions(factory))[0]
+    assert row.features_used is None
+    await engine.dispose()

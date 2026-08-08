@@ -23,6 +23,7 @@ interface CalibrationBin {
 }
 
 export interface LearningMetricsData {
+  feature_rows_persisted: number;
   eras: Era[];
   daily: {
     day: string;
@@ -135,8 +136,10 @@ export default function LearningMetrics({ data }: LearningMetricsProps) {
 
       <p className="text-[11px] text-gray-600">
         {data.predictions_last_7d.toLocaleString()} predictions in the last 7
-        days. IC de-overlapped; sign agreement excludes unchanged bars; a dash
-        means the data cannot support the metric.
+        days; {data.feature_rows_persisted.toLocaleString()} feature-bearing
+        rows accumulated toward the live-transfer promotion gate. IC
+        de-overlapped; sign agreement excludes unchanged bars; a dash means
+        the data cannot support the metric.
       </p>
     </div>
   );

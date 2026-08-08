@@ -114,6 +114,8 @@ def test_contract_and_deoverlap(client) -> None:
     assert len(body["daily"]) == 2
     assert body["daily"][0]["abstention_rate"] == 1.0
     assert any("PR #59" in note for note in body["notes"])
+    # No seeded row carries features yet: the gate counter starts at zero.
+    assert body["feature_rows_persisted"] == 0
 
 
 def test_empty_history_serves_nulls_not_zeros(client) -> None:
