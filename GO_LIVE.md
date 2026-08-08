@@ -1455,3 +1455,18 @@ plan: persist compact features on de-overlapped predictions, accumulate >=
 14 days, then add a champion-gate criterion "challenger live-replay IC must
 beat champion's era IC". To be pre-registered in detail when phase 1's
 verdict is in.
+
+## PHASE 2a EXECUTED (2026-08-09) — served features now persist (PR #76)
+Foundation of the registered live-transfer promotion gate (7f03510). Every
+sampled (minute %% 5) prediction now carries its COMPLETE feature vector in
+the trained column order, rounded to 6 significant digits, tagged with a
+16-hex hash of the feature-name ordering, persisted into the existing
+features_used JSONB (previously NULL on every row since inception).
+Guards: a partial vector is refused entirely (it cannot be replayed through
+a challenger); the hash lets the future replayer refuse rows from a
+different pipeline generation instead of silently mis-aligning columns.
+Storage: ~3.5k rows/day at ~0.5KB -- bounded by the same de-overlap
+convention the statistics use. The learning-metrics endpoint and card now
+show feature_rows_persisted accumulating toward the >= 14-day requirement,
+after which the gate itself gets its own detailed registration (criteria
+declared before code, as with phase 1).

@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import extract, select
+from sqlalchemy import extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, get_db
@@ -89,8 +89,6 @@ async def get_learning_metrics(
     from datetime import UTC, datetime, timedelta
 
     since = datetime.now(UTC) - timedelta(days=7)
-    from sqlalchemy import func
-
     health = (
         await db.execute(
             select(func.count()).select_from(Prediction).where(
@@ -99,7 +97,16 @@ async def get_learning_metrics(
         )
     ).scalar()
 
+    feature_rows = (
+        await db.execute(
+            select(func.count())
+            .select_from(Prediction)
+            .where(Prediction.features_used.is_not(None))
+        )
+    ).scalar()
+
     payload: dict[str, Any] = {
+        "feature_rows_persisted": int(feature_rows or 0),
         "eras": [
             {
                 "label": e.label,
