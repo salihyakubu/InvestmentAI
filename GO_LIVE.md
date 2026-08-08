@@ -1387,3 +1387,38 @@ WHAT IT MEASURES, per the repo's hard-won rules:
 - De-overlap AT FETCH TIME: minute %% 5 == 0 sampling gives independent
   observations and a 5x cheaper scan in one stroke.
 - None is never 0: thin days and empty eras serve null end to end.
+
+## FIRST LEARNING-METRICS READING (2026-08-08) — two significant findings
+The instrument's first pass over 28,516 de-overlapped live observations:
+
+FINDING 1 -- PROMOTIONS ARE NOT IMPROVING THE LIVE SIGNAL. Era table:
+  era 3 (v3, Jul 24-28):        live IC +0.0034  (t=+0.26)  -- nothing
+  era 4 (v4, Jul 28-Aug 08):    live IC -0.0255  (t=-5.07)  -- significantly
+                                                                NEGATIVE
+The v4 ensemble passed the champion/challenger VALIDATION gate and its live
+era shows significantly anti-predictive expected_return over 12 days. Honest
+alternatives before blaming the models: the eras straddle different market
+weeks, so regime is a candidate explanation alongside genuine degradation.
+Either way the conclusion stands: VALIDATION-fold accuracy, the promotion
+criterion, is NOT aligned with live outcome quality. The gate is promoting
+on a number that does not transfer.
+
+FINDING 2 -- p(flat) IS BADLY OVER-STATED AT HIGH CONFIDENCE. Reliability:
+  [0.0,0.4): stated 36.0% -> realized 40.8%   (+4.8pp)
+  [0.4,0.5): stated 45.6% -> realized 44.0%   (-1.6pp)
+  [0.5,0.6): stated 55.0% -> realized 35.4%   (-19.5pp)
+  [0.6,1.0): stated 62.9% -> realized 27.0%   (-35.9pp)
+When the gate is most sure the market will stay flat, it moves MOST often --
+realized flat rate FALLS as stated p(flat) rises. The isotonic/Platt
+calibration fitted at training time does not hold on live distributions.
+This is a well-defined event (inside/outside the +/-5bp deadband), immune to
+the sign(0) artifact, over thousands of observations per bin.
+
+NO CAPITAL CONSEQUENCE TODAY: the no-edge verdict already stands, exposure
+is ~9%, and the risk stack caps everything. WHAT THIS ENABLES, as future
+REGISTERED work (not reactive tinkering on 12 days of data):
+  (a) a live-IC criterion alongside validation accuracy in the champion
+      gate, so promotion requires evidence that transfers;
+  (b) recalibrating p(flat) on live resolved outcomes rather than training
+      folds -- the reliability table above is the training data for it.
+Both would be pre-registered with success criteria before implementation.
