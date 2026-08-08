@@ -1365,3 +1365,25 @@ contract (append-only, causal, per-factor boundary, open windows unscored):
       registered book is better than any single registered factor.
 Bar per factor, unchanged: four consecutive positive calendar quarters of
 mean IC on data after its own boundary. Nothing here trades.
+
+## LEARNING METRICS LIVE (2026-08-08) — the loop now measures itself
+The platform retrains, gates and promotes -- but nothing measured whether
+promotions IMPROVE the served signal on live data. Built (PR #73):
+services/continuous_learning/learning_metrics.py + /models/learning-metrics
++ a Learning Metrics card on the ML Models page.
+
+WHAT IT MEASURES, per the repo's hard-won rules:
+- Live IC by MODEL ERA. predictions.model_version is constant (ensemble
+  stamps v1 always), so the only honest version-over-version comparison is
+  time-segmented by promotion dates from model_metadata; any future retrain
+  opens a new era automatically. This is the "is retraining learning or
+  churning?" instrument.
+- Daily de-overlapped IC + sign agreement with the PR #59 zero-return guard
+  baked in structurally (unchanged bars excluded from agreement).
+- Abstention calibration: stored confidence is p(flat) for gated
+  predictions, so Brier + reliability bins measure exactly that event,
+  restricted to gated rows (a test proves directional rows cannot pollute
+  the bins).
+- De-overlap AT FETCH TIME: minute %% 5 == 0 sampling gives independent
+  observations and a 5x cheaper scan in one stroke.
+- None is never 0: thin days and empty eras serve null end to end.

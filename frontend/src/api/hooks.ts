@@ -79,6 +79,18 @@ export function useBenchmark(days = 30) {
   });
 }
 
+// Learning metrics: live out-of-sample signal quality by model era.
+export function useLearningMetrics() {
+  return useQuery<
+    import('../components/ml/LearningMetrics').LearningMetricsData
+  >({
+    queryKey: ['models', 'learning-metrics'],
+    queryFn: () =>
+      apiClient.get('/models/learning-metrics').then((r) => r.data),
+    refetchInterval: 300_000,
+  });
+}
+
 // Research: walk-forward adjudication record (read-only)
 export function useFundingWatch() {
   return useQuery<import('../components/ml/ResearchWatch').FundingWatch>({

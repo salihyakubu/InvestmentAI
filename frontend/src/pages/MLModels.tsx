@@ -1,13 +1,21 @@
 import ModelPerformance from '../components/ml/ModelPerformance';
 import PredictionView from '../components/ml/PredictionView';
 import FeatureImportance from '../components/ml/FeatureImportance';
+import LearningMetrics from '../components/ml/LearningMetrics';
 import ResearchWatch from '../components/ml/ResearchWatch';
-import { useModels, useRetrainModel, usePredictions, useFundingWatch } from '../api/hooks';
+import {
+  useModels,
+  useRetrainModel,
+  usePredictions,
+  useFundingWatch,
+  useLearningMetrics,
+} from '../api/hooks';
 
 export default function MLModels() {
   const { data: models, isLoading } = useModels();
   const { data: predictions } = usePredictions();
   const { data: fundingWatch } = useFundingWatch();
+  const { data: learningMetrics } = useLearningMetrics();
   const retrain = useRetrainModel();
 
   const activeModel = models?.find((m) => m.status === 'active');
@@ -42,6 +50,8 @@ export default function MLModels() {
           retraining={retrain.isPending}
         />
       )}
+
+      {learningMetrics && <LearningMetrics data={learningMetrics} />}
 
       {fundingWatch && <ResearchWatch data={fundingWatch} />}
 
