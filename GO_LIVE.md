@@ -1422,3 +1422,36 @@ REGISTERED work (not reactive tinkering on 12 days of data):
   (b) recalibrating p(flat) on live resolved outcomes rather than training
       folds -- the reliability table above is the training data for it.
 Both would be pre-registered with success criteria before implementation.
+
+## PRE-REGISTRATION (2026-08-09) — closing the live learning loop
+Operator direction: improve the platform's ML ability "a thousand fold".
+Honest reading, grounded in the 2026-08-08 learning-metrics findings: the
+multiplier on learning is not model size, it is LEARNING FROM THE RIGHT
+SIGNAL. Two registered changes, success criteria fixed before a line of code:
+
+PHASE 1 (built now) -- LIVE p(flat) RECALIBRATION. The abstention gate's
+stated flat-probability is refuted by live outcomes (-35.9pp in the top
+bin). A post-hoc isotonic layer, FITTED ON THE PLATFORM'S OWN RESOLVED LIVE
+OUTCOMES (stated p(flat) vs realized inside-deadband frequency, last 14
+days, de-overlapped, >= 2,000 pairs required), recalibrates the ensemble's
+flat probability at serve time; long/short mass rescales proportionally so
+probabilities stay a simplex. Refit every 6h; fitted at boot from stored
+data (deterministic, no new persistence). Env kill switch:
+LIVE_CALIBRATION_ENABLED (operator-controlled).
+  SUCCESS CRITERIA, judged by the ALREADY-DEPLOYED learning metrics after 7
+  days of post-deploy data: (i) mean daily brier_flat improves by >= 0.01
+  vs the 14 days pre-deploy; (ii) the top calibration bin's |gap| falls
+  below 15pp (from 35.9pp). MISS -> the layer is disabled and the miss is
+  recorded. Behavioral note, stated in advance: better-calibrated (lower)
+  p(flat) mechanically widens directional margins, so the conviction gate
+  may fire more often; the risk stack is unchanged and caps all of it.
+
+PHASE 2 (registered, NOT built today) -- LIVE-TRANSFER PROMOTION GATE.
+Root cause of Finding 1 is that challengers are judged on validation folds
+that do not transfer. The honest fix needs served FEATURE VECTORS persisted
+(features_used is currently NULL on every row) so future challengers can be
+scored on true live feature->outcome pairs before promotion. Registered
+plan: persist compact features on de-overlapped predictions, accumulate >=
+14 days, then add a champion-gate criterion "challenger live-replay IC must
+beat champion's era IC". To be pre-registered in detail when phase 1's
+verdict is in.
