@@ -91,6 +91,15 @@ export function useLearningMetrics() {
   });
 }
 
+// Feature drift: are the models seeing the world they were judged on?
+export function useFeatureDrift() {
+  return useQuery<import('../components/ml/FeatureDrift').FeatureDriftData>({
+    queryKey: ['models', 'feature-drift'],
+    queryFn: () => apiClient.get('/models/feature-drift').then((r) => r.data),
+    refetchInterval: 300_000,
+  });
+}
+
 // Research: walk-forward adjudication record (read-only)
 export function useFundingWatch() {
   return useQuery<import('../components/ml/ResearchWatch').FundingWatch>({
