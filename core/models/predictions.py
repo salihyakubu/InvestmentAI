@@ -31,7 +31,12 @@ class Prediction(UUIDMixin, AsyncBase):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     expected_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     horizon_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    features_used: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: an absent feature vector must be SQL NULL, not JSON
+    # 'null' -- IS NOT NULL is the feature_rows_persisted counter, and JSON
+    # nulls inflated it ~5x until the 2026-08-09 fix (migration 0009).
+    features_used: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     explanation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
