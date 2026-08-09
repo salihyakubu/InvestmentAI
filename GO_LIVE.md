@@ -1569,3 +1569,10 @@ The initially coded boundary-only sampling would have measured 12h of every
 24h of flow -- a different variable than registered; the review caught it
 before a single observation was recorded. The one-stamp lag stands as
 registered. Signs, formulas, min_history, boundaries: all unchanged.
+
+DEPLOYED AND VERIFIED LIVE (2026-08-09 09:26 UTC): worker and api SUCCESS;
+the first 11-factor cycle completed in 25 minutes with zero degraded-series
+and zero missing-series warnings, and new_observations=0 -- exactly what
+the boundaries require: the three new factors' first 24h windows close
+2026-08-10, and the append-only record refused to rescore anything already
+written. First possible new-factor observations: tomorrow's cycles.
