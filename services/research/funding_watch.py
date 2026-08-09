@@ -52,12 +52,25 @@ CARRY_LOOKBACK_STAMPS = 3
 # generated the hypothesis, so it can never count toward adjudication.
 UNSEEN_FROM = datetime(2026, 7, 1, tzinfo=UTC)
 _MS_8H = 8 * 3_600_000
+_MS_4H = 4 * 3_600_000
 _MIN_SYMBOLS = 20
 # One cycle per 8h stamp, with slack for fetch time.
 _CYCLE_SECONDS = 8 * 3600.0
 # ~13 days of stamps per fetch: covers the deepest factor lookback
 # (low_vol_7d: 21 stamps) plus the horizon plus healing slack.
 _FETCH_STAMPS = 40
+# The /futures/data/* family has its OWN limit -- 1,000 requests per 5
+# minutes per IP -- which ccxt's weight-based throttler does not model.
+# Self-imposed spacing keeps the family under ~860/5min; a violation
+# escalates to an IP ban that would hit the live trading stack.
+_DATA_FAMILY_MIN_INTERVAL_S = 0.35
+# If more than this fraction of a series' per-symbol requests ERROR in a
+# cycle, the whole series is dropped for the cycle: a mid-loop failure
+# (rate limiting, partial outage) would otherwise leave an alphabetical
+# PREFIX of the universe in the matrix, and a cross-sectional IC on a
+# biased sub-universe would be permanently recorded as if it were the
+# registered one. Thin/absent data for a symbol is NOT an error.
+_MAX_SERIES_ERROR_FRACTION = 0.10
 
 
 @dataclass(frozen=True)
@@ -67,19 +80,114 @@ class WatchedFactor:
     ``unseen_from`` is each factor's own registration boundary: stamps before
     it were visible to the study that generated the hypothesis and can never
     count toward its adjudication. ``min_history`` stamps of data must exist
-    behind a stamp before its signal is scored.
+    behind a stamp before its signal is scored. ``requires`` names the extra
+    data series (beyond close/funding/volume) the builder needs; when any is
+    unavailable in a cycle the factor is skipped, never fed garbage.
     """
 
     name: str
     unseen_from: datetime
     min_history: int
-    build: SignalBuilder
+    build: SignalBuilder | ExtendedSignalBuilder
+    requires: tuple[str, ...] = ()
 
 
 class SignalBuilder(Protocol):
     def __call__(
         self, close: np.ndarray, funding: np.ndarray, volume: np.ndarray
     ) -> np.ndarray: ...
+
+
+class ExtendedSignalBuilder(Protocol):
+    def __call__(
+        self,
+        close: np.ndarray,
+        funding: np.ndarray,
+        volume: np.ndarray,
+        extras: dict[str, np.ndarray],
+    ) -> np.ndarray: ...
+
+
+def _parse_boundary_snapshots(rows: list[dict], field: str) -> dict[int, float]:
+    """Snapshot series: keep points whose timestamp is exactly ON the 8h
+    grid -- the value AT the stamp, nothing floored or filled forward
+    (flooring would pull intra-bucket future data backward)."""
+    out: dict[int, float] = {}
+    for row in rows:
+        try:
+            ts = int(row["timestamp"])
+            if ts % _MS_8H == 0:
+                out[ts] = float(row[field])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _parse_taker_8h(rows: list[dict]) -> dict[int, float]:
+    """Taker flow: compose each full 8h-period buy/sell ratio from its two
+    4h halves (period-START stamping, verified empirically 2026-08-09: the
+    1d aggregate equals the sum of the 4h points stamped from the same
+    instant forward). A stamp missing either half stays absent -- a
+    half-window ratio is a different variable than the registered one."""
+    vols: dict[int, tuple[float, float]] = {}
+    for row in rows:
+        try:
+            vols[int(row["timestamp"])] = (float(row["buyVol"]), float(row["sellVol"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    out: dict[int, float] = {}
+    for ts, (buy1, sell1) in vols.items():
+        if ts % _MS_8H != 0:
+            continue
+        second = vols.get(ts + _MS_4H)
+        if second is None:
+            continue
+        buy, sell = buy1 + second[0], sell1 + second[1]
+        if sell > 0:
+            out[ts] = buy / sell
+    return out
+
+
+# The orthogonal data series (registered 2026-08-09): public Binance futures
+# data endpoints, mapped as series name -> (ccxt implicit method, parser).
+# All three endpoints serve 4h periods (no 8h option); each parser produces
+# {8h stamp: value} under the causality rules fixed in the registration.
+_EXTRA_SERIES: dict[str, tuple[str, Any]] = {
+    "open_interest": (
+        "fapiDataGetOpenInterestHist",
+        lambda rows: _parse_boundary_snapshots(rows, "sumOpenInterest"),
+    ),
+    "global_long_short": (
+        "fapiDataGetGlobalLongShortAccountRatio",
+        lambda rows: _parse_boundary_snapshots(rows, "longShortRatio"),
+    ),
+    "taker_buy_ratio": ("fapiDataGetTakerlongshortRatio", _parse_taker_8h),
+}
+
+
+def _closed_bars(bars: list, now_ms: int) -> dict[int, tuple[float, float]]:
+    """Kline rows -> {8h open-time stamp: (close, volume)}, EXCLUDING any bar
+    still open at *now_ms*.
+
+    Binance includes the in-progress candle in fetch_ohlcv, and before the
+    2026-08-09 review fix its live mid-bar price could become a permanently
+    recorded IC exit -- shortening the registered 24h window to 16h+drift.
+    An exit price must be a settled close or the stamp must wait a cycle.
+    """
+    out: dict[int, tuple[float, float]] = {}
+    for b in bars:
+        stamp = (int(b[0]) // _MS_8H) * _MS_8H
+        if stamp + _MS_8H <= now_ms:
+            out[stamp] = (float(b[4]), float(b[5]))
+    return out
+
+
+def _series_is_trustworthy(attempts: int, errors: int) -> bool:
+    """A series with too many per-symbol request FAILURES this cycle is
+    unusable: what did arrive is a biased (alphabetical-prefix) universe."""
+    if attempts == 0:
+        return False
+    return errors / attempts <= _MAX_SERIES_ERROR_FRACTION
 
 
 def _carry_signal(
@@ -147,6 +255,51 @@ def _funding_delta_fade(
     return np.asarray(-(funding - trailing_mean(funding, 21)), dtype=float)
 
 
+def _oi_buildup_24h_fade(
+    close: np.ndarray,
+    funding: np.ndarray,
+    volume: np.ndarray,
+    extras: dict[str, np.ndarray],
+) -> np.ndarray:
+    """-(OI_t / OI_{t-3} - 1): fade the fastest 24h open-interest growth."""
+    oi = extras["open_interest"]
+    signal = np.full_like(close, np.nan, dtype=float)
+    prev = oi[:-3]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signal[3:] = np.where(prev > 0, -(oi[3:] / prev - 1.0), np.nan)
+    return signal
+
+
+def _crowded_longs_fade(
+    close: np.ndarray,
+    funding: np.ndarray,
+    volume: np.ndarray,
+    extras: dict[str, np.ndarray],
+) -> np.ndarray:
+    """-globalLongShortAccountRatio_t: fade the account-count crowd."""
+    return np.asarray(-extras["global_long_short"], dtype=float)
+
+
+def _taker_buying_24h_fade(
+    close: np.ndarray,
+    funding: np.ndarray,
+    volume: np.ndarray,
+    extras: dict[str, np.ndarray],
+) -> np.ndarray:
+    """-mean(taker buy/sell ratio over the three stamps ending BEFORE t).
+
+    The one-stamp lag is registered: the endpoint's stamping convention
+    (period start vs end) is ambiguous, and the lag makes the signal causal
+    under either convention at the cost of 8h of staleness.
+    """
+    from services.backtesting.funding_factors import trailing_mean
+
+    taker = extras["taker_buy_ratio"]
+    lagged = np.full_like(taker, np.nan, dtype=float)
+    lagged[1:] = taker[:-1]
+    return np.asarray(-trailing_mean(lagged, 3), dtype=float)
+
+
 def _blend_registered_v1(
     close: np.ndarray, funding: np.ndarray, volume: np.ndarray
 ) -> np.ndarray:
@@ -175,9 +328,9 @@ def _blend_registered_v1(
 
 
 # The registry. Definitions, signs and boundaries are fixed by the
-# pre-registrations in GO_LIVE.md (funding: 2026-07-31; the other three:
-# 2026-08-02) and must not be edited after the fact -- the universe test
-# pins them.
+# pre-registrations in GO_LIVE.md (funding: 2026-07-31; batches on
+# 2026-08-02, 2026-08-07 and 2026-08-09) and must not be edited after the
+# fact -- the universe test pins them.
 WATCHED_FACTORS: tuple[WatchedFactor, ...] = (
     WatchedFactor(FACTOR_NAME, UNSEEN_FROM, CARRY_LOOKBACK_STAMPS, _carry_signal),
     WatchedFactor(
@@ -200,6 +353,27 @@ WATCHED_FACTORS: tuple[WatchedFactor, ...] = (
     ),
     WatchedFactor(
         "blend_registered_v1", datetime(2026, 8, 7, tzinfo=UTC), 22, _blend_registered_v1
+    ),
+    WatchedFactor(
+        "oi_buildup_24h_minus",
+        datetime(2026, 8, 9, tzinfo=UTC),
+        4,
+        _oi_buildup_24h_fade,
+        requires=("open_interest",),
+    ),
+    WatchedFactor(
+        "crowded_longs_minus",
+        datetime(2026, 8, 9, tzinfo=UTC),
+        1,
+        _crowded_longs_fade,
+        requires=("global_long_short",),
+    ),
+    WatchedFactor(
+        "taker_buying_24h_minus",
+        datetime(2026, 8, 9, tzinfo=UTC),
+        4,
+        _taker_buying_24h_fade,
+        requires=("taker_buy_ratio",),
     ),
 )
 
@@ -273,11 +447,14 @@ def compute_resolvable_ics(
 
 def _fetch_recent(
     max_stamps: int = _FETCH_STAMPS,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Blocking fetch of recent 8h closes + per-8h funding for live perps.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Blocking fetch of recent 8h closes + per-8h funding for live perps,
+    plus the registered extra series (OI, long/short, taker ratio).
 
     Runs in a worker thread. Uses only public endpoints; no keys involved.
     """
+    import time
+
     import ccxt
 
     exchange = ccxt.binance({"options": {"defaultType": "future"}, "enableRateLimit": True})
@@ -288,8 +465,21 @@ def _fetch_recent(
         and m.get("quote") == "USDT"
     )
 
+    # The data endpoints serve 4h periods (no 8h option); fetch enough 4h
+    # points to compose every 8h stamp on the grid.
+    extra_limit = min(500, (max_stamps + HORIZON_STAMPS) * 2 + 4)
+
     per_symbol_bars: dict[str, dict[int, tuple[float, float]]] = {}
     per_symbol_funding: dict[str, dict[int, float]] = {}
+    per_symbol_extras: dict[str, dict[str, dict[int, float]]] = {
+        name: {} for name in _EXTRA_SERIES
+    }
+    attempts = dict.fromkeys(_EXTRA_SERIES, 0)
+    errors = dict.fromkeys(_EXTRA_SERIES, 0)
+    # One closure decision for the whole cycle: the throttled loop takes
+    # minutes, and a bar closing mid-loop must not be included for only the
+    # late-alphabet symbols (a biased cross-section at that stamp).
+    now_ms = int(time.time() * 1000)
     for symbol in symbols:
         try:
             bars = exchange.fetch_ohlcv(symbol, "8h", limit=max_stamps + HORIZON_STAMPS)
@@ -298,9 +488,7 @@ def _fetch_recent(
             )
         except Exception:
             continue  # one flaky symbol must not kill the cycle
-        per_symbol_bars[symbol] = {
-            (int(b[0]) // _MS_8H) * _MS_8H: (float(b[4]), float(b[5])) for b in bars
-        }
+        per_symbol_bars[symbol] = _closed_bars(bars, now_ms)
         rates: dict[int, float] = {}
         for row in history:
             stamp = (int(row["timestamp"]) // _MS_8H) * _MS_8H
@@ -310,6 +498,31 @@ def _fetch_recent(
             rates[stamp] = float(row["fundingRate"]) * (8.0 / max(interval, 1e-9))
         per_symbol_funding[symbol] = rates
 
+        market_id = markets[symbol]["id"]
+        for name, (method, parse) in _EXTRA_SERIES.items():
+            time.sleep(_DATA_FAMILY_MIN_INTERVAL_S)  # the family's own IP cap
+            attempts[name] += 1
+            try:
+                rows = getattr(exchange, method)(
+                    {"symbol": market_id, "period": "4h", "limit": extra_limit}
+                )
+            except Exception:
+                errors[name] += 1
+                continue  # a missing series must not cost the symbol its bars
+            aligned = parse(rows)
+            if aligned:
+                per_symbol_extras[name][symbol] = aligned
+
+    for name in _EXTRA_SERIES:
+        if not _series_is_trustworthy(attempts[name], errors[name]):
+            logger.warning(
+                "extra_series_degraded",
+                series=name,
+                attempts=attempts[name],
+                errors=errors[name],
+            )
+            per_symbol_extras[name] = {}
+
     grid = np.array(
         sorted({s for bars in per_symbol_bars.values() for s in bars})[-max_stamps:],
         dtype=np.int64,
@@ -318,6 +531,9 @@ def _fetch_recent(
     close = np.full((grid.size, len(kept)), np.nan)
     volume = np.full((grid.size, len(kept)), np.nan)
     funding = np.full((grid.size, len(kept)), np.nan)
+    extras = {
+        name: np.full((grid.size, len(kept)), np.nan) for name in _EXTRA_SERIES
+    }
     index_of = {stamp: i for i, stamp in enumerate(grid)}
     for j, symbol in enumerate(kept):
         for stamp, (price, vol) in per_symbol_bars[symbol].items():
@@ -332,7 +548,12 @@ def _fetch_recent(
                 last = rates[stamp]
             if np.isfinite(close[i, j]):
                 funding[i, j] = last
-    return grid, close, funding, volume
+        for name in _EXTRA_SERIES:
+            for stamp, value in per_symbol_extras[name].get(symbol, {}).items():
+                i = index_of.get(stamp)
+                if i is not None:
+                    extras[name][i, j] = value
+    return grid, close, funding, volume, extras
 
 
 class FundingWatchService:
@@ -363,7 +584,7 @@ class FundingWatchService:
 
     async def observe_once(self) -> int:
         """Fetch once, then resolve and insert for EVERY registered factor."""
-        grid, close, funding, volume = await asyncio.to_thread(_fetch_recent)
+        grid, close, funding, volume, extras = await asyncio.to_thread(_fetch_recent)
         if grid.size == 0:
             return 0
 
@@ -371,7 +592,24 @@ class FundingWatchService:
         async with self._session_factory() as session:
             now = datetime.now(UTC)
             for factor in WATCHED_FACTORS:
-                signal = factor.build(close, funding, volume)
+                if factor.requires:
+                    missing = [
+                        key
+                        for key in factor.requires
+                        if key not in extras or not np.isfinite(extras[key]).any()
+                    ]
+                    if missing:
+                        # Skipped, never fed garbage: an absent series must
+                        # surface as a missing observation, not a wrong one.
+                        logger.warning(
+                            "factor_series_missing",
+                            factor=factor.name,
+                            missing=missing,
+                        )
+                        continue
+                    signal = factor.build(close, funding, volume, extras)  # type: ignore[call-arg]
+                else:
+                    signal = factor.build(close, funding, volume)  # type: ignore[call-arg]
                 candidates = compute_signal_ics(
                     grid, close, signal, HORIZON_STAMPS, factor.min_history
                 )

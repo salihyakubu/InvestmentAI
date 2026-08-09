@@ -61,6 +61,18 @@ _HYPOTHESES = {
         "The frozen equal-weight blend of the four prior registered factors "
         "beats its best component (registered 2026-08-07)"
     ),
+    "oi_buildup_24h_minus": (
+        "Fading rapid 24h open-interest growth predicts relative return "
+        "(economic prior only; registered 2026-08-09)"
+    ),
+    "crowded_longs_minus": (
+        "Fading the account-count long/short crowd predicts relative return "
+        "(economic prior only; registered 2026-08-09)"
+    ),
+    "taker_buying_24h_minus": (
+        "Fading aggressive taker buying, lagged one stamp for causality, "
+        "predicts relative return (economic prior only; registered 2026-08-09)"
+    ),
 }
 
 

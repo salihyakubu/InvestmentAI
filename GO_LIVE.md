@@ -1526,3 +1526,46 @@ mean IC on data after its own boundary. A failed leg is a successful audit.
 Nothing here trades. Endpoint response formats may be probed after this
 commit for engineering purposes (field names, timestamp alignment) before
 deployment; no IC of any kind is computed outside the deployed watch.
+
+## ADVERSARIAL REVIEW OF THE BATCH (2026-08-09) — one critical, one inherited
+Before deployment, the orthogonal-data diff went through a four-lens
+adversarial review panel (causality, correctness, ops, registration
+fidelity; every finding faced three independent refuters). Six findings
+survived. All are fixed in the same PR; two deserve permanent record:
+
+1. INHERITED INTEGRITY DEFECT, PRE-EXISTING SINCE THE WATCH LAUNCHED:
+   fetch_ohlcv includes Binance's current IN-PROGRESS 8h candle, and in
+   steady state each cycle's newly resolvable stamp took that live mid-bar
+   price as its permanently recorded exit. Effect: most stored watch
+   observations to date measured an effective window of ~16h-24h (deploy-
+   phase dependent) ending at an arbitrary intra-bar price, not the
+   registered 24h close-to-close return. This adds measurement noise, not
+   directional bias, but it means EVERY factor's record to date -- including
+   the Q3 funding rows (n=95, IC +0.0124) -- is noisier than its label.
+   DISPOSITION: rows stand unmodified (append-only is the survivorship
+   guarantee and recomputation is exactly the forbidden move); from this
+   deploy forward an exit price must be a settled close (_closed_bars drops
+   any bar still open, one shared clock decision per cycle so a boundary
+   crossing mid-fetch cannot split the universe). The fix date is this
+   record: rows resolved before it carry the caveat.
+2. CRITICAL OPS: the three new endpoints live under Binance's
+   /futures/data/* family with its OWN 1,000-req/5min IP cap that ccxt's
+   weight-based throttler does NOT model; the unthrottled ~1,350-call cycle
+   risked 429s escalating to an IP ban shared with the live trading stack.
+   Fixed: 0.35s self-imposed spacing (~860/5min worst case), plus a
+   per-series trust gate -- if >10% of a series' per-symbol requests ERROR
+   in a cycle, the series is dropped for that cycle entirely, because a
+   mid-loop failure leaves an alphabetical-prefix universe and a
+   cross-sectional IC on a biased prefix must never enter the record.
+
+TAKER DEFINITION CLARIFIED BEFORE FIRST OBSERVATION (registration
+amendment, zero rows recorded at amendment time): the endpoint has no 8h
+period. Probed after registration as permitted: stamping is period-START,
+verified exactly (the 1d aggregate equals the sum of the six 4h points
+stamped from the same instant forward). Each registered "8h period" value
+is therefore composed as (buyVol_t + buyVol_t+4h) / (sellVol_t + sellVol_t+4h)
+-- the true full-window ratio; a stamp missing either half stays absent.
+The initially coded boundary-only sampling would have measured 12h of every
+24h of flow -- a different variable than registered; the review caught it
+before a single observation was recorded. The one-stamp lag stands as
+registered. Signs, formulas, min_history, boundaries: all unchanged.

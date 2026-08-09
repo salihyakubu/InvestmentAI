@@ -258,6 +258,9 @@ def test_registry_is_pinned_to_the_registration() -> None:
         "volume_surge_minus",
         "funding_delta_minus",
         "blend_registered_v1",
+        "oi_buildup_24h_minus",
+        "crowded_longs_minus",
+        "taker_buying_24h_minus",
     }
     assert by_name["funding_carry_24h_plus"].unseen_from == datetime(2026, 7, 1, tzinfo=UTC)
     for name in ("reversal_8h_minus", "momentum_72h_minus", "low_vol_7d_minus"):
@@ -269,7 +272,22 @@ def test_registry_is_pinned_to_the_registration() -> None:
         "blend_registered_v1",
     ):
         assert by_name[name].unseen_from == datetime(2026, 8, 7, tzinfo=UTC)
+    for name in (
+        "oi_buildup_24h_minus",
+        "crowded_longs_minus",
+        "taker_buying_24h_minus",
+    ):
+        assert by_name[name].unseen_from == datetime(2026, 8, 9, tzinfo=UTC)
     assert by_name["low_vol_7d_minus"].min_history == 22
+    # The orthogonal-data batch declares its series; price-only factors
+    # declare nothing (a series requirement is part of the registration).
+    assert by_name["oi_buildup_24h_minus"].requires == ("open_interest",)
+    assert by_name["oi_buildup_24h_minus"].min_history == 4
+    assert by_name["crowded_longs_minus"].requires == ("global_long_short",)
+    assert by_name["crowded_longs_minus"].min_history == 1
+    assert by_name["taker_buying_24h_minus"].requires == ("taker_buy_ratio",)
+    assert by_name["taker_buying_24h_minus"].min_history == 4
+    assert by_name["funding_carry_24h_plus"].requires == ()
 
 
 def test_reversal_signal_fades_the_last_move_causally() -> None:
@@ -327,11 +345,22 @@ async def test_each_factor_respects_its_own_unseen_boundary() -> None:
             from services.research.funding_watch import compute_signal_ics
 
             grid, close, funding = self._dataset
+            # Plausible synthetic extras so the orthogonal-data factors also
+            # produce signals -- the boundary must be what refuses them.
+            rng = np.random.default_rng(99)
+            extras = {
+                "open_interest": rng.uniform(1e6, 2e6, close.shape),
+                "global_long_short": rng.uniform(0.5, 3.0, close.shape),
+                "taker_buy_ratio": rng.uniform(0.7, 1.4, close.shape),
+            }
             inserted = 0
             async with self._session_factory() as session:
                 now = datetime.now(UTC)
                 for f in WATCHED_FACTORS:
-                    signal = f.build(close, funding, np.ones_like(close))
+                    if f.requires:
+                        signal = f.build(close, funding, np.ones_like(close), extras)
+                    else:
+                        signal = f.build(close, funding, np.ones_like(close))
                     for stamp_ms, ic, n_symbols in compute_signal_ics(
                         grid, close, signal, HORIZON_STAMPS, f.min_history
                     ):
@@ -389,6 +418,145 @@ def test_funding_delta_fades_building_crowding() -> None:
     funding[-1, 1] = 0.0008        # low level but RISING from 0
     signal = build(close, funding, np.ones_like(close))
     assert signal[-1, 1] < signal[-1, 0]  # the riser is faded, not the level
+
+
+def test_oi_buildup_fades_the_ramping_contract() -> None:
+    """The contract whose open interest grew fastest over 24h scores LOW;
+    no signal before a full 3-stamp lookback; dead (zero) OI stays absent."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "oi_buildup_24h_minus").build
+    n = 10
+    close = np.full((n, 3), 100.0)
+    oi = np.full((n, 3), 1_000.0)
+    oi[:, 0] = 1_000.0 * 1.5 ** np.arange(n)  # symbol 0: OI ramping hard
+    oi[:, 2] = 0.0                            # symbol 2: dead contract
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros, {"open_interest": oi})
+    assert np.all(np.isnan(signal[:3]))          # lookback not yet available
+    assert signal[-1, 0] < signal[-1, 1]         # the ramper is faded
+    assert np.all(np.isnan(signal[3:, 2]))       # zero OI -> absent, not inf
+
+
+def test_crowded_longs_fades_the_long_crowd() -> None:
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "crowded_longs_minus").build
+    n = 5
+    close = np.full((n, 2), 100.0)
+    ls = np.full((n, 2), 1.0)
+    ls[:, 0] = 3.0  # symbol 0: three accounts long per short -- the crowd
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros, {"global_long_short": ls})
+    assert signal[-1, 0] < signal[-1, 1]
+
+
+def test_taker_buying_is_lagged_one_full_stamp() -> None:
+    """A taker-buying spike at stamp k must NOT move the signal at k -- the
+    registered one-stamp lag makes the signal causal regardless of the
+    endpoint's period-stamping convention. It shows up from k+1."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "taker_buying_24h_minus").build
+    n = 12
+    close = np.full((n, 2), 100.0)
+    taker = np.full((n, 2), 1.0)
+    k = 6
+    taker[k, 0] = 5.0  # symbol 0: heavy taker buying at stamp k
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros, {"taker_buy_ratio": taker})
+    assert signal[k, 0] == signal[k, 1]          # nothing leaks into stamp k
+    assert signal[k + 1, 0] < signal[k + 1, 1]   # the buyer is faded after
+
+
+@pytest.mark.asyncio
+async def test_missing_series_skips_the_factor_not_the_cycle(monkeypatch) -> None:
+    """A cycle where a data endpoint fails must still record every factor
+    whose inputs exist -- and must record NOTHING for the starved factor."""
+    import services.research.funding_watch as fw
+
+    engine, factory = await _factory()
+    n, syms = 30, 40
+    rng = np.random.default_rng(11)
+    # Future-dated grid: past every factor's unseen_from boundary.
+    grid = _grid(n, start=datetime(2026, 8, 10, tzinfo=UTC))
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, (n, syms)), axis=0)
+    funding = rng.normal(0, 0.0005, (n, syms))
+    volume = rng.lognormal(3, 0.5, (n, syms))
+    extras = {
+        "open_interest": rng.uniform(1e6, 2e6, (n, syms)),
+        "global_long_short": np.full((n, syms), np.nan),  # endpoint down
+        "taker_buy_ratio": rng.uniform(0.7, 1.4, (n, syms)),
+    }
+    monkeypatch.setattr(
+        fw, "_fetch_recent", lambda: (grid, close, funding, volume, extras)
+    )
+    watch = FundingWatchService(factory)
+    inserted = await watch.observe_once()
+    assert inserted > 0
+    async with factory() as session:
+        rows = (await session.execute(select(FactorWatchObservation))).scalars().all()
+    recorded = {r.factor for r in rows}
+    assert "oi_buildup_24h_minus" in recorded
+    assert "taker_buying_24h_minus" in recorded
+    assert "crowded_longs_minus" not in recorded  # starved -> silent absence
+    await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Fetch integrity (2026-08-09 review fixes)
+# ---------------------------------------------------------------------------
+
+
+def test_the_in_progress_bar_is_never_a_close() -> None:
+    """Binance includes the current unfinished candle in fetch_ohlcv; its
+    live mid-bar price must never become a permanently recorded IC exit."""
+    from services.research.funding_watch import _closed_bars
+
+    open_time = 1786262400000  # an exact 8h boundary
+    bars = [
+        [open_time - _MS_8H, 0, 0, 0, 101.0, 5.0],  # closed
+        [open_time, 0, 0, 0, 999.0, 1.0],           # in progress
+    ]
+    mid_bar_now = open_time + _MS_8H // 2
+    kept = _closed_bars(bars, mid_bar_now)
+    assert open_time - _MS_8H in kept
+    assert open_time not in kept
+    # Once the bar closes, the next cycle picks it up.
+    kept_later = _closed_bars(bars, open_time + _MS_8H)
+    assert open_time in kept_later
+
+
+def test_a_degraded_series_is_dropped_not_prefix_scored() -> None:
+    """Rate limiting or a partial outage mid-loop leaves an alphabetical
+    PREFIX of the universe; an IC on that biased sub-universe must never be
+    recorded, so the trust gate refuses the series for the cycle."""
+    from services.research.funding_watch import _series_is_trustworthy
+
+    assert _series_is_trustworthy(attempts=450, errors=0)
+    assert _series_is_trustworthy(attempts=450, errors=45)      # tolerated flake
+    assert not _series_is_trustworthy(attempts=450, errors=120)  # mid-loop 429s
+    assert not _series_is_trustworthy(attempts=0, errors=0)      # nothing fetched
+
+
+def test_taker_8h_ratio_composes_both_4h_halves() -> None:
+    """Period-START stamping (verified empirically): the 8h ratio at stamp t
+    is the volume sum of the points stamped t and t+4h. A stamp missing
+    either half stays absent -- a half-window ratio is a different variable
+    than the registered one."""
+    from services.research.funding_watch import _MS_4H, _parse_taker_8h
+
+    t = 1786233600000  # exact 8h boundary
+    rows = [
+        {"timestamp": t, "buyVol": "30.0", "sellVol": "10.0"},
+        {"timestamp": t + _MS_4H, "buyVol": "10.0", "sellVol": "30.0"},
+        # Next stamp: only the first half arrived.
+        {"timestamp": t + _MS_8H, "buyVol": "50.0", "sellVol": "1.0"},
+    ]
+    out = _parse_taker_8h(rows)
+    assert out == {t: (30.0 + 10.0) / (10.0 + 30.0)}  # both halves, vol-summed
+    assert t + _MS_8H not in out                       # half-window refused
+    assert t + _MS_4H not in out                       # off-grid never a stamp
 
 
 def test_blend_is_the_frozen_equal_weight_of_registered_components() -> None:
