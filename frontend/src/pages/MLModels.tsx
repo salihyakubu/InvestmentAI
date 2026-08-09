@@ -2,6 +2,7 @@ import ModelPerformance from '../components/ml/ModelPerformance';
 import PredictionView from '../components/ml/PredictionView';
 import FeatureImportance from '../components/ml/FeatureImportance';
 import LearningMetrics from '../components/ml/LearningMetrics';
+import FeatureDrift from '../components/ml/FeatureDrift';
 import ResearchWatch from '../components/ml/ResearchWatch';
 import {
   useModels,
@@ -9,6 +10,7 @@ import {
   usePredictions,
   useFundingWatch,
   useLearningMetrics,
+  useFeatureDrift,
 } from '../api/hooks';
 
 export default function MLModels() {
@@ -16,6 +18,7 @@ export default function MLModels() {
   const { data: predictions } = usePredictions();
   const { data: fundingWatch } = useFundingWatch();
   const { data: learningMetrics } = useLearningMetrics();
+  const { data: featureDrift } = useFeatureDrift();
   const retrain = useRetrainModel();
 
   const activeModel = models?.find((m) => m.status === 'active');
@@ -52,6 +55,8 @@ export default function MLModels() {
       )}
 
       {learningMetrics && <LearningMetrics data={learningMetrics} />}
+
+      {featureDrift && <FeatureDrift data={featureDrift} />}
 
       {fundingWatch && <ResearchWatch data={fundingWatch} />}
 

@@ -1576,3 +1576,32 @@ and zero missing-series warnings, and new_observations=0 -- exactly what
 the boundaries require: the three new factors' first 24h windows close
 2026-08-10, and the append-only record refused to rescore anything already
 written. First possible new-factor observations: tomorrow's cycles.
+
+## FEATURE-DRIFT INSTRUMENT (2026-08-09) — regime vs degradation, measured
+The 2026-08-08 learning-metrics reading left an open question the record
+could not answer: era 4's significantly negative live IC has two candidate
+explanations (regime shift vs genuine model degradation) and no instrument
+to separate them. Built now, measurement-only (no hypothesis, no gate, same
+category as learning metrics): PSI per served feature from the Phase 2a
+persisted vectors -- GET /models/feature-drift + a Feature Drift card.
+Input drift is evidence for the regime reading; its absence points at the
+models.
+
+Adversarial review (2 lenses, 3 refuters per finding) caught the naive
+version producing confident nonsense BEFORE deploy; both defects are now
+design rules stated in the module:
+- PER SYMBOL, never pooled: the served vector carries raw price-scale
+  features, so pooled reference deciles carve between SYMBOLS and PSI would
+  measure row-share, not drift. Regression test: a 70/30 -> 30/70 symbol-mix
+  flip with unmoved per-symbol distributions must read ~0.
+- FIXED EARLY REFERENCE: the baseline is the current generation's first 7
+  days, not "everything before the recent window" -- an expanding reference
+  absorbs the drifted past (measured attenuation: 2-sigma/30-day drift
+  scores ~0.8 expanding vs ~2.8 fixed).
+Honest limitations, served in the payload itself: the reference is the
+platform's own early serving history, NOT the training distribution
+(training-time distributions were never persisted), so drift brackets
+train-serve skew rather than equaling it; features are reported by index
+within the pipeline-generation hash; below the floors (5 days span, 300
+vectors per side per symbol) the endpoint refuses with a reason -- expected
+to be the live state until ~2026-08-14, since persistence began 2026-08-09.
