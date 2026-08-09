@@ -124,8 +124,12 @@ async def test_served_features_persist_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unsampled_events_persist_null_features() -> None:
-    """Most minutes are unsampled: the column stays NULL, not empty junk."""
+async def test_unsampled_events_persist_sql_null_not_json_null() -> None:
+    """Most minutes are unsampled: the column must be SQL NULL, not JSON
+    'null'. The distinction is invisible to an ORM read (both deserialize to
+    Python None) but IS NOT NULL is the feature_rows_persisted counter, and
+    JSON nulls inflated it ~5x in production until 2026-08-09 -- so the
+    assertion here must be made in SQL, where the defect lives."""
     engine, factory = _make_factory()
     await _create_tables(engine)
 
@@ -139,4 +143,11 @@ async def test_unsampled_events_persist_null_features() -> None:
     )
     row = (await _fetch_predictions(factory))[0]
     assert row.features_used is None
+    async with factory() as session:
+        counted = (
+            await session.execute(
+                select(Prediction).where(Prediction.features_used.is_not(None))
+            )
+        ).scalars().all()
+    assert counted == []  # the counter's exact predicate sees SQL NULL
     await engine.dispose()

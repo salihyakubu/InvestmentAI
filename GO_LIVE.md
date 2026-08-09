@@ -1605,3 +1605,20 @@ train-serve skew rather than equaling it; features are reported by index
 within the pipeline-generation hash; below the floors (5 days span, 300
 vectors per side per symbol) the endpoint refuses with a reason -- expected
 to be the live state until ~2026-08-14, since persistence began 2026-08-09.
+
+## CORRECTION (2026-08-09) — feature_rows_persisted was inflated ~5x
+Found by the feature-drift deploy probe, retracted here the same hour. The
+Phase 2a verification recorded "1,213 feature-bearing rows" (and the
+dashboard counter kept counting): the TRUE number of vector-bearing rows at
+that time was ~1/5 of that. Mechanism: since PR #76 the prediction writer
+passed features_used=None explicitly for unsampled minutes, and
+SQLAlchemy's JSON default (none_as_null=False) stored that as JSON 'null',
+which "IS NOT NULL" counts. Measured 2026-08-09 14:2x UTC: 4,078 rows
+matched the counter's predicate; 829 carried vectors. The vectors
+themselves were always complete and correctly hashed -- the accumulation
+RATE claim was wrong (~1,350 usable rows/day at current serving cadence,
+not ~3.5k), not the data. The >= 14-DAY requirement for the phase 2 gate is
+day-based and unaffected. Fix: JSONB(none_as_null=True) on the column,
+migration 0009 rewrites stored JSON nulls to SQL NULL, and the regression
+test now asserts at the SQL level -- an ORM read deserializes both
+representations to Python None, which is exactly how the defect hid.
