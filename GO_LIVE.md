@@ -1470,3 +1470,59 @@ convention the statistics use. The learning-metrics endpoint and card now
 show feature_rows_persisted accumulating toward the >= 14-day requirement,
 after which the gate itself gets its own detailed registration (criteria
 declared before code, as with phase 1).
+
+## PRE-REGISTRATION (2026-08-09) — orthogonal-data watch batch (8 -> 11)
+Operator direction: "beat all the platforms in ML." Honest reading, recorded
+here before any code: this platform cannot out-data Renaissance or out-GPU
+XTX. The axis it CAN compete on is honest experiments per unit time -- and
+every factor registered so far is built from just TWO data series (price,
+funding). This batch opens three data families this codebase has NEVER
+fetched (verified by repo-wide search before this commit): open interest,
+global long/short account ratio, and taker buy/sell volume ratio -- all
+public Binance USDT-M futures data endpoints, no keys involved.
+
+Registered BEFORE any of these series is fetched by any code in this repo.
+Universe, grid and outcome are identical to the existing watch: every USDT
+linear perpetual active at observation time (point-in-time by construction),
+8h stamps, cross-sectionally demeaned 24h forward return, Spearman IC,
+>= 20 usable symbols per stamp. unseen_from = 2026-08-09 for all three.
+Signal definitions, signs and history requirements, fixed now:
+
+  oi_buildup_24h_minus    signal = -(OI_t / OI_{t-3} - 1); min_history 4.
+      provenance: economic prior only. Rapid 24h open-interest growth marks
+      leverage/crowding build-up; the most crowded names underperform.
+  crowded_longs_minus     signal = -globalLongShortAccountRatio_t;
+      min_history 1. provenance: economic prior only. The ratio counts
+      ACCOUNTS net long (head-count, so retail-weighted); fade the crowd.
+  taker_buying_24h_minus  signal = -mean(taker buySellRatio over the three
+      8h periods ending BEFORE t) -- one full stamp of lag; min_history 4.
+      provenance: economic prior only. Aggressive taker buying marks
+      short-horizon exhaustion; fade it.
+
+Causality rules, fixed now: OI and the long/short ratio are point-in-time
+SNAPSHOTS and enter at their exact stamp. The taker ratio is a PERIOD
+AGGREGATE whose stamping convention (period start vs end) is ambiguous, so
+it is lagged one full stamp -- causal under EITHER convention, at the cost
+of 8h of staleness. Series values are taken ONLY at timestamps exactly on
+the 8h grid; nothing is floored or forward-filled into a stamp (flooring
+would pull intra-bucket future data backward into the signal).
+
+Declared risks and predictions:
+- FAMILY RISK: all three are expressions of "fade the crowd", as is the
+  already-registered funding_delta_minus. They may be one bet in four
+  costumes. Each is adjudicated separately; correlation will be measured on
+  their resolved IC series, never assumed away.
+- DATA RISK: these endpoints serve only ~30 days of history and only for
+  currently-listed contracts. The watch's forward-only append design makes
+  both harmless (observations accumulate from registration onward; the
+  universe is point-in-time), but NO backfill will ever be possible.
+- INTEGRITY FAILURE MODE, distinct from a null result: if the exact-stamp
+  alignment assumption is wrong for a series, that factor records ZERO
+  observations -- visible as a flat-lined count in the watch UI -- never
+  silently misaligned values.
+
+Bar per factor, unchanged: four consecutive positive calendar quarters of
+mean IC on data after its own boundary. A failed leg is a successful audit.
+Nothing here trades. Endpoint response formats may be probed after this
+commit for engineering purposes (field names, timestamp alignment) before
+deployment; no IC of any kind is computed outside the deployed watch.
