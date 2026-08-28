@@ -25,11 +25,11 @@ export default function Header() {
     }).format(value);
 
   return (
-    <header className="h-16 bg-gray-950 border-b border-gray-800 flex items-center justify-between px-6 fixed top-0 left-60 right-0 z-20">
+    <header className="h-16 glass-panel border-b border-ink-hairline flex items-center justify-between px-6 fixed top-0 left-60 right-0 z-20">
       <div className="flex items-center gap-4">
         <div
           className={clsx(
-            'px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider',
+            'px-3 py-1 rounded-full text-[11px] font-semibold uppercase tracking-[0.12em]',
             tradingMode === 'live'
               ? 'bg-red-500/20 text-red-400 border border-red-500/30'
               : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',

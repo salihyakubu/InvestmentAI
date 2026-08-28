@@ -41,10 +41,10 @@ export default function FeatureImportance({
       <div className="h-80">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
             <XAxis
               type="number"
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               tickFormatter={(v: number) => `${v}%`}
@@ -52,7 +52,7 @@ export default function FeatureImportance({
             <YAxis
               type="category"
               dataKey="feature"
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               width={120}

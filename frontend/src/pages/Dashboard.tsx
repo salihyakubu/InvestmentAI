@@ -31,7 +31,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+        <h1 className="page-title">Dashboard</h1>
         <div className="text-sm text-gray-500">
           {new Date().toLocaleDateString('en-US', {
             weekday: 'long',

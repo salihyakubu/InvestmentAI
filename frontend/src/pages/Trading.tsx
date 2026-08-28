@@ -16,7 +16,7 @@ export default function Trading() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Trading</h1>
+        <h1 className="page-title">Trading</h1>
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500">Symbol:</span>
           <select

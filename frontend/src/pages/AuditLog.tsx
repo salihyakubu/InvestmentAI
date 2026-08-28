@@ -41,7 +41,7 @@ export default function AuditLog() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white">Audit Log</h1>
+      <h1 className="page-title">Audit Log</h1>
 
       <div className="card">
         <div className="flex items-center gap-4 mb-4">
