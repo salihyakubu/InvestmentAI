@@ -35,10 +35,10 @@ export default function Layout({ children }: LayoutProps) {
   }, [setConnected, updatePrice]);
 
   return (
-    <div className="min-h-screen bg-gray-900">
+    <div className="min-h-screen bg-ink">
       <Sidebar />
       <Header />
-      <main className="ml-60 mt-16 p-6">{children}</main>
+      <main className="ml-60 mt-16 p-8 max-w-[1600px] animate-fade-up">{children}</main>
     </div>
   );
 }

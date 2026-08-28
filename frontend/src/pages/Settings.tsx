@@ -38,7 +38,7 @@ export default function Settings() {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      <h1 className="text-2xl font-bold text-white">Settings</h1>
+      <h1 className="page-title">Settings</h1>
 
       {/* Trading Mode -- read-only, reported by the backend */}
       <div className="card">

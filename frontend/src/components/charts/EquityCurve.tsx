@@ -99,19 +99,19 @@ export default function EquityCurve({ data, benchmark }: EquityCurveProps) {
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
             <XAxis
               dataKey="ts"
               type="number"
               scale="time"
               domain={['dataMin', 'dataMax']}
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               tickFormatter={formatTime}
             />
             <YAxis
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               tickFormatter={formatTick}

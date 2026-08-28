@@ -30,7 +30,7 @@ export default function RiskManagement() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white">Risk Management</h1>
+      <h1 className="page-title">Risk Management</h1>
 
       {metrics && <RiskDashboard metrics={metrics} />}
 

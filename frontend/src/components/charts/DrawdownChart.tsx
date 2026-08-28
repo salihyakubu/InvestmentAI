@@ -50,19 +50,19 @@ export default function DrawdownChart({ data }: DrawdownChartProps) {
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
             <XAxis
               dataKey="ts"
               type="number"
               scale="time"
               domain={['dataMin', 'dataMax']}
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               tickFormatter={formatTime}
             />
             <YAxis
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               tickFormatter={(v: number) => `${v.toFixed(1)}%`}
@@ -82,7 +82,7 @@ export default function DrawdownChart({ data }: DrawdownChartProps) {
                 'Drawdown',
               ]}
             />
-            <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
+            <ReferenceLine y={0} stroke="rgba(255,255,255,0.28)" strokeDasharray="3 3" />
             <defs>
               <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#ef4444" stopOpacity={0} />

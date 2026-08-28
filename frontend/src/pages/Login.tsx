@@ -40,23 +40,32 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold text-white">Investment AI</h1>
-          <p className="text-sm text-gray-500 mt-1">Sign in to your account</p>
+    <div className="min-h-screen bg-ink flex items-center justify-center px-4">
+      <div className="w-full max-w-sm animate-fade-up">
+        <div className="mb-10 text-center">
+          <div className="mx-auto mb-5 w-14 h-14 rounded-2xl bg-gradient-to-br from-accent to-accent-dark flex items-center justify-center shadow-[0_12px_32px_rgba(10,132,255,0.4)]">
+            <span className="text-white text-2xl font-bold tracking-tight">
+              iA
+            </span>
+          </div>
+          <h1 className="text-[32px] font-semibold text-white tracking-[-0.02em]">
+            InvestAI
+          </h1>
+          <p className="text-sm text-gray-500 mt-1.5">
+            Sign in to your account
+          </p>
         </div>
-        <form
-          onSubmit={(e) => void handleSubmit(e)}
-          className="bg-gray-950 border border-gray-800 rounded-lg p-6 space-y-4"
-        >
+        <form onSubmit={(e) => void handleSubmit(e)} className="card space-y-5 p-6">
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded px-3 py-2">
+            <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm rounded-xl px-3.5 py-2.5">
               {error}
             </div>
           )}
           <div>
-            <label htmlFor="email" className="block text-xs text-gray-400 uppercase mb-1">
+            <label
+              htmlFor="email"
+              className="block text-[11px] font-medium text-gray-500 uppercase tracking-[0.14em] mb-2"
+            >
               Email
             </label>
             <input
@@ -66,11 +75,14 @@ export default function Login() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent"
+              className="input-field"
             />
           </div>
           <div>
-            <label htmlFor="password" className="block text-xs text-gray-400 uppercase mb-1">
+            <label
+              htmlFor="password"
+              className="block text-[11px] font-medium text-gray-500 uppercase tracking-[0.14em] mb-2"
+            >
               Password
             </label>
             <input
@@ -80,13 +92,13 @@ export default function Login() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent"
+              className="input-field"
             />
           </div>
           <button
             type="submit"
             disabled={submitting}
-            className="w-full bg-accent hover:bg-accent-dark disabled:opacity-50 text-white font-semibold rounded px-3 py-2 text-sm transition-colors"
+            className="btn-primary w-full disabled:opacity-50 disabled:shadow-none"
           >
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>

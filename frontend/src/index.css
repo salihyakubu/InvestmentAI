@@ -6,37 +6,85 @@
   :root {
     --color-profit: #22c55e;
     --color-loss: #ef4444;
+    --surface-base: #0a0a0c;
+    --surface-raised: #131318;
+    --hairline: rgba(255, 255, 255, 0.07);
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
-    @apply bg-gray-900 text-gray-100;
+    @apply bg-ink text-gray-100 font-sans;
+    /* Ambient depth: a faint cool bloom top-left, warmth bottom-right --
+       the page reads as a lit space rather than a flat fill. */
+    background-image:
+      radial-gradient(1200px 700px at 12% -10%, rgba(10, 132, 255, 0.07), transparent 60%),
+      radial-gradient(1000px 600px at 110% 110%, rgba(255, 255, 255, 0.03), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: rgba(10, 132, 255, 0.35);
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-gray-900;
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-gray-700 rounded-full;
+    @apply rounded-full;
+    background: rgba(255, 255, 255, 0.14);
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-600;
+    background: rgba(255, 255, 255, 0.24);
+  }
+
+  :focus-visible {
+    outline: 2px solid rgba(10, 132, 255, 0.7);
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 }
 
 @layer components {
+  /* The card: a raised, faintly lit panel. Hairline border, soft depth,
+     gentle lift on hover. Every dashboard instrument inherits this. */
   .card {
-    @apply bg-gray-800 border border-gray-700 rounded-lg p-4;
+    @apply rounded-2xl p-5 shadow-card;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 40%),
+      var(--surface-raised);
+    border: 1px solid var(--hairline);
+    transition:
+      border-color 0.18s ease,
+      box-shadow 0.18s ease,
+      transform 0.18s ease;
+  }
+
+  .card:hover {
+    @apply shadow-card-hover;
+    border-color: rgba(255, 255, 255, 0.12);
   }
 
   .card-header {
-    @apply text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3;
+    @apply text-[11px] font-medium text-gray-500 uppercase mb-4;
+    letter-spacing: 0.14em;
+  }
+
+  /* A display-grade page title: large, tight, confident. */
+  .page-title {
+    @apply text-[28px] font-semibold text-white;
+    letter-spacing: -0.02em;
   }
 
   .stat-positive {
@@ -48,26 +96,87 @@
   }
 
   .btn-primary {
-    @apply bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors;
+    @apply bg-accent hover:bg-accent-dark text-white font-semibold py-2.5 px-5 rounded-xl text-sm;
+    transition:
+      background-color 0.15s ease,
+      transform 0.1s ease,
+      box-shadow 0.15s ease;
+    box-shadow: 0 8px 20px rgba(10, 132, 255, 0.25);
+  }
+
+  .btn-primary:active {
+    transform: scale(0.98);
   }
 
   .btn-secondary {
-    @apply bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium py-2 px-4 rounded-lg transition-colors;
+    @apply text-gray-200 font-medium py-2.5 px-5 rounded-xl text-sm;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--hairline);
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      transform 0.1s ease;
+  }
+
+  .btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .btn-secondary:active {
+    transform: scale(0.98);
   }
 
   .btn-danger {
-    @apply bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors;
+    @apply bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 px-5 rounded-xl text-sm;
+    transition:
+      background-color 0.15s ease,
+      transform 0.1s ease;
+  }
+
+  .btn-danger:active {
+    transform: scale(0.98);
   }
 
   .btn-success {
-    @apply bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors;
+    @apply bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 px-5 rounded-xl text-sm;
+    transition:
+      background-color 0.15s ease,
+      transform 0.1s ease;
+  }
+
+  .btn-success:active {
+    transform: scale(0.98);
   }
 
   .input-field {
-    @apply bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
+    @apply rounded-xl px-3.5 py-2.5 text-sm text-gray-100 placeholder-gray-500 w-full;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+
+  .input-field:focus {
+    outline: none;
+    border-color: rgba(10, 132, 255, 0.7);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.18);
   }
 
   .table-row {
-    @apply border-b border-gray-700 hover:bg-gray-750;
+    border-bottom: 1px solid var(--hairline);
+    transition: background-color 0.12s ease;
+  }
+
+  .table-row:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  /* Frosted chrome: the fixed header and sidebar panels. */
+  .glass-panel {
+    background: rgba(10, 10, 12, 0.72);
+    -webkit-backdrop-filter: saturate(160%) blur(20px);
+    backdrop-filter: saturate(160%) blur(20px);
   }
 }

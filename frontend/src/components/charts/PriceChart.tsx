@@ -37,15 +37,15 @@ export default function PriceChart({ data, symbol }: PriceChartProps) {
       <div className="h-80">
         <ResponsiveContainer width="100%" height="75%">
           <ComposedChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
             <XAxis
               dataKey="time"
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
             />
             <YAxis
-              stroke="#6b7280"
+              stroke="rgba(255,255,255,0.28)"
               fontSize={11}
               tickLine={false}
               domain={['auto', 'auto']}
@@ -80,7 +80,7 @@ export default function PriceChart({ data, symbol }: PriceChartProps) {
         <ResponsiveContainer width="100%" height="25%">
           <ComposedChart data={chartData}>
             <XAxis dataKey="time" hide />
-            <YAxis stroke="#6b7280" fontSize={10} tickLine={false} hide />
+            <YAxis stroke="rgba(255,255,255,0.28)" fontSize={10} tickLine={false} hide />
             <RechartsBar
               dataKey="volume"
               fill="#4b5563"

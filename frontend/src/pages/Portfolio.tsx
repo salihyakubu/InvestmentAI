@@ -23,7 +23,7 @@ export default function Portfolio() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white">Portfolio</h1>
+      <h1 className="page-title">Portfolio</h1>
 
       {portfolio && <PortfolioSummaryComponent data={portfolio} />}
 
