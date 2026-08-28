@@ -1708,3 +1708,60 @@ Aug 9-28 is unrecoverable. Any v2 MUST persist raw stated p(flat) and fit
 exclusively on it, with its own registered criteria. Separately: the
 phase 2 live-transfer gate registration was contingent on "phase 1's
 verdict is in" -- that precondition is now satisfied.
+
+## FIRST FEATURE-DRIFT READING (2026-08-28) — the inputs moved, massively
+The instrument (PR #78) delivered its first computable report: 35 of 46
+measurable features significantly drifted (PSI > 0.25) across all 5
+symbols; top PSIs above 8 -- near-total separation between the recent
+2 days and the generation's first 7 days (12,431 reference / 3,901 recent
+vectors, hash b9104ca584379a86). Reading, stated carefully: price-level
+features drift mechanically when price trends, so the magnitude partly
+reflects 19 days of market movement -- but that IS the point. The served
+input distribution walks far from any fixed training fold within weeks,
+which supports the regime-shift reading of era-4's degradation and is the
+direct empirical case for judging challengers on the RECENT LIVE
+distribution rather than historical validation folds. The phase 2 gate
+registered below is that judgment.
+
+## PRE-REGISTRATION (2026-08-28) — PHASE 2: the live-transfer promotion gate
+Precondition satisfied: phase 1's verdict is in (MISS, above). Root
+problem, measured 2026-08-08 and unfixed since: the champion gate promotes
+on validation-fold accuracy, and era 4 proved that number does not
+transfer (live IC -0.0255, t=-5.07, on a gate-passing model). The gate
+registered here, IN DETAIL and BEFORE code, per 7f03510:
+
+DATA: stored predictions carrying complete served feature vectors
+(features_used, Phase 2a), resolved outcomes (actual_return present),
+within the trailing 30 days, whose ordering hash equals
+sha256(",".join(challenger feature_names))[:16] -- the Phase 2a hash
+convention. Rows are de-overlapped by construction (minute %% 5 sampling).
+FLOORS: >= 14 days between first and last such row AND >= 2,000 rows.
+Below either floor the gate REFUSES and NO promotion occurs -- the
+validation-only promotion is the measured failure mode, so a blind
+promotion is worse than none.
+SCORE: Spearman IC of the model's replayed expected_return
+(predict_batch on the stored vectors, stored column order) against the
+stored actual_return, over the identical row set for both models.
+CRITERION: challenger_replay_IC > champion_replay_IC, strict, paired on
+identical rows, conjoined (AND) with the existing validation gate.
+DECLARED REFINEMENT of the 7f03510 sketch ("beat champion's era IC"),
+fixed now before build: the champion is REPLAYED on the same rows rather
+than credited its served-era IC -- same-rows pairing removes gating,
+blending and calibration-era confounds. No absolute IC floor: a less-wrong
+challenger improves the served signal; trading claims remain governed by
+the watch bars, never by promotions.
+EDGES, fixed now: no champion artifact for a member type -> the replay leg
+passes vacuously (validation gate still applies). Hash mismatch -> the
+gate REFUSES loudly (serving and training share one feature pipeline; a
+mismatch is an inconsistency, not evolution). Every decision -- both ICs,
+n, span, and any refusal reason -- is logged and returned in the retrain
+result.
+
+ALSO REGISTERED -- p_flat_raw PERSISTENCE (calibration-v2 prerequisite,
+instrumentation only): additive nullable column predictions.p_flat_raw
+(migration 0010) storing the ensemble's raw pre-calibration flat
+probability on every persisted prediction. Phase 1's failure is
+undiagnosable today because the raw stated series was never persisted;
+this column makes that loss structurally impossible for any future layer.
+Calibration v2 itself is NOT built now -- its fit and criteria require
+their own registration once raw-series data accumulates.
