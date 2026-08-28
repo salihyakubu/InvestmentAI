@@ -167,7 +167,7 @@ async def test_retrain_persists_blobs_after_promote(
     returns = rng.normal(size=30) * 0.01
     names = [f"f{i}" for i in range(_N_FEATURES)]
 
-    async def fake_load(self, model_id):  # noqa: ANN001, ANN202, ARG001
+    async def fake_load(self, model_id, end=None):  # noqa: ANN001, ANN202, ARG001
         return X[:24], y[:24], returns[:24], X[24:], y[24:], returns[24:], names
 
     def fake_train_model(self, **kwargs):  # noqa: ANN001, ANN003, ANN202, ARG001
@@ -180,6 +180,28 @@ async def test_retrain_persists_blobs_after_promote(
     monkeypatch.setattr(AutoRetrainer, "_load_training_data", fake_load)
     monkeypatch.setattr(ModelTrainer, "train_model", fake_train_model)
     monkeypatch.setattr("services.continuous_learning.retrainer.MIN_VAL_ACCURACY", 0.0)
+    # These tests pin training/promotion mechanics, not the phase 2
+    # live-transfer gate (tested in test_live_replay/test_retrainer_gate);
+    # without live rows in their fixtures the gate would fail closed, and
+    # the embargo would empty their now-anchored bar fixtures.
+    import numpy as _np
+
+    from services.continuous_learning.live_replay import GateDecision, ReplayData
+
+    async def _vacuous_prepare(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return ReplayData(X=_np.zeros((1, 1)), y=_np.zeros(1), span_days=0.0)
+
+    async def _vacuous_decide(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return GateDecision(
+            promote=True, reason="test_vacuous_pass", challenger_ic=None,
+            champion_ic=None, n_rows=0, span_days=None,
+        )
+
+    monkeypatch.setattr("services.continuous_learning.live_replay.EMBARGO_DAYS", 0)
+    monkeypatch.setattr(
+        "services.continuous_learning.live_replay.prepare_replay", _vacuous_prepare
+    )
+    monkeypatch.setattr("services.continuous_learning.live_replay.decide", _vacuous_decide)
 
     result = await retrainer.retrain("xgboost")
     assert result.get("version") == 1, f"retrain skipped: {result}"

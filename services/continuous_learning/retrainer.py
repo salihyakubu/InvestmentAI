@@ -130,15 +130,58 @@ class AutoRetrainer:
             logger.warning("retrainer.retrain.unknown_model", model_id=model_id)
             return {"skipped": True, "reason": "unknown_model"}
 
-        # Load training data once (recent 1m bars -> serve-time feature
-        # replay); ensemble members share the same dataset.
+        # THE EMBARGO (live-transfer gate amendment, GO_LIVE 2026-08-28):
+        # training data ends EMBARGO_DAYS back so the replay window that
+        # judges the challenger contains nothing it trained on.
+        from services.continuous_learning.live_replay import (
+            EMBARGO_DAYS,
+            GateDecision,
+            prepare_replay,
+        )
+
+        training_end = datetime.now(UTC) - timedelta(days=EMBARGO_DAYS)
+
+        # Load training data once (1m bars up to the embargo boundary ->
+        # serve-time feature replay); ensemble members share the dataset.
         (
             X_train, y_train, returns_train,
             X_val, y_val, returns_val,
             feature_names,
-        ) = await self._load_training_data(model_id)
+        ) = await self._load_training_data(model_id, end=training_end)
         if X_train is None or y_train is None or X_val is None or y_val is None:
             return {"skipped": True, "reason": "no_training_data"}
+
+        # Data-side gate checks run BEFORE any training: a deterministic
+        # refusal (floors, hash, boundary) must not cost a daily hyperopt
+        # cycle that the gate then discards.
+        try:
+            prepared = await prepare_replay(
+                self._get_session_factory(), feature_names, training_end
+            )
+        except Exception:
+            logger.exception("retrainer.retrain.live_transfer_gate_error")
+            prepared = GateDecision(
+                promote=False, reason="live_transfer_gate_error",
+                challenger_ic=None, champion_ic=None, n_rows=0, span_days=None,
+            )
+        if isinstance(prepared, GateDecision):
+            logger.warning(
+                "retrainer.retrain.live_transfer_refused_before_training",
+                model_id=model_id,
+                **prepared.as_dict(),
+            )
+            results = [
+                {
+                    "skipped": True,
+                    "reason": prepared.reason,
+                    "model_type": member,
+                    "live_replay": prepared.as_dict(),
+                }
+                for member in member_types
+            ]
+            if not model_id.startswith(_ENSEMBLE_PREFIX):
+                return results[0]
+            return {"members": results, "skipped": True, "reason": prepared.reason}
 
         results = [
             await self._retrain_member(
@@ -151,6 +194,7 @@ class AutoRetrainer:
                 y_val=y_val,
                 returns_val=returns_val,
                 feature_names=feature_names,
+                replay_data=prepared,
             )
             for member in member_types
         ]
@@ -183,6 +227,7 @@ class AutoRetrainer:
         y_val: np.ndarray,
         returns_val: np.ndarray | None,
         feature_names: list[str] | None,
+        replay_data: Any,
     ) -> dict[str, Any]:
         """Train one model type, gate it against its champion, and promote.
 
@@ -226,6 +271,44 @@ class AutoRetrainer:
                 "model_type": model_type,
             }
 
+        # Phase 2 live-transfer gate (registered 2026-08-28, embargo
+        # amendment same day): validation accuracy measurably does not
+        # transfer to live data (era 4), so the challenger must ALSO beat
+        # the champion replayed over the identical EMBARGOED served rows --
+        # data neither model trained on. Conjunctive with the validation
+        # gate; the data-side checks already passed upstream in retrain().
+        from services.continuous_learning.live_replay import GateDecision, decide
+
+        try:
+            champion_model, _ = self._registry.get_active(model_type)
+        except ValueError:
+            champion_model = None
+        try:
+            gate = await decide(replay_data, new_model, champion_model)
+        except Exception:
+            # Fail CLOSED: a gate that cannot judge must refuse, not wave a
+            # challenger through -- blind promotion is the measured failure
+            # mode this gate exists to end.
+            logger.exception(
+                "retrainer.retrain.live_transfer_gate_error", model_type=model_type
+            )
+            gate = GateDecision(
+                promote=False, reason="live_transfer_gate_error",
+                challenger_ic=None, champion_ic=None, n_rows=0, span_days=None,
+            )
+        logger.info(
+            "retrainer.retrain.live_transfer_gate",
+            model_type=model_type,
+            **gate.as_dict(),
+        )
+        if not gate.promote:
+            return {
+                "skipped": True,
+                "reason": gate.reason,
+                "model_type": model_type,
+                "live_replay": gate.as_dict(),
+            }
+
         # Register and promote
         new_model_id, version = self._registry.register(
             model=new_model,
@@ -257,6 +340,7 @@ class AutoRetrainer:
             "version": version,
             "metrics": new_metrics,
             "model_type": model_type,
+            "live_replay": gate.as_dict(),
         }
 
     # ------------------------------------------------------------------
@@ -300,19 +384,25 @@ class AutoRetrainer:
                 return known
         return None
 
-    async def _load_training_data(self, model_id: str) -> _TrainingData:
+    async def _load_training_data(
+        self, model_id: str, end: datetime | None = None
+    ) -> _TrainingData:
         """Build a training dataset from recent 1-minute bars in the DB.
 
-        Loads ``settings.retrain_lookback_days`` of 1m OHLCV history, then
-        replays the live feature pipeline over it via the shared
-        ``dataset_builder`` (the same code path the bootstrap training script
-        uses, so retrained models see serve-time feature semantics).
+        Loads ``settings.retrain_lookback_days`` of 1m OHLCV history ending
+        at *end* (the live-transfer gate's embargo boundary -- training data
+        must stop where the replay window begins, or the gate would score
+        the challenger on its own training rows), then replays the live
+        feature pipeline over it via the shared ``dataset_builder`` (the
+        same code path the bootstrap training script uses, so retrained
+        models see serve-time feature semantics).
 
         Returns ``(X_train, y_train, returns_train, X_val, y_val, returns_val,
         feature_names)`` or all ``None`` if data is unavailable.
         """
         try:
-            cutoff = datetime.now(UTC) - timedelta(days=self._settings.retrain_lookback_days)
+            end = end or datetime.now(UTC)
+            cutoff = end - timedelta(days=self._settings.retrain_lookback_days)
             stmt = (
                 select(
                     OHLCVRecord.time,
@@ -323,7 +413,11 @@ class AutoRetrainer:
                     OHLCVRecord.close,
                     OHLCVRecord.volume,
                 )
-                .where(OHLCVRecord.timeframe == "1m", OHLCVRecord.time >= cutoff)
+                .where(
+                    OHLCVRecord.timeframe == "1m",
+                    OHLCVRecord.time >= cutoff,
+                    OHLCVRecord.time < end,
+                )
                 .order_by(OHLCVRecord.symbol, OHLCVRecord.time)
             )
             factory = self._get_session_factory()

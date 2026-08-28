@@ -38,6 +38,11 @@ class Prediction:
     probabilities: dict[str, float]
     model_id: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # The ensemble's RAW pre-calibration flat probability. When a live
+    # calibration layer is active the served probabilities are transformed,
+    # and phase 1 proved the raw series must never be unrecoverable again
+    # (GO_LIVE 2026-08-28). Equals probabilities["flat"] when no layer runs.
+    p_flat_raw: float | None = None
 
 
 class PredictionService:
@@ -136,6 +141,7 @@ class PredictionService:
                 probabilities=prediction.probabilities,
                 features=served_features,
                 features_hash=served_hash,
+                p_flat_raw=prediction.p_flat_raw,
                 source_service="prediction-service",
             )
             await self._event_bus.publish(_PREDICTIONS_STREAM, pred_event)
@@ -243,6 +249,10 @@ class PredictionService:
             )
             direction = "flat"
 
+        raw_p_flat = output.metadata.get("p_flat_raw") if output.metadata else None
+        if raw_p_flat is None:
+            raw_p_flat = (output.probabilities or {}).get("flat")
+
         prediction = Prediction(
             symbol=symbol,
             direction=direction,
@@ -250,6 +260,7 @@ class PredictionService:
             expected_return=output.expected_return,
             probabilities=output.probabilities,
             model_id=f"ensemble:{active_types}",
+            p_flat_raw=None if raw_p_flat is None else float(raw_p_flat),
         )
         self._prediction_history.append(prediction)
         return prediction
@@ -274,11 +285,10 @@ class PredictionService:
             return None, None
         if any(name not in features for name in feature_order):
             return None, None
-        import hashlib
+        from services.prediction.feature_hash import feature_ordering_hash
 
         vector = [float(f"{float(features[n]):.6g}") for n in feature_order]
-        digest = hashlib.sha256(",".join(feature_order).encode()).hexdigest()[:16]
-        return vector, digest
+        return vector, feature_ordering_hash(feature_order)
 
     def _should_persist_features(self, now: datetime) -> bool:
         return now.minute % self._feature_sample_minutes == 0

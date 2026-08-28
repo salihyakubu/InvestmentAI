@@ -80,6 +80,11 @@ class PredictionPersistenceService:
             if features and features_hash
             else None
         )
+        # Raw pre-calibration p(flat): phase 1's failure was undiagnosable
+        # because only calibrated values were stored (GO_LIVE 2026-08-28).
+        p_flat_raw = getattr(event, "p_flat_raw", None)
+        if p_flat_raw is None:
+            p_flat_raw = event.payload.get("p_flat_raw")
 
         now = datetime.now(UTC)
         try:
@@ -101,6 +106,9 @@ class PredictionPersistenceService:
                         created_at=now,
                         event_id=event_id[:64] or None,
                         features_used=features_used,
+                        p_flat_raw=(
+                            None if p_flat_raw is None else float(p_flat_raw)
+                        ),
                     )
                 )
                 await session.commit()

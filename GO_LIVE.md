@@ -1765,3 +1765,34 @@ undiagnosable today because the raw stated series was never persisted;
 this column makes that loss structurally impossible for any future layer.
 Calibration v2 itself is NOT built now -- its fit and criteria require
 their own registration once raw-series data accumulates.
+
+## GATE AMENDED BEFORE FIRST DECISION (2026-08-28) — the embargo
+Adversarial review of the built gate (51 agents, 3 lenses) found a CRITICAL
+structural defect before any decision was ever made: the replay window
+(trailing 30d) EQUALED the challenger's own training window
+(retrain_lookback_days=30, same bars, same pipeline, same forward-return
+quantity). The challenger would have been scored IN-SAMPLE -- boosted
+trees memorize their training rows -- while the champion (trained >= 7
+days earlier) was genuinely out-of-sample on the freshest week. Under the
+strict paired criterion every challenger would beat every champion by
+memorization asymmetry, and the record would certify it as live transfer:
+the registered intent, inverted. The registration fixed the window and
+criterion but never registered scoring a challenger on its own training
+rows; amended now, before the first live decision:
+
+EMBARGO, fixed: the challenger's training data ends EMBARGO_DAYS = 15
+before now (the training loader takes an explicit end bound), and replay
+rows are drawn EXCLUSIVELY from predicted_at AFTER that training end --
+out-of-sample for challenger and champion alike. Floors unchanged (>= 14d
+span, >= 2,000 rows; a 15-day embargo window satisfies both at current
+volume). A missing or > 30-day-stale training boundary refuses (fail
+closed). Cost, stated plainly: the promoted artifact is 15 days stale at
+promotion; the alternative was a gate that promotes everything.
+
+Also fixed from review, same amendment: non-finite stored vectors or
+outcomes are filtered at fetch; a degenerate OUTCOME series refuses as
+"degenerate_outcomes" (previously misattributed to the challenger's
+regressor -- a wrong cause in a permanent record); and the replay-data
+check now runs BEFORE training, so a deterministic refusal (floors, hash,
+boundary) skips the full hyperopt cycle instead of training a model daily
+only to discard it.

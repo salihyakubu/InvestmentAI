@@ -37,3 +37,8 @@ class PredictionReadyEvent(Event):
     # pre-upgrade publishers and consumers are unaffected.
     features: list[float] | None = None
     features_hash: str | None = None
+    # The ensemble's RAW pre-calibration flat probability. Phase 1's failure
+    # was undiagnosable because only the calibrated value was stored; this
+    # field makes the raw series structurally unlosable (GO_LIVE 2026-08-28).
+    # Additive/defaulted: pre-upgrade publishers and consumers unaffected.
+    p_flat_raw: float | None = None
