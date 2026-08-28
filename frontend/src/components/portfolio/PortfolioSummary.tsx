@@ -8,12 +8,15 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { PortfolioSummary as PortfolioSummaryType } from '../../types';
+import Sparkline from '../charts/Sparkline';
 
 interface PortfolioSummaryProps {
   data: PortfolioSummaryType;
+  /** Recent equity values for the hero tile's trend shape (optional). */
+  equitySeries?: number[];
 }
 
-export default function PortfolioSummary({ data }: PortfolioSummaryProps) {
+export default function PortfolioSummary({ data, equitySeries }: PortfolioSummaryProps) {
   const formatCurrency = (v: number) =>
     new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -118,22 +121,32 @@ export default function PortfolioSummary({ data }: PortfolioSummaryProps) {
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-      {cards.map((card) => (
-        <div key={card.label} className="card">
-          <div className="flex items-center gap-2 mb-2">
+      {cards.map((card, i) => (
+        <div key={card.label} className="card relative overflow-hidden">
+          <div className="flex items-center gap-2 mb-3">
             <div className={clsx('p-1.5 rounded-lg', card.bgColor)}>
               <card.icon className={clsx('w-4 h-4', card.color)} />
             </div>
-            <span className="text-xs text-gray-500 uppercase tracking-wider">
+            <span className="text-[10.5px] font-medium text-gray-500 uppercase tracking-[0.12em]">
               {card.label}
             </span>
           </div>
-          <div className={clsx('text-lg font-bold font-mono', card.color)}>
+          <div
+            className={clsx(
+              'text-[21px] leading-tight font-semibold font-mono tabular-nums tracking-tight',
+              card.color,
+            )}
+          >
             {card.value}
           </div>
           {card.sub && (
-            <div className="text-xs text-gray-500 font-mono mt-0.5">
+            <div className="text-xs text-gray-500 font-mono tabular-nums mt-1">
               {card.sub}
+            </div>
+          )}
+          {i === 0 && equitySeries && equitySeries.length > 1 && (
+            <div className="absolute bottom-0 right-0 opacity-80 pointer-events-none">
+              <Sparkline values={equitySeries} width={110} height={30} />
             </div>
           )}
         </div>
