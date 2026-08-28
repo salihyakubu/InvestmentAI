@@ -1667,3 +1667,44 @@ applied again). (2) the original test's window-boundary comment was
 arithmetically wrong and an unbounded running max passed every assertion;
 the suite now pins that a high aged out of the window stops mattering and
 that short-history symbols are absent, never scored.
+
+## PHASE 1 VERDICT (2026-08-28) — MISS; layer disabled as registered
+Delivered 12 days after its registered due date (~Aug 16): no session ran
+between Aug 9 and Aug 28. The lateness is itself a finding -- registered
+judgments need a clock that does not depend on the operator opening a
+session. Judged via production-DB probe implementing the registered
+instrument's exact conventions (gated rows, minute %% 5 de-overlap, MIN 50
+observations/day, reliability bins rendered only at n >= 50), since the
+endpoint itself has no pre/post windowing. Deploy boundary confirmed in
+data: gated max confidence 0.679 on Aug 8 -> 0.396 on Aug 9.
+
+CRITERION (i) -- daily brier_flat improves >= 0.01: PASS, decisively.
+  pre  (Jul 26 - Aug 8, 14d): mean 0.2712
+  post (Aug 9 - 15, the registered 7d horizon): 0.2538  (+0.0174)
+  post (Aug 9 - 27, all 19 complete days):      0.2415  (+0.0297)
+CRITERION (ii) -- top calibration bin |gap| < 15pp: FAIL, every reading.
+  The MASS pathology died: pre-deploy 60.7%% of gated volume claimed
+  p(flat) >= 0.5 (top bin n=3,815 at -36.1pp); post-deploy only 0.7%%
+  (240/33,828) claims >= 0.5. But the surviving tail is WORSE per claim:
+  top rendered bin [0.5,0.6) n=209 gap -37.3pp; literal top bin [0.6,1.0)
+  n=31 gap -49.1pp (below the instrument's n-floor). Nowhere does
+  |gap| < 15pp hold. The criteria were registered as a conjunction.
+
+VERDICT: MISS. Consequence executed as registered, not re-litigated:
+LIVE_CALIBRATION_ENABLED=false on the worker, redeployed 17:21 UTC
+2026-08-28, verified in served data (gated confidence max 0.434 -> 0.644,
+mean 0.390 -> 0.539 across the boot). Reverting loses the measured Brier
+gain and restores the mass overconfidence -- stated plainly -- but a
+pre-registered consequence that binds only when convenient is not a
+consequence, and the improvement evidence is exactly what a v2 must cite.
+
+DIAGNOSIS HYPOTHESIS (recorded, not adjudicated): refit recursion. Refits
+consume STORED confidence, which post-deploy is already-calibrated output,
+so second-generation fits compose mappings and can drift -- consistent
+with the thin high-claim tail being wrong by more than the raw gate ever
+was. Unfalsifiable on stored data because p_flat_raw lived only in
+in-memory metadata and was never persisted: the raw stated series for
+Aug 9-28 is unrecoverable. Any v2 MUST persist raw stated p(flat) and fit
+exclusively on it, with its own registered criteria. Separately: the
+phase 2 live-transfer gate registration was contingent on "phase 1's
+verdict is in" -- that precondition is now satisfied.
