@@ -74,33 +74,78 @@ export default function FeatureDrift({ data }: FeatureDriftProps) {
               </span>
             )}
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs font-mono">
-            {data.top_drifted.length === 0 && (
-              <span className="text-gray-600">
-                — no feature was measurable
-              </span>
-            )}
-            {data.top_drifted.map((f) => (
-              <span
-                key={f.index}
-                className={clsx(
+          {data.top_drifted.length === 0 ? (
+            <div className="text-xs font-mono text-gray-600">
+              — no feature was measurable
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {/* PSI bars on a 0..1+ track with the registered thresholds as
+                  tick marks; PSI is unbounded, so the bar clamps at 1.0 and
+                  the number says the truth. Bar color mirrors the threshold
+                  semantics -- never a decoration. */}
+              {data.top_drifted.map((f) => {
+                const clamped = Math.min(f.psi, 1.0);
+                const level =
                   f.psi > data.thresholds.significant
-                    ? 'text-amber-400'
+                    ? 'significant'
                     : f.psi > data.thresholds.moderate
-                      ? 'text-yellow-200'
-                      : 'text-gray-300',
-                )}
-              >
-                f{f.index}: {f.psi.toFixed(3)}
-              </span>
-            ))}
-            {data.worst && data.worst.psi > data.thresholds.moderate && (
-              <span className="text-gray-500">
-                worst: f{data.worst.index}@{data.worst.symbol}{' '}
-                {data.worst.psi.toFixed(3)}
-              </span>
-            )}
-          </div>
+                      ? 'moderate'
+                      : 'stable';
+                return (
+                  <div
+                    key={f.index}
+                    className="flex items-center gap-3"
+                    title={`feature ${f.index}: mean PSI ${f.psi.toFixed(3)} across ${f.n_symbols} symbols${f.psi_max !== null ? `, max ${f.psi_max.toFixed(3)}` : ''}`}
+                  >
+                    <span className="text-[11px] font-mono text-gray-500 w-8 shrink-0">
+                      f{f.index}
+                    </span>
+                    <div className="relative flex-1 h-3.5">
+                      <div className="absolute inset-y-1 left-0 right-0 rounded-full bg-white/[0.05]" />
+                      <span
+                        className="absolute inset-y-0 w-px bg-white/15"
+                        style={{ left: `${data.thresholds.moderate * 100}%` }}
+                      />
+                      <span
+                        className="absolute inset-y-0 w-px bg-amber-400/40"
+                        style={{ left: `${data.thresholds.significant * 100}%` }}
+                      />
+                      <div
+                        className={clsx(
+                          'absolute inset-y-1 left-0 rounded-full',
+                          level === 'significant'
+                            ? 'bg-amber-400'
+                            : level === 'moderate'
+                              ? 'bg-yellow-200'
+                              : 'bg-gray-400',
+                        )}
+                        style={{ width: `${clamped * 100}%` }}
+                      />
+                    </div>
+                    <span
+                      className={clsx(
+                        'text-[11px] font-mono tabular-nums w-14 shrink-0 text-right',
+                        level === 'significant'
+                          ? 'text-amber-400'
+                          : level === 'moderate'
+                            ? 'text-yellow-200'
+                            : 'text-gray-300',
+                      )}
+                    >
+                      {f.psi > 1 ? `${f.psi.toFixed(2)}` : f.psi.toFixed(3)}
+                    </span>
+                  </div>
+                );
+              })}
+              {data.worst && data.worst.psi > data.thresholds.moderate && (
+                <div className="text-[11px] font-mono text-gray-500 pt-0.5">
+                  worst cell: f{data.worst.index} @ {data.worst.symbol}{' '}
+                  {data.worst.psi.toFixed(3)}
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
 

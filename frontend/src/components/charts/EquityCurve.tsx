@@ -119,11 +119,16 @@ export default function EquityCurve({ data, benchmark }: EquityCurveProps) {
             />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#1f2937',
-                border: '1px solid #374151',
-                borderRadius: '8px',
+                backgroundColor: 'rgba(19,19,24,0.85)',
+                backdropFilter: 'blur(12px)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '12px',
+                boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
                 color: '#f3f4f6',
+                fontSize: '12px',
+                fontVariantNumeric: 'tabular-nums',
               }}
+              cursor={{ stroke: 'rgba(255,255,255,0.15)', strokeWidth: 1 }}
               labelFormatter={(ts: number) =>
                 format(new Date(ts), 'MMM d, HH:mm')
               }

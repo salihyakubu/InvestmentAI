@@ -114,22 +114,73 @@ export default function LearningMetrics({ data }: LearningMetricsProps) {
 
       {data.calibration.length > 0 && (
         <div className="mb-3">
-          <div className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+          <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">
             Abstention calibration — stated p(flat) vs realized
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs font-mono">
-            {data.calibration.map((bin) => (
-              <span
-                key={bin.bin_low}
-                className={
-                  Math.abs(bin.gap) < 0.05 ? 'text-gray-300' : 'text-amber-400'
-                }
-              >
-                [{bin.bin_low.toFixed(1)}–{bin.bin_high.toFixed(1)}):{' '}
-                {(bin.mean_forecast * 100).toFixed(0)}%→
-                {(bin.realized_flat_rate * 100).toFixed(0)}%
-              </span>
-            ))}
+          {/* Each bin as a dumbbell on a 0-100% track: hollow marker = what
+              the gate STATED, filled marker = what reality DELIVERED, the
+              connector is the miscalibration. Amber only when the gap is
+              material (>=5pp) -- a measurement, not a decoration. */}
+          <div className="space-y-1.5">
+            {data.calibration.map((bin) => {
+              const stated = bin.mean_forecast * 100;
+              const realized = bin.realized_flat_rate * 100;
+              const material = Math.abs(bin.gap) >= 0.05;
+              const lo = Math.min(stated, realized);
+              const width = Math.abs(stated - realized);
+              return (
+                <div
+                  key={bin.bin_low}
+                  className="flex items-center gap-3"
+                  title={`bin [${bin.bin_low.toFixed(1)}–${bin.bin_high.toFixed(1)}): stated ${stated.toFixed(1)}% → realized ${realized.toFixed(1)}% (gap ${(bin.gap * 100).toFixed(1)}pp, n=${bin.n})`}
+                >
+                  <span className="text-[11px] font-mono text-gray-500 w-16 shrink-0">
+                    [{bin.bin_low.toFixed(1)}–{bin.bin_high.toFixed(1)})
+                  </span>
+                  <div className="relative flex-1 h-4">
+                    <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-px bg-white/[0.07]" />
+                    <div
+                      className={clsx(
+                        'absolute top-1/2 -translate-y-1/2 h-[3px] rounded-full',
+                        material ? 'bg-amber-400/50' : 'bg-white/15',
+                      )}
+                      style={{ left: `${lo}%`, width: `${width}%` }}
+                    />
+                    <span
+                      title="stated"
+                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full border-2 border-gray-400 bg-ink-raised"
+                      style={{ left: `${stated}%` }}
+                    />
+                    <span
+                      title="realized"
+                      className={clsx(
+                        'absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full',
+                        material ? 'bg-amber-400' : 'bg-gray-300',
+                      )}
+                      style={{ left: `${realized}%` }}
+                    />
+                  </div>
+                  <span
+                    className={clsx(
+                      'text-[11px] font-mono tabular-nums w-24 shrink-0 text-right',
+                      material ? 'text-amber-400' : 'text-gray-400',
+                    )}
+                  >
+                    {stated.toFixed(0)}%→{realized.toFixed(0)}%
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-4 mt-2 text-[10px] text-gray-600">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full border-2 border-gray-400 bg-ink-raised inline-block" />
+              stated
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-gray-300 inline-block" />
+              realized
+            </span>
           </div>
         </div>
       )}
