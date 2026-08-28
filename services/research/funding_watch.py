@@ -300,6 +300,38 @@ def _taker_buying_24h_fade(
     return np.asarray(-trailing_mean(lagged, 3), dtype=float)
 
 
+def _near_high_fade(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    """-(close_t / rolling 21-stamp max of close): fade contracts AT their
+    own ~7-day high. The kernel of the 2026-08-28 external claim, causal by
+    construction (the max window ends at t).
+
+    ALL 21 closes must be finite: nanmax over a NaN-padded window would
+    shrink the registered statistic, and a freshly listed perp's first stamp
+    would score exactly -1.0 -- the fade extreme -- regardless of price,
+    feeding new-listing drift into the record as a fake positive IC
+    (adversarial review, 2026-08-28). A shorter window is a different
+    variable than the registered one, so it is absent, never approximated.
+    """
+    signal = np.full_like(close, np.nan, dtype=float)
+    n = close.shape[0]
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for t in range(n):
+            lo = max(0, t - 20)
+            window = close[lo : t + 1]
+            high_water = np.nanmax(window, axis=0)
+            full = np.isfinite(window).sum(axis=0) >= 21
+            with np.errstate(invalid="ignore", divide="ignore"):
+                signal[t] = np.where(
+                    full & (high_water > 0), -(close[t] / high_water), np.nan
+                )
+    return signal
+
+
 def _blend_registered_v1(
     close: np.ndarray, funding: np.ndarray, volume: np.ndarray
 ) -> np.ndarray:
@@ -374,6 +406,9 @@ WATCHED_FACTORS: tuple[WatchedFactor, ...] = (
         4,
         _taker_buying_24h_fade,
         requires=("taker_buy_ratio",),
+    ),
+    WatchedFactor(
+        "near_high_fade_minus", datetime(2026, 8, 28, tzinfo=UTC), 22, _near_high_fade
     ),
 )
 
