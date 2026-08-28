@@ -37,6 +37,10 @@ class Prediction(UUIDMixin, AsyncBase):
     features_used: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+    # Raw pre-calibration p(flat) (migration 0010): any future calibration
+    # layer transforms the served probabilities, and phase 1 proved the raw
+    # series must never be unrecoverable (GO_LIVE 2026-08-28).
+    p_flat_raw: Mapped[float | None] = mapped_column(Float, nullable=True)
     explanation: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

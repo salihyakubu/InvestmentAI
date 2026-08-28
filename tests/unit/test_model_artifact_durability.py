@@ -180,6 +180,21 @@ async def test_retrain_persists_blobs_after_promote(
     monkeypatch.setattr(AutoRetrainer, "_load_training_data", fake_load)
     monkeypatch.setattr(ModelTrainer, "train_model", fake_train_model)
     monkeypatch.setattr("services.continuous_learning.retrainer.MIN_VAL_ACCURACY", 0.0)
+    # These tests pin training/promotion mechanics, not the phase 2
+    # live-transfer gate (tested in test_live_replay/test_retrainer_gate);
+    # without live rows in their fixtures the gate would fail closed.
+    from services.continuous_learning.live_replay import GateDecision
+
+    async def _vacuous_gate(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return GateDecision(
+            promote=True, reason="test_vacuous_pass", challenger_ic=None,
+            champion_ic=None, n_rows=0, span_days=None,
+        )
+
+    monkeypatch.setattr(
+        "services.continuous_learning.live_replay.live_transfer_gate",
+        _vacuous_gate,
+    )
 
     result = await retrainer.retrain("xgboost")
     assert result.get("version") == 1, f"retrain skipped: {result}"

@@ -226,6 +226,50 @@ class AutoRetrainer:
                 "model_type": model_type,
             }
 
+        # Phase 2 live-transfer gate (registered 2026-08-28): validation
+        # accuracy measurably does not transfer to live data (era 4), so the
+        # challenger must ALSO beat the champion replayed over the identical
+        # served feature vectors. Conjunctive with the validation gate.
+        from services.continuous_learning.live_replay import (
+            GateDecision,
+            live_transfer_gate,
+        )
+
+        try:
+            champion_model, _ = self._registry.get_active(model_type)
+        except ValueError:
+            champion_model = None
+        try:
+            gate = await live_transfer_gate(
+                self._get_session_factory(),
+                challenger=new_model,
+                champion=champion_model,
+                feature_names=feature_names,
+            )
+        except Exception:
+            # Fail CLOSED: a gate that cannot judge must refuse, not wave a
+            # challenger through -- blind promotion is the measured failure
+            # mode this gate exists to end.
+            logger.exception(
+                "retrainer.retrain.live_transfer_gate_error", model_type=model_type
+            )
+            gate = GateDecision(
+                promote=False, reason="live_transfer_gate_error",
+                challenger_ic=None, champion_ic=None, n_rows=0, span_days=None,
+            )
+        logger.info(
+            "retrainer.retrain.live_transfer_gate",
+            model_type=model_type,
+            **gate.as_dict(),
+        )
+        if not gate.promote:
+            return {
+                "skipped": True,
+                "reason": gate.reason,
+                "model_type": model_type,
+                "live_replay": gate.as_dict(),
+            }
+
         # Register and promote
         new_model_id, version = self._registry.register(
             model=new_model,
@@ -257,6 +301,7 @@ class AutoRetrainer:
             "version": version,
             "metrics": new_metrics,
             "model_type": model_type,
+            "live_replay": gate.as_dict(),
         }
 
     # ------------------------------------------------------------------

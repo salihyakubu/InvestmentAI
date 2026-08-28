@@ -87,6 +87,45 @@ def test_missing_feature_defaults_to_zero() -> None:
     np.testing.assert_array_equal(stub.last_features, np.array([1.0, 2.0, 0.0]))
 
 
+def test_raw_p_flat_equals_served_flat_when_no_calibrator() -> None:
+    """With no calibration layer the raw series IS the served series; the
+    record must say so rather than hold NULL (GO_LIVE 2026-08-28)."""
+    stub = _StubPredictor(feature_names=["a", "b"])
+    svc = PredictionService(event_bus=InProcessEventBus(), model_server=_server_with(stub))
+    prediction = svc.predict("AAPL", {"a": 1.0, "b": 2.0})
+    assert prediction.p_flat_raw is not None
+    assert prediction.p_flat_raw == prediction.probabilities["flat"]
+
+
+def test_raw_p_flat_survives_an_active_calibrator() -> None:
+    """When a live calibration layer transforms the served probabilities,
+    p_flat_raw must carry the PRE-calibration value -- losing it is exactly
+    what made phase 1's failure undiagnosable."""
+    import numpy as np_
+
+    from services.continuous_learning.live_calibration import (
+        LiveCalibrator,
+        fit_isotonic,
+    )
+
+    rng = np_.random.default_rng(0)
+    stated = rng.uniform(0.3, 0.75, 4000)
+    realized = (rng.random(4000) < 0.55 - 0.45 * (stated - 0.3)).astype(float)
+    calibrator = LiveCalibrator(session_factory=None, enabled=True)  # type: ignore[arg-type]
+    calibrator._x, calibrator._y = fit_isotonic(stated, realized)
+
+    stub = _StubPredictor(feature_names=["a", "b"])
+    svc = PredictionService(
+        event_bus=InProcessEventBus(),
+        model_server=_server_with(stub),
+        calibrator=calibrator,
+    )
+    prediction = svc.predict("AAPL", {"a": 1.0, "b": 2.0})
+    assert prediction.p_flat_raw is not None
+    # The served flat mass was remapped; the recorded raw was not.
+    assert prediction.p_flat_raw != prediction.probabilities["flat"]
+
+
 def test_data_loader_does_not_scale() -> None:
     """Tabular training data must be returned RAW (no scaler) to match serving."""
     loader = TrainingDataLoader(target_horizon_bars=2)

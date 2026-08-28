@@ -124,6 +124,36 @@ async def test_served_features_persist_when_present() -> None:
 
 
 @pytest.mark.asyncio
+async def test_raw_p_flat_persists_when_present_and_null_when_absent() -> None:
+    """The v2 prerequisite (GO_LIVE 2026-08-28): the raw pre-calibration
+    p(flat) rides the event into its own column, so no calibration layer can
+    ever again make the raw series unrecoverable. An event without it (old
+    publisher) stays NULL, never 0.0."""
+    engine, factory = _make_factory()
+    await _create_tables(engine)
+
+    svc = PredictionPersistenceService(event_bus=InProcessEventBus(), session_factory=factory)
+    await svc.handle_event(
+        PredictionReadyEvent(
+            symbol="BTC/USDT", direction="flat", confidence=0.41,
+            expected_return=0.001, model_id="ensemble:test",
+            p_flat_raw=0.617, source_service="prediction-service",
+        )
+    )
+    await svc.handle_event(
+        PredictionReadyEvent(
+            symbol="ETH/USDT", direction="flat", confidence=0.41,
+            expected_return=0.001, model_id="ensemble:test",
+            source_service="prediction-service",
+        )
+    )
+    rows = {r.symbol: r for r in await _fetch_predictions(factory)}
+    assert rows["BTC/USDT"].p_flat_raw == pytest.approx(0.617)
+    assert rows["ETH/USDT"].p_flat_raw is None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_unsampled_events_persist_sql_null_not_json_null() -> None:
     """Most minutes are unsampled: the column must be SQL NULL, not JSON
     'null'. The distinction is invisible to an ORM read (both deserialize to
