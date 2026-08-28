@@ -1622,3 +1622,36 @@ day-based and unaffected. Fix: JSONB(none_as_null=True) on the column,
 migration 0009 rewrites stored JSON nulls to SQL NULL, and the regression
 test now asserts at the SQL level -- an ORM read deserializes both
 representations to Python None, which is exactly how the defect hid.
+
+## PRE-REGISTRATION (2026-08-28) — external-claim factor: near_high_fade_minus
+Operator submitted a viral trading video (TikTok repost, "17 year old
+student trader secured his mom's future in 1 trade") for review and asked
+that the platform learn from it. Review verdict recorded separately; the
+video's marketing is not evidence of anything. But the platform's mechanism
+for learning from ANY external claim is the same: extract the testable
+kernel, register it before evaluation, let unseen data adjudicate.
+
+The kernel: the showcased indicator prints SELL at a short-term swing high
+and the video asserts that fading such highs is profitable. Formalized
+cross-sectionally on the existing watch (same universe, 8h grid, demeaned
+24h forward return, Spearman IC):
+
+  near_high_fade_minus   signal = -(close_t / max(close over the last 21
+      stamps, inclusive)); min_history 22; unseen_from = 2026-08-28.
+      Contracts AT their own ~7-day high score most negative (faded); the
+      ratio is causal by construction (window ends at t).
+      provenance: EXTERNAL CLAIM (viral indicator advertisement), the
+      weakest tier -- below even economic-prior-only. Registered exactly
+      because belief without adjudication is how such videos make money.
+
+Disclosed overlaps and notes, fixed now:
+- FAMILY RISK: proximity-to-high correlates with the registered momentum
+  fades (momentum_24h/72h_minus); this is a distinct nonlinear transform
+  (distance-to-rolling-max vs raw return) and is adjudicated separately.
+- The registration tests the claim's KERNEL, not the product: the video's
+  actual pitch (a paid repainting-style signal label shown in hindsight on
+  a bar-replayed historical chart) is not testable as shown, and no part
+  of this registration should be read as evaluating "GainzAlgo".
+Bar unchanged: four consecutive positive calendar quarters of mean IC on
+data after the boundary. A failed leg is a successful audit. Nothing here
+trades. Registry grows 11 -> 12.
