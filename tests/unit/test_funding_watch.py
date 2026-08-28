@@ -261,6 +261,7 @@ def test_registry_is_pinned_to_the_registration() -> None:
         "oi_buildup_24h_minus",
         "crowded_longs_minus",
         "taker_buying_24h_minus",
+        "near_high_fade_minus",
     }
     assert by_name["funding_carry_24h_plus"].unseen_from == datetime(2026, 7, 1, tzinfo=UTC)
     for name in ("reversal_8h_minus", "momentum_72h_minus", "low_vol_7d_minus"):
@@ -288,6 +289,9 @@ def test_registry_is_pinned_to_the_registration() -> None:
     assert by_name["taker_buying_24h_minus"].requires == ("taker_buy_ratio",)
     assert by_name["taker_buying_24h_minus"].min_history == 4
     assert by_name["funding_carry_24h_plus"].requires == ()
+    assert by_name["near_high_fade_minus"].unseen_from == datetime(2026, 8, 28, tzinfo=UTC)
+    assert by_name["near_high_fade_minus"].min_history == 22
+    assert by_name["near_high_fade_minus"].requires == ()
 
 
 def test_reversal_signal_fades_the_last_move_causally() -> None:
@@ -501,6 +505,66 @@ async def test_missing_series_skips_the_factor_not_the_cycle(monkeypatch) -> Non
     assert "taker_buying_24h_minus" in recorded
     assert "crowded_longs_minus" not in recorded  # starved -> silent absence
     await engine.dispose()
+
+
+def test_near_high_fade_fades_the_contract_at_its_own_high() -> None:
+    """The 2026-08-28 external-claim kernel: the contract AT its 7-day high
+    scores LOW (faded); one 20% below its high scores higher; the signal at
+    t must not react to a future spike."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "near_high_fade_minus").build
+    n = 40
+    close = np.full((n, 2), 100.0)
+    close[:, 0] = np.linspace(80, 100, n)   # symbol 0: closing AT its high
+    close[30, 1] = 125.0                     # symbol 1: high 9 stamps back, IN window
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros)
+    assert signal[-1, 0] < signal[-1, 1]     # at-high is faded harder
+    # Causality: plant a future spike; nothing before it may change.
+    spiked = close.copy()
+    spiked[-1, 1] = 500.0
+    signal2 = build(spiked, zeros, zeros)
+    assert np.allclose(signal[:-1], signal2[:-1], equal_nan=True)
+    # The ratio form is bounded: at-high is exactly -1, never below.
+    assert signal[-1, 0] == -1.0
+
+
+def test_near_high_window_is_21_stamps_not_all_history() -> None:
+    """The registered variable is the max over the LAST 21 stamps: a high
+    that has aged out of the window must stop mattering. An unbounded
+    running max would fail here (it passed the basic test above -- that gap
+    was itself a review finding)."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "near_high_fade_minus").build
+    n = 40
+    close = np.full((n, 2), 100.0)
+    close[5, 0] = 125.0   # symbol 0: spike aged OUT of the window at t=39
+    close[30, 1] = 125.0  # symbol 1: same spike, still IN the window
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros)
+    assert signal[-1, 0] == -1.0                      # back AT its 21-stamp high
+    assert signal[-1, 1] == -(100.0 / 125.0)          # still below its high
+    assert signal[-1, 0] < signal[-1, 1]
+
+
+def test_near_high_refuses_short_history_symbols() -> None:
+    """A perp listing mid-grid must be ABSENT, not scored: nanmax over its
+    NaN-padded 'window' would pin its first stamp at exactly -1.0 -- the
+    fade extreme, price-independent -- and new-listing drift would enter the
+    permanent record as fake positive IC (review finding, 2026-08-28)."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "near_high_fade_minus").build
+    n = 40
+    close = np.full((n, 2), 100.0)
+    close[:, 1] = np.nan
+    close[37:, 1] = [50.0, 40.0, 30.0]  # a dumping brand-new listing
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros)
+    assert np.all(np.isnan(signal[:, 1]))   # never scored, at any stamp
+    assert signal[-1, 0] == -1.0            # the full-history symbol still is
 
 
 # ---------------------------------------------------------------------------

@@ -73,6 +73,11 @@ _HYPOTHESES = {
         "Fading aggressive taker buying, lagged one stamp for causality, "
         "predicts relative return (economic prior only; registered 2026-08-09)"
     ),
+    "near_high_fade_minus": (
+        "Contracts at their own 7-day high underperform -- the testable "
+        "kernel of a viral indicator ad (external claim, weakest "
+        "provenance; registered 2026-08-28)"
+    ),
 }
 
 

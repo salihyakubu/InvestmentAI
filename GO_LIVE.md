@@ -1655,3 +1655,15 @@ Disclosed overlaps and notes, fixed now:
 Bar unchanged: four consecutive positive calendar quarters of mean IC on
 data after the boundary. A failed leg is a successful audit. Nothing here
 trades. Registry grows 11 -> 12.
+
+ADVERSARIAL REVIEW OF THE FACTOR (2026-08-28), two findings, both fixed
+before deploy: (1) MAJOR -- nanmax over a NaN-padded window shrank the
+registered 21-stamp statistic, pinning a freshly listed perp's first stamp
+at exactly -1.0 (the fade extreme, price-independent); new-listing drift
+would have entered the permanent record as sign-consistent fake positive
+IC. The builder now requires all 21 finite closes -- a shorter window is a
+different variable than the registered one (the taker half-window rule,
+applied again). (2) the original test's window-boundary comment was
+arithmetically wrong and an unbounded running max passed every assertion;
+the suite now pins that a high aged out of the window stops mattering and
+that short-history symbols are absent, never scored.
