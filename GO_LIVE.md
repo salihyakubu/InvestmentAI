@@ -1796,3 +1796,52 @@ regressor -- a wrong cause in a permanent record); and the replay-data
 check now runs BEFORE training, so a deterministic refusal (floors, hash,
 boundary) skips the full hyperopt cycle instead of training a model daily
 only to discard it.
+
+## PRE-REGISTRATION (2026-08-29) — the great-trader kernel: trend-following
+Operator direction: the platform should pick the patterns of the world's
+best traders and the trades that made their millions. Honest reading,
+recorded before code: the TRADES are not copyable (13F filings are
+quarterly, 45 days stale, long-only, equity-only; exchange leaderboards
+are survivorship marketing; famous macro trades are history, not a
+signal). The REPRODUCIBLE content of the great systematic fortunes is
+documented and small: trend-following (the turtles, the CTAs, a century
+of time-series-momentum evidence), carry (registered:
+funding_carry_24h_plus), and the quality/low-beta tilt from the Buffett
+decomposition (registered: low_vol_7d_minus). The missing kernel is
+trend-following with the sign the fortunes were made on -- every momentum
+factor registered so far FADES. Registered now, adjudicated like
+everything else:
+
+  trend_follow_7d_plus    signal = +(close_t / close_{t-21} - 1);
+      min_history 22; unseen_from 2026-08-29.
+  trend_follow_30d_plus   signal = +(close_t / close_{t-90} - 1);
+      min_history 91; unseen_from 2026-08-29.
+      provenance for both: the documented pattern of the most successful
+      systematic traders (Donchian/turtle trend rules; Moskowitz-Ooi-
+      Pedersen time-series momentum; Hurst-Ooi-Pedersen century of
+      trend evidence) -- named-source external evidence, a stronger tier
+      than economic-prior-only, weaker than an own-study sign.
+
+DISCLOSED STRUCTURE, fixed now:
+- ADVERSARIAL PAIRS BY DESIGN: momentum_24h/72h_minus (own spot study)
+  fade short-horizon moves; these ride longer ones. That is the
+  documented horizon structure (reversal short, momentum medium), not a
+  contradiction; unseen quarters adjudicate the crossover. Similarly
+  near_high_fade_minus (the viral-ad kernel) fades 7-day highs while the
+  52-week-high literature rides them -- the watch now holds BOTH sides'
+  claims where the gurus hold only their own.
+- NO MIRRORS: a plus-signed twin of a registered minus factor at the SAME
+  definition is never registered -- the existing IC series already
+  adjudicates both signs. These two differ in transform and horizon.
+- HORIZON HONESTY: the documented trend edge lives at 3-12 MONTHS; the
+  grid supports 30 days at most. A null here does not refute long-horizon
+  trend; it adjudicates only what it measures.
+- ENGINEERING CHANGE, registered with the batch: the watch fetch window
+  widens from 40 to 100 8h stamps (~13 -> ~33 days) to carry the 30d
+  lookback. Integrity unaffected by construction: per-factor unseen_from
+  boundaries and append-only insert-once dedup are window-independent;
+  the /futures/data extras serve only ~30 days, so their matrices are
+  simply absent beyond that (never padded); deeper history may heal old
+  GAPS for existing factors under the same rules that governed them.
+Bar per factor, unchanged: four consecutive positive calendar quarters on
+data after the boundary. Nothing here trades. Registry grows 12 -> 14.
