@@ -78,6 +78,15 @@ _HYPOTHESES = {
         "kernel of a viral indicator ad (external claim, weakest "
         "provenance; registered 2026-08-28)"
     ),
+    "trend_follow_7d_plus": (
+        "Riding the 7-day trend predicts relative return -- the documented "
+        "great-trader kernel (named-source evidence; registered 2026-08-29)"
+    ),
+    "trend_follow_30d_plus": (
+        "Riding the 30-day trend predicts relative return -- the longest "
+        "horizon the grid carries of the CTA/turtle pattern "
+        "(named-source evidence; registered 2026-08-29)"
+    ),
 }
 
 

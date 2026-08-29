@@ -1845,3 +1845,17 @@ DISCLOSED STRUCTURE, fixed now:
   GAPS for existing factors under the same rules that governed them.
 Bar per factor, unchanged: four consecutive positive calendar quarters on
 data after the boundary. Nothing here trades. Registry grows 12 -> 14.
+
+REVIEW AMENDMENT (2026-08-29, before deploy): the widening as first built
+created three integrity exposures, all fixed pre-data: (1) gap-healing's
+survivorship horizon would have tripled -- a stamp first computed ~33 days
+late is scored on TODAY's listing set; a _MAX_HEAL_DAYS=14 insert cap now
+keeps the pre-widening staleness bound, so an unhealed stamp stays a
+VISIBLE gap, never a survivorship-tinted row. (2) the /futures/data ~30-day
+retention edge landed inside the scored grid, where a mid-loop retention
+advance leaves the oldest stamp populated for an alphabetical PREFIX of
+symbols; that oldest populated row is now blanked at fetch (and the heal
+cap independently keeps such stamps out of the record). (3) at 100 stamps
+the 30d factor alone had ~56h of healing slack; the window is 136 stamps
+so every factor carries the full 14 days. The registration's "40 -> 100"
+becomes "40 -> 136" by this amendment.

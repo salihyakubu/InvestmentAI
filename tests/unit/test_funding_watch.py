@@ -262,6 +262,8 @@ def test_registry_is_pinned_to_the_registration() -> None:
         "crowded_longs_minus",
         "taker_buying_24h_minus",
         "near_high_fade_minus",
+        "trend_follow_7d_plus",
+        "trend_follow_30d_plus",
     }
     assert by_name["funding_carry_24h_plus"].unseen_from == datetime(2026, 7, 1, tzinfo=UTC)
     for name in ("reversal_8h_minus", "momentum_72h_minus", "low_vol_7d_minus"):
@@ -292,6 +294,10 @@ def test_registry_is_pinned_to_the_registration() -> None:
     assert by_name["near_high_fade_minus"].unseen_from == datetime(2026, 8, 28, tzinfo=UTC)
     assert by_name["near_high_fade_minus"].min_history == 22
     assert by_name["near_high_fade_minus"].requires == ()
+    for name, hist in (("trend_follow_7d_plus", 22), ("trend_follow_30d_plus", 91)):
+        assert by_name[name].unseen_from == datetime(2026, 8, 29, tzinfo=UTC)
+        assert by_name[name].min_history == hist
+        assert by_name[name].requires == ()
 
 
 def test_reversal_signal_fades_the_last_move_causally() -> None:
@@ -482,8 +488,9 @@ async def test_missing_series_skips_the_factor_not_the_cycle(monkeypatch) -> Non
     engine, factory = await _factory()
     n, syms = 30, 40
     rng = np.random.default_rng(11)
-    # Future-dated grid: past every factor's unseen_from boundary.
-    grid = _grid(n, start=datetime(2026, 8, 10, tzinfo=UTC))
+    # Recent grid: inside the heal cap and past the 2026-08-09 boundaries
+    # of the factors this test asserts on.
+    grid = _grid(n, start=datetime.now(UTC) - timedelta(days=4))
     close = 100 * np.cumprod(1 + rng.normal(0, 0.01, (n, syms)), axis=0)
     funding = rng.normal(0, 0.0005, (n, syms))
     volume = rng.lognormal(3, 0.5, (n, syms))
@@ -567,9 +574,110 @@ def test_near_high_refuses_short_history_symbols() -> None:
     assert signal[-1, 0] == -1.0            # the full-history symbol still is
 
 
+def test_trend_follow_rides_the_riser_causally() -> None:
+    """The PLUS sign is the registration: the 7-day riser must score HIGH
+    (ridden, not faded) -- the exact opposite orientation of the registered
+    momentum fades -- and the signal at t must see only closes up to t."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "trend_follow_7d_plus").build
+    n = 40
+    close = np.full((n, 2), 100.0)
+    close[:, 0] = np.linspace(100, 130, n)  # steady riser
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros)
+    assert np.all(np.isnan(signal[:21]))     # no full lookback -> no signal
+    assert signal[-1, 0] > signal[-1, 1]     # the riser scores HIGH
+    spiked = close.copy()
+    spiked[-1, 1] = 500.0                    # future spike must not leak back
+    signal2 = build(spiked, zeros, zeros)
+    assert np.allclose(signal[:-1], signal2[:-1], equal_nan=True)
+
+
+def test_trend_7d_and_momentum_72h_fade_are_adversaries_on_the_same_riser() -> None:
+    """The registered structure: the fade (own study) and the ride (the
+    great-trader kernel) must rank the SAME steady riser at opposite ends.
+    Unseen quarters adjudicate; the code must preserve the disagreement."""
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    by_name = {f.name: f.build for f in WATCHED_FACTORS}
+    n = 40
+    close = np.full((n, 2), 100.0)
+    close[:, 0] = np.linspace(100, 130, n)
+    zeros = np.zeros_like(close)
+    ride = by_name["trend_follow_7d_plus"](close, zeros, zeros)
+    fade = by_name["momentum_72h_minus"](close, zeros, zeros)
+    assert ride[-1, 0] > ride[-1, 1]   # trend rides the riser
+    assert fade[-1, 0] < fade[-1, 1]   # the registered fade fades it
+
+
+def test_trend_30d_needs_its_full_lookback() -> None:
+    from services.research.funding_watch import WATCHED_FACTORS
+
+    build = next(f for f in WATCHED_FACTORS if f.name == "trend_follow_30d_plus").build
+    n = 100
+    close = np.full((n, 2), 100.0)
+    close[:, 0] = np.linspace(100, 150, n)
+    zeros = np.zeros_like(close)
+    signal = build(close, zeros, zeros)
+    assert np.all(np.isnan(signal[:90]))
+    assert signal[-1, 0] > signal[-1, 1]
+
+
 # ---------------------------------------------------------------------------
 # Fetch integrity (2026-08-09 review fixes)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_stamps_stay_gaps_not_survivorship_rows(monkeypatch) -> None:
+    """A stamp first computed weeks late would be scored on TODAY's listing
+    set -- contracts delisted in the interim silently missing. Past the heal
+    cap the record keeps a VISIBLE gap instead (review, 2026-08-29)."""
+    import services.research.funding_watch as fw
+
+    engine, factory = await _factory()
+    n, syms = 66, 40  # ~22 days of stamps ending now
+    rng = np.random.default_rng(13)
+    grid = _grid(n, start=datetime.now(UTC) - timedelta(days=22))
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, (n, syms)), axis=0)
+    funding = rng.normal(0, 0.0005, (n, syms))
+    volume = rng.lognormal(3, 0.5, (n, syms))
+    extras = {
+        "open_interest": rng.uniform(1e6, 2e6, (n, syms)),
+        "global_long_short": rng.uniform(0.5, 3.0, (n, syms)),
+        "taker_buy_ratio": rng.uniform(0.7, 1.4, (n, syms)),
+    }
+    monkeypatch.setattr(
+        fw, "_fetch_recent", lambda: (grid, close, funding, volume, extras)
+    )
+    watch = FundingWatchService(factory)
+    inserted = await watch.observe_once()
+    assert inserted > 0
+    async with factory() as session:
+        rows = (await session.execute(select(FactorWatchObservation))).scalars().all()
+    cap = datetime.now(UTC) - timedelta(days=fw._MAX_HEAL_DAYS)
+    for row in rows:
+        when = row.time if row.time.tzinfo else row.time.replace(tzinfo=UTC)
+        assert when >= cap  # nothing staler than the cap was recorded
+    # The dataset genuinely contained resolvable stamps beyond the cap.
+    assert grid[0] < int(cap.timestamp() * 1000)
+    await engine.dispose()
+
+
+def test_ragged_retention_edge_is_blanked() -> None:
+    """The extras' oldest populated row can be an alphabetical PREFIX of the
+    universe (retention advancing mid-loop); it is never scored. The cost --
+    losing one legitimate ~30-day-old row -- is documented and accepted."""
+    from services.research.funding_watch import _blank_ragged_retention_edge
+
+    matrix = np.full((5, 6), np.nan)
+    matrix[0, :3] = 1.0   # ragged oldest row: prefix only
+    matrix[1:, :] = 2.0   # full coverage below
+    extras = {"open_interest": matrix}
+    _blank_ragged_retention_edge(extras)
+    assert np.all(np.isnan(matrix[0]))
+    assert np.isfinite(matrix[1:]).all()
 
 
 def test_the_in_progress_bar_is_never_a_close() -> None:

@@ -56,9 +56,21 @@ _MS_4H = 4 * 3_600_000
 _MIN_SYMBOLS = 20
 # One cycle per 8h stamp, with slack for fetch time.
 _CYCLE_SECONDS = 8 * 3600.0
-# ~13 days of stamps per fetch: covers the deepest factor lookback
-# (low_vol_7d: 21 stamps) plus the horizon plus healing slack.
-_FETCH_STAMPS = 40
+# ~45 days of stamps per fetch: the deepest factor lookback
+# (trend_follow_30d: 90 stamps) plus the horizon plus a FULL
+# _MAX_HEAL_DAYS of healing slack for every factor. Widened with the
+# 2026-08-29 registration (amended 100 -> 136 in review so the 30d factor
+# is not the only one with ~56h of slack); per-factor boundaries and the
+# append-only dedup are window-independent.
+_FETCH_STAMPS = 136
+# An observation may be INSERTED at most this many days after its stamp.
+# The window widening is for LOOKBACK data, not stale insertion: a stamp
+# first computed a month late would be scored on the CURRENT listing set
+# (contracts delisted in the interim silently absent -- survivorship), and
+# near the /futures/data ~30-day retention edge the extras can be finite
+# for an alphabetical PREFIX of the universe only. Past this cap a gap
+# stays a visible gap, never a quietly biased row (review, 2026-08-29).
+_MAX_HEAL_DAYS = 14
 # The /futures/data/* family has its OWN limit -- 1,000 requests per 5
 # minutes per IP -- which ccxt's weight-based throttler does not model.
 # Self-imposed spacing keeps the family under ~860/5min; a violation
@@ -182,6 +194,21 @@ def _closed_bars(bars: list, now_ms: int) -> dict[int, tuple[float, float]]:
     return out
 
 
+def _blank_ragged_retention_edge(extras: dict[str, np.ndarray]) -> None:
+    """NaN out each extras series' OLDEST populated grid row, in place.
+
+    The /futures/data endpoints retain ~30 days, and the per-symbol fetch
+    loop takes minutes: if the retention window advances mid-loop, the
+    oldest available stamp exists for an alphabetical prefix of symbols
+    only. That row can never be told apart from honest thin data, so it is
+    never scored; the cost is one ~30-day-old stamp per series per cycle.
+    """
+    for matrix in extras.values():
+        finite_rows = np.where(np.isfinite(matrix).any(axis=1))[0]
+        if finite_rows.size:
+            matrix[finite_rows[0]] = np.nan
+
+
 def _series_is_trustworthy(attempts: int, errors: int) -> bool:
     """A series with too many per-symbol request FAILURES this cycle is
     unusable: what did arrive is a biased (alphabetical-prefix) universe."""
@@ -300,6 +327,28 @@ def _taker_buying_24h_fade(
     return np.asarray(-trailing_mean(lagged, 3), dtype=float)
 
 
+def _trend_follow_7d(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    """+(close_t / close_{t-21} - 1): RIDE the 7-day trend -- the plus sign
+    the systematic fortunes were made on (registered 2026-08-29)."""
+    signal = np.full_like(close, np.nan, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signal[21:] = close[21:] / close[:-21] - 1.0
+    return signal
+
+
+def _trend_follow_30d(
+    close: np.ndarray, funding: np.ndarray, volume: np.ndarray
+) -> np.ndarray:
+    """+(close_t / close_{t-90} - 1): the longest trend the grid carries;
+    the documented edge lives at 3-12 months, and the registration says so."""
+    signal = np.full_like(close, np.nan, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        signal[90:] = close[90:] / close[:-90] - 1.0
+    return signal
+
+
 def _near_high_fade(
     close: np.ndarray, funding: np.ndarray, volume: np.ndarray
 ) -> np.ndarray:
@@ -409,6 +458,12 @@ WATCHED_FACTORS: tuple[WatchedFactor, ...] = (
     ),
     WatchedFactor(
         "near_high_fade_minus", datetime(2026, 8, 28, tzinfo=UTC), 22, _near_high_fade
+    ),
+    WatchedFactor(
+        "trend_follow_7d_plus", datetime(2026, 8, 29, tzinfo=UTC), 22, _trend_follow_7d
+    ),
+    WatchedFactor(
+        "trend_follow_30d_plus", datetime(2026, 8, 29, tzinfo=UTC), 91, _trend_follow_30d
     ),
 )
 
@@ -588,6 +643,7 @@ def _fetch_recent(
                 i = index_of.get(stamp)
                 if i is not None:
                     extras[name][i, j] = value
+    _blank_ragged_retention_edge(extras)
     return grid, close, funding, volume, extras
 
 
@@ -654,6 +710,11 @@ class FundingWatchService:
                 for stamp_ms, ic, n_symbols in candidates:
                     when = datetime.fromtimestamp(stamp_ms / 1000, UTC)
                     if when < factor.unseen_from or when in existing:
+                        continue
+                    if (now - when).total_seconds() > _MAX_HEAL_DAYS * 86_400:
+                        # A stamp this stale would be scored on TODAY's
+                        # listing set: a visible gap beats a survivorship-
+                        # tinted row (review, 2026-08-29).
                         continue
                     session.add(
                         FactorWatchObservation(
