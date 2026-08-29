@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import { useSettings, useTradingMode } from '../api/hooks';
 import { num } from '../api/normalize';
+import GoLiveReadiness from '../components/settings/GoLiveReadiness';
 
 /**
  * Settings is intentionally READ-ONLY.
@@ -61,6 +62,9 @@ export default function Settings() {
           </p>
         </div>
       </div>
+
+      {/* Go-live: preconditions + operator procedure; never a toggle */}
+      <GoLiveReadiness />
 
       {/* Risk Parameters -- the risk engine's real limits */}
       <div className="card">

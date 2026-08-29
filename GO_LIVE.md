@@ -1859,3 +1859,14 @@ cap independently keeps such stamps out of the record). (3) at 100 stamps
 the 30d factor alone had ~56h of healing slack; the window is 136 stamps
 so every factor carries the full 14 days. The registration's "40 -> 100"
 becomes "40 -> 136" by this amendment.
+
+## GO-LIVE READINESS SURFACE (2026-08-29) — the button that is not a button
+Operator asked for a button to activate real trading. Refused as a toggle,
+per the recorded design: TRADING_MODE is deployment configuration and a
+compromised browser session must never be one click from live capital.
+Shipped instead: a Go-Live Readiness panel on Settings -- live pass/fail
+on the registered preconditions (a factor past its four-quarter bar;
+account vs the do-nothing benchmark; breaker closed), the operator
+procedure (env var + redeploy), and the rationale printed where the
+button would have been. Activation remains exactly what it was: the
+operator's deliberate infrastructure action.
