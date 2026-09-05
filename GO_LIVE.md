@@ -1870,3 +1870,20 @@ account vs the do-nothing benchmark; breaker closed), the operator
 procedure (env var + redeploy), and the rationale printed where the
 button would have been. Activation remains exactly what it was: the
 operator's deliberate infrastructure action.
+
+## EXPLORATION TUITION CUT (2026-08-31) — with a corrected attribution
+Operator: "the platform is not performing." Correct: August closed -1.4%
+vs a rising do-nothing book. RETRACTION FIRST: the initial diagnosis in
+conversation blamed calibration-era conviction trading; the orders table
+refutes it -- the conviction gate passed exactly 2 predictions since
+Aug 3 (raw AND calibrated confidences almost never clear 0.6), and every
+one of August's 2,045 filled orders was untagged exploration. The month's
+entire bleed was exploration tuition, which regressed from its July
+tuning (~breakeven) to ~-5bp/day average, -19bp/day in the worst week.
+ACTION (env-only, reversible, risk stack untouched): EXPLORATION_WEIGHT
+0.03 -> 0.01, EXPLORATION_EDGE_MARGIN 0.03 -> 0.08 -- roughly an order
+of magnitude less tuition while a trickle of fills keeps execution
+telemetry alive. Predictions, outcomes, served vectors, p_flat_raw and
+all fourteen watches are market-data-driven and unaffected. Trading
+re-earns its activity only through the registered channels: a factor
+past its bar, a gate-passing challenger, or calibration v2.
