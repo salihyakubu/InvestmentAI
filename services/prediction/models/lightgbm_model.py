@@ -22,6 +22,10 @@ from services.prediction.models.base import (
     probabilities_in_class_order,
     select_calibration_method,
 )
+from services.prediction.training.class_balance import (
+    balanced_sample_weights,
+    majority_class_rate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +223,12 @@ class LightGBMPredictor(BasePredictor):
             log_evaluation(period=0),
         ]
 
+        # Class-balanced: an unweighted multiclass loss over flat-heavy
+        # labels is minimised by a constant predictor (GO_LIVE 2026-09-12).
         self._classifier.fit(
             X_train,
             y_train,
+            sample_weight=balanced_sample_weights(y_train),
             eval_set=[(X_val, y_val)],
             categorical_feature=cat_feature_indices,
             callbacks=callbacks,
@@ -288,6 +295,7 @@ class LightGBMPredictor(BasePredictor):
             chosen_calibration=self._calibration_method,
             brier_isotonic=self._brier_isotonic,
             brier_sigmoid=self._brier_sigmoid,
+            majority_class_rate=majority_class_rate(y_val),
         )
 
     # ------------------------------------------------------------------

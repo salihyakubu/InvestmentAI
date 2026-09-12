@@ -1974,3 +1974,15 @@ DECLARED CONSEQUENCE: a model that expresses direction will pass the
 conviction gate more often and therefore TRADE more. That is the operator's
 stated intent ("the platform does not take risk"); the risk stack, the
 breaker and the live-transfer promotion gate are unchanged and cap it.
+
+AMENDMENT (2026-09-12, before deploy): building the fix exposed that it
+could never have landed. retrainer._validate_new_model promoted on
+`new_acc >= old_acc`, and the champion's 0.5939 IS its base rate -- a model
+that actually attempts direction necessarily scores LOWER raw accuracy, so
+the constant predictor would have defended its throne forever. The gate now
+compares accuracy_over_base_rate (SKILL) rather than raw accuracy; where a
+legacy champion records no base rate its accuracy cannot arbitrate, so the
+challenger need only show skill > 0 and the conjunctive live-transfer gate
+casts the deciding vote. The absolute MIN_VAL_ACCURACY floor is unchanged.
+This is the same lesson as the whole diagnosis: the metric was rewarding
+the pathology.

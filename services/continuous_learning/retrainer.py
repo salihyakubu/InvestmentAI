@@ -622,8 +622,16 @@ class AutoRetrainer:
         """Return ``True`` if the challenger may replace the champion.
 
         The challenger must beat the absolute out-of-sample floor
-        (``MIN_VAL_ACCURACY``, vs the 1/3 random baseline) AND be at least as
-        accurate as the current champion (when one exists).
+        (``MIN_VAL_ACCURACY``, vs the 1/3 random baseline) and then out-SKILL
+        the champion.
+
+        Skill, not raw accuracy. On imbalanced labels raw accuracy rewards
+        the pathology: champion v4 scored 0.5939 by predicting the majority
+        class always (its base rate was 0.5939), and a model that actually
+        attempts direction necessarily scores LOWER. Comparing raw accuracy
+        would let a constant predictor defend its throne forever -- exactly
+        the trap that produced 373,267 flat predictions against 7 long
+        (GO_LIVE 2026-09-12).
         """
         new_acc = float(new_metrics.get("val_accuracy", new_metrics.get("accuracy", 0.0)))
         if new_acc < MIN_VAL_ACCURACY:
@@ -631,6 +639,18 @@ class AutoRetrainer:
 
         if not old_metrics:
             return True
+
+        new_skill = new_metrics.get("accuracy_over_base_rate")
+        old_skill = old_metrics.get("accuracy_over_base_rate")
+        if new_skill is not None and old_skill is not None:
+            return float(new_skill) >= float(old_skill)
+        if new_skill is not None:
+            # The champion predates skill reporting, so its accuracy cannot
+            # arbitrate (it may be pure base rate). Require only that the
+            # challenger learned something beyond guessing, and leave the
+            # verdict to the live-transfer gate, which is conjunctive with
+            # this one and immune to class balance.
+            return float(new_skill) > 0.0
 
         old_acc = float(old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0.0)))
         return new_acc >= old_acc

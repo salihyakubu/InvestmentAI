@@ -70,6 +70,11 @@ class TrainResult:
     chosen_calibration: str | None = None  # "isotonic" | "sigmoid" | "none"
     brier_isotonic: float | None = None
     brier_sigmoid: float | None = None
+    # Accuracy a CONSTANT predictor would score on the validation labels.
+    # Reported so val_accuracy can never again be mistaken for skill: nine
+    # versions once climbed to 0.594 that was purely this number
+    # (GO_LIVE 2026-09-12).
+    majority_class_rate: float | None = None
 
     def to_metrics(self) -> dict[str, Any]:
         """Flatten the core metrics for the registry / promotion gate.
@@ -94,6 +99,13 @@ class TrainResult:
             metrics["brier_isotonic"] = self.brier_isotonic
         if self.brier_sigmoid is not None:
             metrics["brier_sigmoid"] = self.brier_sigmoid
+        if self.majority_class_rate is not None:
+            metrics["majority_class_rate"] = self.majority_class_rate
+            # The only accuracy number that means anything on imbalanced
+            # labels: how far the model beat simply guessing the majority.
+            metrics["accuracy_over_base_rate"] = (
+                self.val_accuracy - self.majority_class_rate
+            )
         return metrics
 
 
