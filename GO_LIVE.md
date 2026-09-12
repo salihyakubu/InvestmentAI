@@ -1974,3 +1974,69 @@ DECLARED CONSEQUENCE: a model that expresses direction will pass the
 conviction gate more often and therefore TRADE more. That is the operator's
 stated intent ("the platform does not take risk"); the risk stack, the
 breaker and the live-transfer promotion gate are unchanged and cap it.
+
+AMENDMENT (2026-09-12, before deploy): building the fix exposed that it
+could never have landed. retrainer._validate_new_model promoted on
+`new_acc >= old_acc`, and the champion's 0.5939 IS its base rate -- a model
+that actually attempts direction necessarily scores LOWER raw accuracy, so
+the constant predictor would have defended its throne forever. The gate now
+compares accuracy_over_base_rate (SKILL) rather than raw accuracy; where a
+legacy champion records no base rate its accuracy cannot arbitrate, so the
+challenger need only show skill > 0 and the conjunctive live-transfer gate
+casts the deciding vote. The absolute MIN_VAL_ACCURACY floor is unchanged.
+This is the same lesson as the whole diagnosis: the metric was rewarding
+the pathology.
+
+## RETRACTION (2026-09-12) — class weighting was NOT the cause
+The registration above named missing class weighting as the root cause of
+the constant classifier and registered a fix for it. Adversarial review
+(69 agents) refuted the fix on four counts, and direct measurement on the
+repo's own predictor classes in the production regime (weak signal,
+flat-heavy labels) settled it:
+
+                          raw classifier      SERVED (calibrated)   balanced acc
+  unweighted (today)      0.1% directional    0.1% directional      0.3349
+  class-weighted (fix)   10.7% directional    0.0% directional      0.3333
+
+Three things follow. (1) Class weighting DOES un-collapse the raw
+classifier. (2) The calibrator -- fitted on the unweighted validation split
+and preferred by _proba at serve time -- restores the flat-heavy prior and
+wipes the effect out completely; the "fixed" model would have served MORE
+flat than the broken one. (3) Decisively, BALANCED ACCURACY IS ~1/3 --
+chance -- either way. There is no directional skill to express. On a
+strong-signal fixture the same untouched code finds direction fine (39%
+directional, balanced accuracy 0.78), so the machinery works.
+
+CORRECTED DIAGNOSIS: the collapse to "flat" is not primarily a weighting
+bug. It is the model correctly reporting that it has no signal at the
+5-minute horizon -- the same verdict the live instruments have returned all
+along (IC -0.0045, directional agreement 49.84% on 82,452 observations).
+The platform "does not take risk" because its model honestly has nothing to
+say, and a well-calibrated model with nothing to say cannot clear a 0.6
+conviction bar. That is the system working, not failing.
+
+Review also confirmed the metric I proposed was worthless:
+accuracy_over_base_rate = val_accuracy - majority_class_rate is an affine
+transform of raw accuracy on a fixed window, so it ranks challengers
+identically to the number it was meant to replace, and it goes NEGATIVE for
+balanced models (measured: -0.1842 on lightgbm), which would have made
+promotion impossible forever.
+
+WHAT SHIPPED INSTEAD (the instruments, not the cosmetic fix):
+ * majority_class_rate and BALANCED ACCURACY (macro recall) on every
+   TrainResult. A constant predictor scores 1/n_classes on balanced
+   accuracy however skewed the labels, so a collapse cannot fake it.
+ * Both computed from the SERVED pipeline (_proba, calibrator applied), not
+   the raw classifier -- review found the recorded metrics described a
+   model production never runs (recorded val_accuracy 0.4079 at 70.5%
+   directional versus a served 0.5938 at 0.7%).
+ * The promotion gate turns on balanced accuracy with a hard chance floor,
+   applied with or without an incumbent. Under it, champion v4 would never
+   have been promoted at all.
+ * Class weighting itself is NOT shipped: measured served effect zero,
+   while it broke the overfit guard (gap 0.309 -> 0.379 against a 0.35
+   threshold, for reasons unrelated to memorisation).
+Two retrainer tests had to be given learnable (autocorrelated) fixtures:
+they had been exercising the PROMOTE path with random-walk data, which the
+gate now correctly refuses. That they ever passed is itself the old gate's
+epitaph.

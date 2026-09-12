@@ -27,6 +27,11 @@ from services.prediction.training.trainer import ModelTrainer
 
 logger = structlog.get_logger(__name__)
 
+# Balanced accuracy of a constant predictor on the 3-class (short/flat/long)
+# problem. A challenger at or below this has learned nothing, however high
+# its raw accuracy (GO_LIVE 2026-09-12).
+_CHANCE_BALANCED_ACCURACY = 1.0 / 3.0
+
 _TrainingData = tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -622,14 +627,39 @@ class AutoRetrainer:
         """Return ``True`` if the challenger may replace the champion.
 
         The challenger must beat the absolute out-of-sample floor
-        (``MIN_VAL_ACCURACY``, vs the 1/3 random baseline) AND be at least as
-        accurate as the current champion (when one exists).
+        (``MIN_VAL_ACCURACY``, vs the 1/3 random baseline) and then out-SKILL
+        the champion.
+
+        Skill, not raw accuracy. On imbalanced labels raw accuracy rewards
+        the pathology: champion v4 scored 0.5939 by predicting the majority
+        class always (its base rate was 0.5939), and a model that actually
+        attempts direction necessarily scores LOWER. Comparing raw accuracy
+        would let a constant predictor defend its throne forever -- exactly
+        the trap that produced 373,267 flat predictions against 7 long
+        (GO_LIVE 2026-09-12).
         """
         new_acc = float(new_metrics.get("val_accuracy", new_metrics.get("accuracy", 0.0)))
         if new_acc < MIN_VAL_ACCURACY:
             return False
 
+        # The chance floor applies with or without an incumbent: the FIRST
+        # model promoted must also have learned something, or the platform
+        # simply crowns a constant predictor and starts the trap over.
+        new_skill = new_metrics.get("balanced_accuracy")
+        if new_skill is not None and float(new_skill) <= _CHANCE_BALANCED_ACCURACY:
+            return False
+
         if not old_metrics:
+            return True
+
+        old_skill = old_metrics.get("balanced_accuracy")
+        if new_skill is not None:
+            if old_skill is not None:
+                return float(new_skill) >= float(old_skill)
+            # The champion predates skill reporting, so its raw accuracy
+            # cannot arbitrate (v4's 0.5939 was pure base rate). Clearing
+            # chance is the bar; the conjunctive live-transfer gate casts
+            # the deciding vote.
             return True
 
         old_acc = float(old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0.0)))
