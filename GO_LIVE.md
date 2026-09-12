@@ -1921,3 +1921,56 @@ all 175 closed rows -- the paper broker computes the exact figure at
 paper_broker.py:281 and discards it into a single scalar). Until that
 lands, the platform can say WHAT it lost (-$1.53, authoritative) but not
 WHICH trades lost it.
+
+## THE MODELS LEARNED TO SAY "NOTHING" (2026-09-12) — diagnosis
+Operator asked what the ML models have learned, and observed the platform
+"does not take risk". Both answered by the same measurement. Since
+inception the served ensemble has emitted:
+    flat: 373,267    long: 7    short: 0
+Seven directional opinions out of 373,274 predictions (0.0019%), against a
+reality that resolved 38.4% flat / 31.0% long / 30.8% short -- the moves
+were there; the model never called them. It is a CONSTANT CLASSIFIER.
+
+The "improvement" across nine model versions was an artifact:
+    v1 val_acc 0.505 -> v2 0.547 -> v3 0.554 -> v4 0.594
+v4's train_accuracy is 0.5931 and its val_accuracy 0.5939 -- they agree,
+so this is not overfitting. 0.594 is simply the base rate of the majority
+(flat) class in the triple-barrier label set. The model climbed the
+accuracy metric by abandoning direction entirely.
+
+Live evidence on 82,452 de-overlapped resolved predictions:
+    correlation(expected_return, actual_return) = -0.0045 (t ~= -1.3, null)
+    directional agreement = 49.84% -- a coin flip (SE 0.17pp)
+    by month: Jul +0.0040, Aug -0.0088, Sep -0.0100 (no improvement)
+ROOT CAUSE: the trainer applies NO class weighting (verified: no
+class_weight / scale_pos_weight / sample_weight anywhere in
+services/prediction/training/trainer.py or the three tree models), so an
+unweighted multiclass loss over flat-heavy triple-barrier labels is
+minimised by predicting the majority class always. This also explains the
+conviction gate passing 2 predictions since Aug 3, the p(flat)
+miscalibration, and why exploration was the only thing trading.
+
+## PRE-REGISTRATION (2026-09-12) — un-collapse the classifier
+Registered BEFORE the fix is written. Change: class-balanced sample
+weights (inverse class frequency, normalised to preserve effective sample
+size) on the CLASSIFIER fit of all three tree models, plus
+majority_class_rate reported beside val_accuracy in every TrainResult so
+a collapse can never again be read as learning.
+
+SUCCESS CRITERIA, fixed now, judged 14 days after deploy:
+ (i) DIRECTIONAL EXPRESSION: >= 5% of served predictions are non-flat
+     (from 0.0019%). This is the whole point of the change.
+ (ii) HONEST REPORTING: every promoted model records majority_class_rate
+     alongside accuracy; a model whose val_accuracy does not exceed its
+     own base rate is recorded as having learned nothing.
+ (iii) NO EDGE CLAIM: live directional agreement will be MEASURED and
+     reported, with no requirement that it beat 50%. Expressing an opinion
+     is not having an edge; whether any opinion has edge remains the
+     exclusive business of the walk-forward watch and the live-transfer
+     gate. A restored model that is merely wrong more loudly is a
+     successful audit and will be recorded as such.
+MISS on (i) -> class weighting is not the cause; recorded and reverted.
+DECLARED CONSEQUENCE: a model that expresses direction will pass the
+conviction gate more often and therefore TRADE more. That is the operator's
+stated intent ("the platform does not take risk"); the risk stack, the
+breaker and the live-transfer promotion gate are unchanged and cap it.
