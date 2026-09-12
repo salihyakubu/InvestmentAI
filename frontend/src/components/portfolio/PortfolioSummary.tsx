@@ -96,7 +96,11 @@ export default function PortfolioSummary({ data, equitySeries }: PortfolioSummar
           : `${(data.win_rate * 100).toFixed(1)}%`,
       sub:
         data.win_rate === undefined
-          ? 'no closed trades'
+          ? // "no closed trades" would itself be false when the reason is a
+            // ledger that cannot be trusted to count them.
+            data.trade_stats_unavailable
+            ? 'ledger unreconciled'
+            : 'no closed trades'
           : `${data.closed_trades} closed`,
       icon: Activity,
       ...(data.win_rate === undefined

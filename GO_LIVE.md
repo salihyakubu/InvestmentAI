@@ -1887,3 +1887,37 @@ telemetry alive. Predictions, outcomes, served vectors, p_flat_raw and
 all fourteen watches are market-data-driven and unaffected. Trading
 re-earns its activity only through the registered channels: a factor
 past its bar, a gate-passing challenger, or calibration v2.
+
+## FALSE TRADE STATISTICS FOUND AND WITHHELD (2026-09-12)
+Operator: "still not performing." Investigating that question found a
+worse problem than underperformance: the dashboard's trade statistics
+were FLATTERING the account. Measured on production data:
+  broker's own state (authoritative):  realised -$1.53, equity 98.60
+  dashboard's FIFO-over-fills ledger:  realised +$8.40, win rate 34.1%
+A $10 disagreement on a $100 account, in the direction that makes a
+losing account look profitable.
+
+MECHANISM: the fill ledger does not reconcile with the broker's open
+book on 12 of 13 symbols (ADA implies 50.08 units held vs 0.0125 actually
+held; DOT -3.16 vs -0.0012). Individual fills are sane (~$3 round trips,
+prices in range, buy/sell counts near-balanced) -- the drift is a handful
+of closes per symbol that never persisted. Each unmatched lot is later
+FIFO-paired against a months-old price (BTC bought at 62,427 "closed" at
+80,204), manufacturing P&L out of a persistence gap. Hence a +$3.98 BTC
+and +$2.09 ETH "profit" that never existed.
+
+FIX (this change): metrics.ledger_reconciles() compares the ledger-implied
+net position per symbol against the broker's real book in NOTIONAL terms
+(a 0.5-unit drift is dust on a $0.20 token and $35k on BTC), and compute()
+WITHHOLDS win rate and closed-trade count when they disagree, serving an
+explicit reason the UI renders as "ledger unreconciled" -- distinct from
+"no closed trades", which would itself be false. Equity-derived metrics
+are untouched: they come from the broker-authoritative snapshot series,
+which is why the -1.4% equity curve was always correct.
+
+NOT FIXED HERE, and registered as the next work: the persistence gap
+itself, and per-position realised P&L (positions.realized_pnl is 0.00 on
+all 175 closed rows -- the paper broker computes the exact figure at
+paper_broker.py:281 and discards it into a single scalar). Until that
+lands, the platform can say WHAT it lost (-$1.53, authoritative) but not
+WHICH trades lost it.

@@ -18,6 +18,7 @@ from api.schemas.portfolio import AllocationSchema, PortfolioSummary
 from config.settings import Settings, get_settings
 from core.models.orders import Fill, Order
 from core.models.portfolio import PortfolioSnapshot
+from core.models.positions import Position
 from services.portfolio.metrics import EquityPoint, LedgerFill, PerformanceMetrics
 from services.portfolio.metrics import compute as compute_metrics
 
@@ -73,7 +74,29 @@ async def _performance(db: AsyncSession, trading_mode: str) -> PerformanceMetric
         for symbol, side, price, quantity, commission in fill_rows
     ]
 
-    metrics = compute_metrics(points, fills)
+    # The broker's REAL open book, to reconcile the ledger against. A fill
+    # ledger missing closes makes FIFO invent P&L from stale prices, so
+    # trade statistics are withheld rather than shown when they disagree.
+    book_rows = (
+        await db.execute(
+            select(Position.symbol, Position.side, Position.quantity, Position.current_price)
+            .where(
+                Position.closed_at.is_(None),
+                Position.trading_mode == trading_mode,
+            )
+        )
+    ).all()
+    book = {
+        symbol: Decimal(str(quantity)) * (Decimal("1") if side == "long" else Decimal("-1"))
+        for symbol, side, quantity, _ in book_rows
+    }
+    marks = {
+        symbol: Decimal(str(price))
+        for symbol, _, _, price in book_rows
+        if price is not None
+    }
+
+    metrics = compute_metrics(points, fills, book=book, marks=marks)
     _metrics_cache[trading_mode] = (now, metrics)
     return metrics
 
@@ -129,6 +152,7 @@ async def get_portfolio_summary(
         max_drawdown=metrics.max_drawdown,
         win_rate=metrics.win_rate,
         closed_trades=metrics.closed_trades,
+        trade_stats_unavailable=metrics.trade_stats_unavailable,
         position_count=snapshot.position_count,
     )
 

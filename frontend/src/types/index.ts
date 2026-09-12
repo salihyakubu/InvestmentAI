@@ -77,6 +77,7 @@ export interface PortfolioSummary {
   max_drawdown?: number;
   win_rate?: number;
   closed_trades: number;
+  trade_stats_unavailable?: string;
   positions_count: number;
   open_orders_count: number;
 }

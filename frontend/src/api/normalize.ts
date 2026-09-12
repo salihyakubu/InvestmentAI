@@ -84,6 +84,10 @@ export function normalizePortfolioSummary(raw: Raw): PortfolioSummary {
     max_drawdown: numOpt(raw.max_drawdown),
     win_rate: numOpt(raw.win_rate),
     closed_trades: num(raw.closed_trades),
+    trade_stats_unavailable:
+      typeof raw.trade_stats_unavailable === 'string'
+        ? raw.trade_stats_unavailable
+        : undefined,
     positions_count: num(raw.positions_count ?? raw.position_count),
     open_orders_count: num(raw.open_orders_count),
   };

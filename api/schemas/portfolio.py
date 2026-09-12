@@ -31,6 +31,9 @@ class PortfolioSummary(BaseModel):
     max_drawdown: float | None = None
     win_rate: float | None = None
     closed_trades: int = 0
+    # Why trade statistics are absent, when they are. Distinguishes "no
+    # trades yet" from "the ledger cannot be trusted to say".
+    trade_stats_unavailable: str | None = None
     position_count: int = 0
 
 
