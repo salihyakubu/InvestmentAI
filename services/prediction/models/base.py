@@ -75,6 +75,11 @@ class TrainResult:
     # versions once climbed to 0.594 that was purely this number
     # (GO_LIVE 2026-09-12).
     majority_class_rate: float | None = None
+    # Macro-averaged recall of the SERVED pipeline. Immune to label
+    # imbalance: a constant predictor scores 1/n_classes however skewed the
+    # labels, so this is the only one of these numbers a collapse cannot
+    # fake. Promotion turns on it.
+    balanced_accuracy: float | None = None
 
     def to_metrics(self) -> dict[str, Any]:
         """Flatten the core metrics for the registry / promotion gate.
@@ -101,11 +106,8 @@ class TrainResult:
             metrics["brier_sigmoid"] = self.brier_sigmoid
         if self.majority_class_rate is not None:
             metrics["majority_class_rate"] = self.majority_class_rate
-            # The only accuracy number that means anything on imbalanced
-            # labels: how far the model beat simply guessing the majority.
-            metrics["accuracy_over_base_rate"] = (
-                self.val_accuracy - self.majority_class_rate
-            )
+        if self.balanced_accuracy is not None:
+            metrics["balanced_accuracy"] = self.balanced_accuracy
         return metrics
 
 

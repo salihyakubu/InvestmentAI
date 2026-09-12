@@ -63,11 +63,23 @@ async def _seed_bars(
     seed: int,
     timeframe: str = "1m",
     end: datetime | None = None,
+    autocorr: float = 0.0,
 ) -> None:
     """Insert *n* 1-minute bars for *symbol* ending at *end* (default: now)."""
     end = end or datetime.now(UTC)
     rng = np.random.default_rng(seed)
-    close = 100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.002, size=n))
+    if autocorr:
+        # Trending returns: r_t = autocorr * r_{t-1} + noise. The promotion
+        # gate now refuses models with chance-level balanced accuracy, so a
+        # test that exercises the PROMOTE path needs a learnable series --
+        # a pure random walk correctly yields nothing to learn.
+        shocks = rng.normal(0.0, 0.002, size=n)
+        rets = np.zeros(n)
+        for i in range(1, n):
+            rets[i] = autocorr * rets[i - 1] + shocks[i]
+        close = 100.0 * np.cumprod(1.0 + rets)
+    else:
+        close = 100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.002, size=n))
     high = close * (1.0 + rng.uniform(0.0001, 0.004, size=n))
     low = close * (1.0 - rng.uniform(0.0001, 0.004, size=n))
     open_ = np.concatenate(([100.0], close[:-1]))
@@ -251,8 +263,8 @@ async def test_retrain_end_to_end_promotes_and_mirrors_db(
 ) -> None:
     engine, factory = _make_factory()
     await _create_tables(engine, with_metadata=True)
-    await _seed_bars(factory, "BTC/USDT", 400, seed=21)
-    await _seed_bars(factory, "ETH/USDT", 400, seed=22)
+    await _seed_bars(factory, "BTC/USDT", 400, seed=21, autocorr=0.85)
+    await _seed_bars(factory, "ETH/USDT", 400, seed=22, autocorr=0.85)
 
     captured = _patch_fast_training(monkeypatch)
 
@@ -349,7 +361,7 @@ async def test_retrain_ensemble_retrains_every_member(
     xgboost (first substring match). Every member must now be promoted."""
     engine, factory = _make_factory()
     await _create_tables(engine, with_metadata=True)
-    await _seed_bars(factory, "BTC/USDT", 400, seed=31)
+    await _seed_bars(factory, "BTC/USDT", 400, seed=31, autocorr=0.85)
 
     _patch_fast_training(monkeypatch)
 

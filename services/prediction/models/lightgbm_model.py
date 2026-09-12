@@ -22,8 +22,8 @@ from services.prediction.models.base import (
     probabilities_in_class_order,
     select_calibration_method,
 )
-from services.prediction.training.class_balance import (
-    balanced_sample_weights,
+from services.prediction.training.skill_metrics import (
+    balanced_accuracy,
     majority_class_rate,
 )
 
@@ -223,12 +223,9 @@ class LightGBMPredictor(BasePredictor):
             log_evaluation(period=0),
         ]
 
-        # Class-balanced: an unweighted multiclass loss over flat-heavy
-        # labels is minimised by a constant predictor (GO_LIVE 2026-09-12).
         self._classifier.fit(
             X_train,
             y_train,
-            sample_weight=balanced_sample_weights(y_train),
             eval_set=[(X_val, y_val)],
             categorical_feature=cat_feature_indices,
             callbacks=callbacks,
@@ -265,6 +262,10 @@ class LightGBMPredictor(BasePredictor):
         # --- Metrics ---
         train_probs = self._classifier.predict_proba(X_train)
         val_probs = self._classifier.predict_proba(X_val)
+        # Skill is measured on the pipeline that actually SERVES (_proba
+        # applies the calibrator); the raw classifier's numbers describe a
+        # model production never runs (review 2026-09-12).
+        served_preds = np.argmax(self._proba(X_val), axis=1)
         train_preds = np.argmax(train_probs, axis=1)
         val_preds = np.argmax(val_probs, axis=1)
 
@@ -296,6 +297,7 @@ class LightGBMPredictor(BasePredictor):
             brier_isotonic=self._brier_isotonic,
             brier_sigmoid=self._brier_sigmoid,
             majority_class_rate=majority_class_rate(y_val),
+            balanced_accuracy=balanced_accuracy(y_val, served_preds),
         )
 
     # ------------------------------------------------------------------

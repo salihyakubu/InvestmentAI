@@ -27,6 +27,11 @@ from services.prediction.training.trainer import ModelTrainer
 
 logger = structlog.get_logger(__name__)
 
+# Balanced accuracy of a constant predictor on the 3-class (short/flat/long)
+# problem. A challenger at or below this has learned nothing, however high
+# its raw accuracy (GO_LIVE 2026-09-12).
+_CHANCE_BALANCED_ACCURACY = 1.0 / 3.0
+
 _TrainingData = tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -637,20 +642,25 @@ class AutoRetrainer:
         if new_acc < MIN_VAL_ACCURACY:
             return False
 
+        # The chance floor applies with or without an incumbent: the FIRST
+        # model promoted must also have learned something, or the platform
+        # simply crowns a constant predictor and starts the trap over.
+        new_skill = new_metrics.get("balanced_accuracy")
+        if new_skill is not None and float(new_skill) <= _CHANCE_BALANCED_ACCURACY:
+            return False
+
         if not old_metrics:
             return True
 
-        new_skill = new_metrics.get("accuracy_over_base_rate")
-        old_skill = old_metrics.get("accuracy_over_base_rate")
-        if new_skill is not None and old_skill is not None:
-            return float(new_skill) >= float(old_skill)
+        old_skill = old_metrics.get("balanced_accuracy")
         if new_skill is not None:
-            # The champion predates skill reporting, so its accuracy cannot
-            # arbitrate (it may be pure base rate). Require only that the
-            # challenger learned something beyond guessing, and leave the
-            # verdict to the live-transfer gate, which is conjunctive with
-            # this one and immune to class balance.
-            return float(new_skill) > 0.0
+            if old_skill is not None:
+                return float(new_skill) >= float(old_skill)
+            # The champion predates skill reporting, so its raw accuracy
+            # cannot arbitrate (v4's 0.5939 was pure base rate). Clearing
+            # chance is the bar; the conjunctive live-transfer gate casts
+            # the deciding vote.
+            return True
 
         old_acc = float(old_metrics.get("val_accuracy", old_metrics.get("accuracy", 0.0)))
         return new_acc >= old_acc
