@@ -134,6 +134,48 @@ def round_trip_stats(fills: list[LedgerFill]) -> tuple[float | None, int, Decima
     return win_rate, closed, realised
 
 
+def ledger_net_positions(fills: list[LedgerFill]) -> dict[str, Decimal]:
+    """Net signed quantity per symbol implied by the fill ledger."""
+    net: dict[str, Decimal] = defaultdict(Decimal)
+    for fill in fills:
+        signed = fill.quantity if fill.side == "buy" else -fill.quantity
+        net[fill.symbol] += signed
+    return dict(net)
+
+
+def ledger_reconciles(
+    fills: list[LedgerFill],
+    book: dict[str, Decimal],
+    marks: dict[str, Decimal] | None = None,
+    tolerance_notional: Decimal = Decimal("1"),
+) -> bool:
+    """Does the fill ledger explain the broker's actual open book?
+
+    Round-trip statistics are only meaningful when every close is present:
+    a missing close leaves an unmatched lot that FIFO later pairs against a
+    stale price, manufacturing P&L out of a persistence gap. Measured live
+    on 2026-09-12, exactly that produced a +$8.40 "realised" figure on an
+    account whose broker state said -$1.53.
+
+    Compared per symbol in NOTIONAL terms (quantity alone is meaningless
+    across a $0.20 token and a $70,000 one), against *marks* when supplied
+    and otherwise the symbol's last fill price. A symbol absent from the
+    book counts as flat.
+    """
+    implied = ledger_net_positions(fills)
+    last_price: dict[str, Decimal] = {}
+    for fill in fills:
+        last_price[fill.symbol] = fill.price
+    marks = marks or {}
+
+    for symbol in set(implied) | set(book):
+        drift = implied.get(symbol, Decimal("0")) - book.get(symbol, Decimal("0"))
+        price = marks.get(symbol) or last_price.get(symbol) or Decimal("0")
+        if abs(drift * price) > tolerance_notional:
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class PerformanceMetrics:
     """Everything the summary tiles need, with honest gaps."""
@@ -146,20 +188,39 @@ class PerformanceMetrics:
     sharpe_ratio: float | None
     win_rate: float | None
     closed_trades: int
+    # Set when trade statistics are withheld because the fill ledger does
+    # not explain the broker's actual book. A wrong win rate is worse than
+    # an absent one: it flatters exactly the account that needs scrutiny.
+    trade_stats_unavailable: str | None = None
 
 
 def compute(
     points: list[EquityPoint],
     fills: list[LedgerFill],
     baseline: Decimal | None = None,
+    book: dict[str, Decimal] | None = None,
+    marks: dict[str, Decimal] | None = None,
 ) -> PerformanceMetrics:
     """Derive the summary metrics from an equity series and a fill ledger.
 
     *points* must be chronological. *baseline* defaults to the first observed
     equity, which is the account's own starting point and therefore survives a
     change to the configured initial capital.
+
+    When *book* (the broker's real open positions) is supplied, the ledger is
+    reconciled against it first: trade statistics derived from an unbalanced
+    ledger are withheld rather than shown, because a missing close makes FIFO
+    invent P&L from stale prices. Equity-derived metrics come from the
+    snapshot series and are unaffected either way.
     """
     win_rate, closed_trades, _ = round_trip_stats(fills)
+    unavailable: str | None = None
+    if book is not None and fills and not ledger_reconciles(fills, book, marks):
+        unavailable = (
+            "fill ledger does not reconcile with the broker's open book; "
+            "round-trip statistics withheld"
+        )
+        win_rate, closed_trades = None, 0
     if not points:
         return PerformanceMetrics(
             total_return=Decimal("0"),
@@ -170,6 +231,7 @@ def compute(
             sharpe_ratio=None,
             win_rate=win_rate,
             closed_trades=closed_trades,
+            trade_stats_unavailable=unavailable,
         )
 
     equities = [p.equity for p in points]
@@ -196,4 +258,5 @@ def compute(
         sharpe_ratio=sharpe_ratio(points),
         win_rate=win_rate,
         closed_trades=closed_trades,
+        trade_stats_unavailable=unavailable,
     )

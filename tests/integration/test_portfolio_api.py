@@ -31,6 +31,7 @@ from core.models.base import AsyncBase
 from core.models.market_data import OHLCVRecord
 from core.models.orders import Fill, Order
 from core.models.portfolio import PortfolioSnapshot
+from core.models.positions import Position
 
 
 @compiles(JSONB, "sqlite")
@@ -40,6 +41,7 @@ def _compile_jsonb_sqlite(type_, compiler, **kw):  # noqa: ANN001, ANN003, ANN20
 
 _TABLES = [
     PortfolioSnapshot.__table__,
+    Position.__table__,
     Order.__table__,
     Fill.__table__,
     OHLCVRecord.__table__,
