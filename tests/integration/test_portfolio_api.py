@@ -288,7 +288,13 @@ def test_benchmark_starts_at_account_equity_and_tracks_holdings(client) -> None:
             await session.commit()
 
     asyncio.run(_seed())
-    rows = c.get("/api/v1/portfolio/benchmark", params={"days": 30}).json()
+    # The endpoint clamps its window to max(BENCHMARK_INCEPTION, now - days),
+    # and this fixture seeds AT inception to exercise inception-normalisation.
+    # A 30-day window silently excluded the fixture once the wall clock moved
+    # more than 30 days past inception, so the test rotted into a false red.
+    # A window that always reaches inception keeps it pinned to behaviour
+    # rather than to the calendar.
+    rows = c.get("/api/v1/portfolio/benchmark", params={"days": 3650}).json()
     assert len(rows) == 3
     # Starts at the account's inception equity ($100), NOT at the asset price.
     assert rows[0]["benchmark_equity"] == pytest.approx(100.0)
