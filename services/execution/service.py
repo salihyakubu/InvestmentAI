@@ -320,9 +320,19 @@ class ExecutionEngineService:
         stop_price: Decimal | None = None,
         reference_price: Decimal | None = None,
         client_order_id: str | None = None,
+        bypass_halt: bool = False,
     ) -> Order | None:
-        """Create (or reuse) an order, route it, and submit to the broker."""
-        if self._halted:
+        """Create (or reuse) an order, route it, and submit to the broker.
+
+        *bypass_halt* is for the kill switch's OWN remediation orders only.
+        emergency_flatten sets ``_halted`` before flattening, so its closing
+        orders would otherwise be refused here -- which is why they used to
+        go straight to the broker, changing the book while the durable
+        record learned nothing (no Order row, no fill event, no ledger
+        entry). Routing them through this path keeps the record faithful at
+        exactly the moment it matters most.
+        """
+        if self._halted and not bypass_halt:
             logger.warning("order_rejected_trading_halted", symbol=symbol)
             return None
         # Create order if no existing order_id supplied.
@@ -521,18 +531,22 @@ class ExecutionEngineService:
                 if qty == 0:
                     continue
                 side = "sell" if qty > 0 else "buy"
-                close = BrokerOrder(
-                    external_id="",
-                    symbol=pos["symbol"],
-                    side=side,
-                    order_type="market",
-                    quantity=abs(qty),
-                )
                 try:
-                    await broker.submit_order(close)
-                    flattened.append(
-                        {"symbol": pos["symbol"], "side": side, "quantity": str(abs(qty))}
+                    # Through the tracked path, not straight to the broker:
+                    # the monitor loop only publishes fills for orders the
+                    # order manager knows about, so a direct call would
+                    # flatten the book and leave no durable trace of it.
+                    placed = await self.submit_order(
+                        symbol=pos["symbol"],
+                        side=side,
+                        order_type="market",
+                        quantity=abs(qty),
+                        bypass_halt=True,
                     )
+                    if placed is not None:
+                        flattened.append(
+                            {"symbol": pos["symbol"], "side": side, "quantity": str(abs(qty))}
+                        )
                 except Exception as exc:
                     logger.error("flatten_submit_failed", symbol=pos["symbol"], error=str(exc))
 

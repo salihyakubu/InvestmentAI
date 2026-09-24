@@ -94,13 +94,23 @@ async def test_run_loop_writes_snapshots_and_cancels_cleanly() -> None:
     task = asyncio.create_task(
         writer.run(account_provider, positions_provider, interval_seconds=0.01)
     )
-    await asyncio.sleep(0.05)
+    # Wait for the CONDITION, not a fixed wall-clock guess: a bare
+    # sleep(0.05) raced the writer's first commit under full-suite CPU
+    # contention and produced intermittent false reds. The deadline keeps a
+    # genuinely broken writer from hanging the suite.
+    deadline = asyncio.get_running_loop().time() + 10.0
+    rows: list[Any] = []
+    while asyncio.get_running_loop().time() < deadline:
+        rows = await _all_snapshots(factory)
+        if rows:
+            break
+        await asyncio.sleep(0.01)
+
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    rows = await _all_snapshots(factory)
-    assert len(rows) >= 1
+    assert len(rows) >= 1, "writer produced no snapshot within 10s"
     snap = rows[0]
     assert snap.trading_mode == "paper"
     assert snap.total_equity == Decimal("101000")
@@ -122,7 +132,11 @@ async def test_run_skips_iteration_when_account_is_none() -> None:
 
     writer = PortfolioSnapshotWriter(session_factory=factory, trading_mode="paper")
     task = asyncio.create_task(writer.run(account_provider, interval_seconds=0.01))
-    await asyncio.sleep(0.05)
+    # Same race as above: wait until the loop has demonstrably polled twice
+    # rather than assuming 0.05s of wall clock was enough.
+    deadline = asyncio.get_running_loop().time() + 10.0
+    while calls["n"] < 2 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task

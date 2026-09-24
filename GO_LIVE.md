@@ -2040,3 +2040,41 @@ Two retrainer tests had to be given learnable (autocorrelated) fixtures:
 they had been exercising the PROMOTE path with random-walk data, which the
 gate now correctly refuses. That they ever passed is itself the old gate's
 epitaph.
+
+## MAINTENANCE (2026-09-24) — red tests cleared, a latent kill-switch leak closed
+Three fixes, no new claims.
+
+1. TWO RED TESTS ON MAIN, both rotted rather than broken by a change:
+   * the benchmark API test seeded AT BENCHMARK_INCEPTION but requested a
+     30-day window, so it silently fell outside its own fixture once the
+     wall clock moved 30 days past inception. Now requests a window that
+     always reaches inception -- pinned to behaviour, not the calendar.
+   * the snapshot-writer tests slept a fixed 0.05s and hoped the background
+     loop had committed; under full-suite CPU contention it sometimes had
+     not. Both now wait on the CONDITION with a deadline. Verified stable
+     across repeated full-suite runs.
+
+2. LATENT KILL-SWITCH LEAK (real, never fired): emergency_flatten set
+   _halted and then called broker.submit_order DIRECTLY, bypassing the
+   tracked path. Only orders the order manager knows about are polled by
+   the monitor loop that publishes OrderFilledEvent, so a flatten would
+   have changed the broker's book while the durable record learned nothing
+   -- no Order row, no fill, no ledger entry -- at exactly the moment a
+   reconstructable record matters most. Flatten orders now route through
+   submit_order with a narrow, explicitly-documented bypass_halt flag; a
+   regression test pins that ordinary orders are still refused while
+   halted, so the exemption cannot widen. Verified red without the fix.
+   Production note: the breaker has NEVER tripped (38,702 risk_metrics
+   rows, all "closed"), so this leak has never fired and is NOT the cause
+   of the ledger drift found on 2026-09-12.
+
+STILL UNEXPLAINED, recorded rather than guessed: the ~0.6% of closes
+missing from the fill ledger (ADA 252 buys / 249 sells against a flat
+broker). emergency_flatten is now excluded as the cause. The leading
+remaining hypothesis is worker restarts between submit and the monitor
+loop's status poll -- the order manager is in-memory, so an order in
+flight across a restart is never polled and its fill never published,
+which matches both the magnitude and the sporadic timing. Not fixed here:
+the remedy is order-manager durability across restarts, which deserves its
+own change. Until then the metrics layer continues to WITHHOLD round-trip
+statistics rather than report ledger-derived numbers (PR #86).

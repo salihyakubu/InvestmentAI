@@ -78,3 +78,47 @@ async def test_reconcile_detects_and_clears_mismatch(mock_settings: Settings) ->
 
     # Books agree with the broker -> no discrepancy.
     assert await ex.reconcile_positions({"AAPL": Decimal("5")}) == []
+
+
+@pytest.mark.asyncio
+async def test_flatten_orders_are_tracked_not_fired_straight_at_the_broker(
+    mock_settings: Settings,
+) -> None:
+    """The kill switch used to call broker.submit_order directly, so its
+    closing trades changed the book while the durable record learned
+    nothing -- no Order row, no fill event, no ledger entry -- precisely
+    during the emergency a reconstructable record exists for. Flatten
+    orders must go through the tracked path like everything else."""
+    ex, broker = _engine(mock_settings)
+    await ex.submit_order(
+        symbol="AAPL", side="buy", order_type="market",
+        quantity=Decimal("5"), reference_price=Decimal("100"),
+    )
+    before = len(ex._order_manager._orders)
+
+    summary = await ex.emergency_flatten()
+    assert await broker.get_positions() == []
+    assert summary["flattened"], "the flatten reported nothing closed"
+
+    after = list(ex._order_manager._orders.values())
+    assert len(after) > before, "flatten produced no tracked order"
+    closing = [o for o in after if o.symbol == "AAPL" and o.side == "sell"]
+    assert closing, "the closing trade was never registered with the order manager"
+
+
+@pytest.mark.asyncio
+async def test_the_halt_bypass_is_only_for_the_flatten_itself(
+    mock_settings: Settings,
+) -> None:
+    """The narrow exemption must not become a general hole: ordinary orders
+    are still refused while halted."""
+    ex, broker = _engine(mock_settings)
+    await ex.emergency_flatten()
+    assert ex.halted is True
+
+    refused = await ex.submit_order(
+        symbol="AAPL", side="buy", order_type="market",
+        quantity=Decimal("1"), reference_price=Decimal("100"),
+    )
+    assert refused is None
+    assert await broker.get_positions() == []
