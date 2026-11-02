@@ -75,6 +75,8 @@ class OrderStateMachine:
             OrderStatus.SUBMITTED,
             OrderStatus.REJECTED,
             OrderStatus.CANCELLED,
+            # A pending row found at startup that the venue has no memory of.
+            OrderStatus.EXPIRED,
         },
         OrderStatus.SUBMITTED: {
             OrderStatus.PARTIAL_FILL,
@@ -87,6 +89,7 @@ class OrderStateMachine:
             OrderStatus.PARTIAL_FILL,
             OrderStatus.FILLED,
             OrderStatus.CANCELLED,
+            OrderStatus.EXPIRED,
         },
         OrderStatus.FILLED: set(),
         OrderStatus.CANCELLED: set(),
@@ -138,13 +141,22 @@ class OrderManager:
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
         client_order_id: str | None = None,
+        order_id: str | None = None,
     ) -> Order:
-        """Create a new order in PENDING status."""
+        """Create a new order in PENDING status.
+
+        *order_id* lets the caller choose the id (a manual order reuses its DB
+        row id, so the durable row and the engine's order are one object);
+        otherwise a fresh uuid4 is assigned.
+        """
         # Opportunistic prune: the monitor loop already drops terminal orders
         # from in-flight tracking, so creation time is the natural hook to
         # release the retained copies without a background task.
         self._prune_terminal()
-        order_id = str(uuid.uuid4())
+        if order_id is None:
+            order_id = str(uuid.uuid4())
+        elif order_id in self._orders:
+            raise OrderError(f"Order already exists: {order_id}")
         order = Order(
             order_id=order_id,
             symbol=symbol,
@@ -213,6 +225,12 @@ class OrderManager:
             total_filled=str(total_qty),
         )
         return fill
+
+    def restore_order(self, order: Order) -> Order:
+        """Adopt an order rebuilt from its durable row (startup reconciliation)."""
+        self._orders[order.order_id] = order
+        self._fills.setdefault(order.order_id, [])
+        return order
 
     def get_open_orders(self) -> list[Order]:
         """Return all orders that are not in a terminal state."""

@@ -9,7 +9,9 @@ from typing import Any
 from config.settings import Settings
 from core.events.base import Event, EventBus
 from core.events.market_events import PriceUpdateEvent
+from core.events.order_events import TradingControlEvent
 from core.events.risk_events import RiskBreachedEvent
+from core.events.streams import CONTROL, LIQUIDATION, RISK_BREACHED
 from core.events.system_events import LiquidationTriggeredEvent
 from services.liquidation.emergency import EmergencyLiquidator
 from services.liquidation.stop_loss import StopLossManager
@@ -19,8 +21,11 @@ logger = logging.getLogger(__name__)
 
 # Stream names used by the event bus.
 STREAM_MARKET = "market.prices"
-STREAM_RISK = "risk.breaches"
-STREAM_LIQUIDATION = "liquidation.triggered"
+# Imported, not retyped: this constant read "risk.breaches" while the risk
+# service published on "risk.breached", so no breach ever arrived here
+# (found by the 2026-11-02 fleet review).
+STREAM_RISK = RISK_BREACHED
+STREAM_LIQUIDATION = LIQUIDATION
 
 
 class LiquidationManagerService:
@@ -129,7 +134,17 @@ class LiquidationManagerService:
             )
 
     async def handle_risk_breach(self, event: Event) -> None:
-        """Handle a :class:`RiskBreachedEvent` -- emergency liquidation if needed."""
+        """Handle risk-stream events: breaches and circuit-breaker transitions.
+
+        A breaker trip liquidates only when ``breaker_auto_flatten`` is set;
+        it then reuses the kill switch's flatten control (cancel, close every
+        position through the tracked order path, halt) rather than a private
+        liquidation path, so the record of the exit is the same one the
+        operator's flatten would leave.
+        """
+        if event.event_type == "CircuitBreakerEvent":
+            await self._handle_breaker_transition(event)
+            return
         if isinstance(event, RiskBreachedEvent):
             rule_name = event.rule_name
             action = event.action
@@ -162,6 +177,27 @@ class LiquidationManagerService:
                     reason=order.reason,
                     quantity=float(order.quantity),
                 )
+
+    async def _handle_breaker_transition(self, event: Event) -> None:
+        state = str(getattr(event, "state", "") or event.payload.get("state", ""))
+        reason = str(getattr(event, "reason", "") or event.payload.get("reason", ""))
+        if state != "open":
+            return
+        if not self._settings.breaker_auto_flatten:
+            logger.warning(
+                "Circuit breaker OPEN (%s); breaker_auto_flatten is off, book left open",
+                reason,
+            )
+            return
+        await self._event_bus.publish(
+            CONTROL,
+            TradingControlEvent(
+                action="flatten",
+                reason=f"circuit breaker open: {reason}",
+                source_service="LiquidationManagerService",
+            ),
+        )
+        logger.critical("Circuit breaker OPEN -> flatten control published (%s)", reason)
 
     # ------------------------------------------------------------------
     # Internal helpers

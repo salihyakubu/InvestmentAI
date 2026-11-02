@@ -86,13 +86,18 @@ export default function PredictionView({ predictions }: PredictionViewProps) {
                   <div
                     className={clsx(
                       'font-mono font-semibold mt-0.5',
-                      pred.predicted_return >= 0
-                        ? 'text-green-500'
-                        : 'text-red-500',
+                      pred.predicted_return === undefined
+                        ? 'text-gray-500'
+                        : pred.predicted_return >= 0
+                          ? 'text-green-500'
+                          : 'text-red-500',
                     )}
                   >
-                    {pred.predicted_return >= 0 ? '+' : ''}
-                    {(pred.predicted_return * 100).toFixed(2)}%
+                    {pred.predicted_return === undefined
+                      ? '\u2014'
+                      : `${pred.predicted_return >= 0 ? '+' : ''}${(
+                          pred.predicted_return * 100
+                        ).toFixed(2)}%`}
                   </div>
                 </div>
                 <div>

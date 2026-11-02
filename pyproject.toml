@@ -87,6 +87,10 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# macOS Finder/iCloud duplicates ("test_x 2.py") are gitignored but still match
+# python_files locally, so an edited original left a stale copy asserting the old
+# behaviour and every such test ran twice. Invisible to CI, which is why it lasted.
+addopts = "--ignore-glob='* 2.py'"
 
 [tool.mypy]
 python_version = "3.11"

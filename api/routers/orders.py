@@ -6,11 +6,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, get_db, get_event_bus
+from api.dependencies import (
+    client_ip,
+    get_audit_logger,
+    get_current_user,
+    get_db,
+    get_event_bus,
+    require_role,
+)
 from api.middleware.rate_limit import RateLimiter
 from api.schemas.orders import OrderCreate, OrderListResponse, OrderResponse
 from config.settings import get_settings
@@ -19,6 +26,7 @@ from core.events.base import EventBus
 from core.events.order_events import OrderIntentEvent
 from core.events.streams import ORDER_INTENTS
 from core.models.orders import Order
+from services.monitoring.audit import AuditLogger
 
 router = APIRouter(prefix="/orders")
 
@@ -98,18 +106,21 @@ async def get_order(
 )
 async def create_order(
     payload: OrderCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_role("admin", "trader")),
     _rate: None = Depends(_order_limiter),
     bus: EventBus | None = Depends(get_event_bus),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> OrderResponse:
-    """Submit a new manual order.
+    """Submit a new manual order (``trader`` or ``admin`` role).
 
     Validated by ``OrderCreate``, persisted as PENDING, then published as an
     ``OrderIntentEvent`` for the execution worker (202 Accepted). Manual orders
-    are paper-mode and rely on the execution-level safety gates (buying-power,
-    halt). If the event bus is unavailable the order is persisted but not
-    dispatched.
+    rely on the execution-level safety gates (buying-power, halt) and are
+    stamped with the deployment's real trading mode -- the row used to say
+    "paper" even when the worker would have routed it live. If the event bus
+    is unavailable the order is persisted but not dispatched.
     """
     now = datetime.now(UTC)
     asset_class = "crypto" if "/" in payload.symbol else "stock"
@@ -122,13 +133,28 @@ async def create_order(
         limit_price=payload.limit_price,
         stop_price=payload.stop_price,
         status=OrderStatus.PENDING.value,
-        trading_mode="paper",  # manual API orders are paper-only until live wiring lands
+        trading_mode=get_settings().trading_mode,
         created_at=now,
         updated_at=now,
     )
     db.add(order)
     await db.flush()
     await db.refresh(order)
+    await audit.log_action(
+        service="api",
+        action="order.manual_create",
+        entity_type="order",
+        entity_id=str(order.id),
+        details={
+            "symbol": order.symbol,
+            "side": order.side,
+            "order_type": order.order_type,
+            "quantity": str(order.quantity),
+            "trading_mode": order.trading_mode,
+        },
+        user_id=user.get("user_id"),
+        ip_address=client_ip(request),
+    )
 
     if bus is not None:
         await bus.publish(
@@ -155,10 +181,12 @@ async def create_order(
 )
 async def cancel_order(
     order_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_role("admin", "trader")),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> None:
-    """Cancel a pending or submitted order."""
+    """Cancel a pending or submitted order (``trader`` or ``admin`` role)."""
     stmt = select(Order).where(Order.id == order_id)
     result = await db.execute(stmt)
     order = result.scalar_one_or_none()
@@ -179,3 +207,12 @@ async def cancel_order(
     order.cancelled_at = datetime.now(UTC)
     order.updated_at = datetime.now(UTC)
     await db.flush()
+    await audit.log_action(
+        service="api",
+        action="order.manual_cancel",
+        entity_type="order",
+        entity_id=str(order.id),
+        details={"symbol": order.symbol},
+        user_id=user.get("user_id"),
+        ip_address=client_ip(request),
+    )

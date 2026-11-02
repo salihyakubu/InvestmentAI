@@ -24,7 +24,10 @@ class OrderFilledEvent(Event):
     commission: float = 0.0
     symbol: str = ""
     side: str = ""  # OrderSide value
-    client_order_id: str = ""  # originating DB order id, if any
+    client_order_id: str = ""  # risk correlation id or originating DB order id
+    # Venue fill id (or a deterministic stand-in): the persistence layer's
+    # dedupe key under at-least-once delivery.
+    fill_id: str = ""
 
 
 class OrderRejectedEvent(Event):

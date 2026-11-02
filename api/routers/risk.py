@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, get_db
+from api.dependencies import get_current_user, get_db, require_role
 from api.schemas.common import SuccessResponse
 from api.schemas.risk import RiskMetricsSchema
 from core.models.risk import RiskMetric
@@ -123,7 +123,7 @@ async def get_circuit_breaker_status(
     summary="Manually reset circuit breaker",
 )
 async def reset_circuit_breaker(
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(require_role("admin")),
 ) -> SuccessResponse:
     """Manually reset the circuit breaker.
 

@@ -178,6 +178,23 @@ class CircuitBreaker:
 
         return False
 
+    def restore(
+        self, state: str, tripped_at: datetime | None, reason: str
+    ) -> None:
+        """Adopt a persisted state at startup (no transition is logged as new).
+
+        A breaker that was OPEN when the worker went down must come back OPEN:
+        before this, every restart booted it CLOSED (GO_LIVE.md 2026-11-02).
+        """
+        self._state = CircuitBreakerState(state)
+        self._tripped_at = tripped_at
+        self._trip_reason = reason if self._state != CircuitBreakerState.CLOSED else ""
+        logger.warning("Circuit breaker state restored: %s (%s)", self._state, reason)
+
+    @property
+    def trip_reason(self) -> str:
+        return self._trip_reason
+
     def reset(self) -> None:
         """Manually transition to CLOSED state."""
         previous = self._state

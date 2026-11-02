@@ -188,10 +188,19 @@ async def _build_services(
 
     portfolio = PortfolioOptimizerService(event_bus=event_bus, settings=settings)
 
+    # -- Durable safety state (halt flag, breaker, daily baseline) --
+    from services.persistence.safety_state import SafetyStateStore
+
+    safety_store = SafetyStateStore(
+        session_factory=session_factory, trading_mode=settings.trading_mode
+    )
+
     # -- Risk Manager --
     from services.risk.service import RiskManagerService
 
-    risk_manager = RiskManagerService(event_bus=event_bus, settings=settings)
+    risk_manager = RiskManagerService(
+        event_bus=event_bus, settings=settings, state_store=safety_store
+    )
 
     # -- Execution Engine --
     from services.execution.service import ExecutionEngineService
@@ -199,7 +208,13 @@ async def _build_services(
     brokers = _build_brokers(settings)
 
     execution = ExecutionEngineService(
-        event_bus=event_bus, settings=settings, brokers=brokers,
+        event_bus=event_bus,
+        settings=settings,
+        brokers=brokers,
+        # Order rows are written before the venue is called and reconciled
+        # at boot; the halt flag survives a restart.
+        session_factory=session_factory,
+        state_store=safety_store,
     )
 
     # -- Liquidation Manager --
@@ -363,6 +378,27 @@ async def _restore_broker_state(services: list[Any], settings: Settings) -> None
         logger.exception("worker.broker_state_restore_failed")
 
 
+async def _restore_safety_state_and_orders(services: list[Any]) -> None:
+    """Restore halt/breaker/baseline state and reconcile in-flight orders."""
+    from services.execution.service import ExecutionEngineService
+    from services.risk.service import RiskManagerService
+
+    execution = next((s for s in services if isinstance(s, ExecutionEngineService)), None)
+    risk = next((s for s in services if isinstance(s, RiskManagerService)), None)
+    if execution is not None:
+        try:
+            await execution.restore_safety_state()
+            summary = await execution.reconcile_on_start()
+            logger.info("worker.order_reconciliation", **summary)
+        except Exception:
+            logger.exception("worker.order_reconciliation_failed")
+    if risk is not None:
+        try:
+            await risk.restore_safety_state()
+        except Exception:
+            logger.exception("worker.risk_state_restore_failed")
+
+
 async def _run() -> None:
     """Main async entry point: build services, start them, wait for shutdown."""
     settings = get_settings()
@@ -379,6 +415,11 @@ async def _run() -> None:
     # broker holds cash/positions in memory, so an unrestored restart rebases
     # equity to initial capital and orphans the open book.
     await _restore_broker_state(services, settings)
+    # Then the safety flags and the order book: a halt must still hold, a
+    # tripped breaker must still be tripped, and every order that was in
+    # flight when the last process died must be accounted for before any
+    # new intent is consumed (GO_LIVE.md 2026-11-02).
+    await _restore_safety_state_and_orders(services)
 
     # Graceful shutdown handling
     shutdown_event = asyncio.Event()
@@ -439,6 +480,8 @@ async def _run() -> None:
                 account_provider=snapshot_broker.get_account,
                 positions_provider=snapshot_broker.get_positions,
                 interval_seconds=300.0,
+                # Per-position realised P&L rides along with the checkpoint.
+                realized_provider=getattr(snapshot_broker, "realized_by_symbol", None),
             )
         )
         logger.info("worker.snapshot_writer_started")
