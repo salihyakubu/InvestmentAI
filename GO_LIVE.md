@@ -2405,3 +2405,35 @@ both from the scratch venv's newer packages; out of scope, not chased.
 FULL SUITE: the local run on this Mac and the CI run (Python 3.11, Linux,
 the gate) are recorded in the VERDICT line below, appended when they
 complete. Nothing above this line claims them.
+
+AMENDMENT (2026-11-06, same day, before merge) — the first Row fix was itself
+deprecated; (i) above is corrected here. The first fix iterated
+Result.tuples(). The narrower runs (two test files, mypy) were green and the
+PR's first commit (e3c16e3) passed all four CI checks; only the full local
+suite's warning summary showed three new SADeprecationWarnings, one per
+site: "The Result.tuples() method is deprecated, Row now behaves like a
+tuple and can unpack types directly (deprecated since: 2.1.0)". The fix had
+traded noload()'s deprecation for another that no gate could see. Probed
+under mypy 2.1.0 + SQLAlchemy 2.1.8: plain `for a, b, c in result.all()` IS
+precisely typed in 2.1. The two sites that broke both select the JSONB
+column features_used, typed dict[str, Any] | None, and that Any makes
+select()'s typed overloads ambiguous, so the statement degrades to
+Select[*tuple[Any, ...]] and the unpacked elements become `object`. The
+learning-metrics query (no JSONB) only ever needed None narrowing.
+CORRECTED FIX: plain unpacking everywhere; at the two JSONB sites the column
+types are stated explicitly on the result
+(Sequence[Row[datetime, str, dict[str, Any] | None]] and
+Sequence[Row[datetime, dict[str, Any] | None, float | None]]), which is the
+"explicit column types" option the registration named. No cast, no ignore,
+no deprecated API.
+ADDED GATE, the one addition beyond the registered scope: pytest now runs
+with filterwarnings = ["error::sqlalchemy.exc.SADeprecationWarning"], so the
+next deprecated call fails the suite instead of hiding in a summary. It
+exists because the registered scope's own gate had this hole.
+VERDICT (2026-11-06, corrected fix, SQLAlchemy 2.1.8 locally): mypy --strict
+"Success: no issues found in 178 source files"; ruff clean; full suite 685
+passed, 0 failed, 8 warnings, none of them SQLAlchemy's, in 5 m 38 s with
+SADeprecationWarning promoted to an error (the first draft's full run: 685
+passed, 23 warnings, three of them the tuples() deprecations). CI on the
+PR's first commit e3c16e3: lint, pytest (Python 3.11), mypy and snyk all
+green. CI on the corrected commit is the gate; its result lives on PR #90.

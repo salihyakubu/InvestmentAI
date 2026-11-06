@@ -91,6 +91,10 @@ testpaths = ["tests"]
 # python_files locally, so an edited original left a stale copy asserting the old
 # behaviour and every such test ran twice. Invisible to CI, which is why it lasted.
 addopts = "--ignore-glob='* 2.py'"
+# SQLAlchemy deprecations are errors: the 2.1 upgrade's first draft swapped the
+# deprecated noload() for the equally deprecated Result.tuples(), and only the
+# full suite's warning summary caught it. Now the suite itself refuses.
+filterwarnings = ["error::sqlalchemy.exc.SADeprecationWarning"]
 
 [tool.mypy]
 python_version = "3.11"

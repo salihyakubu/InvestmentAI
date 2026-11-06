@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import time as _time
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import extract, func, select
+from sqlalchemy import Row, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user, get_db, require_role
@@ -69,10 +70,10 @@ async def get_learning_metrics(
             )
             .order_by(Prediction.predicted_at)
         )
-    ).tuples().all()
+    ).all()
     # The WHERE above already excludes NULL returns; the type system cannot see
-    # that (SQLAlchemy 2.1 types each tuple element where 2.0 typed Row elements
-    # as Any), so narrow in Python rather than cast.
+    # that (SQLAlchemy 2.1 types each Row element where 2.0 typed them as Any),
+    # so narrow in Python rather than cast.
     resolved: list[ResolvedPrediction] = []
     for predicted_at, symbol, expected, confidence, direction, actual, actual_dir in rows:
         if expected is None or actual is None:
@@ -181,7 +182,10 @@ async def get_feature_drift(
     # Bounded scan: the report only ever needs the current generation's
     # first reference days plus the recent window, both inside this horizon.
     scan_since = datetime.now(UTC) - timedelta(days=_DRIFT_SCAN_DAYS)
-    db_rows = (
+    # features_used is JSONB, typed dict[str, Any]; that Any makes select()'s
+    # typed overloads ambiguous and the statement falls back to untyped rows, so
+    # the column types are stated here explicitly instead.
+    db_rows: Sequence[Row[datetime, str, dict[str, Any] | None]] = (
         await db.execute(
             select(
                 Prediction.predicted_at, Prediction.symbol, Prediction.features_used
@@ -192,7 +196,7 @@ async def get_feature_drift(
             )
             .order_by(Prediction.predicted_at)
         )
-    ).tuples().all()
+    ).all()
     rows: list[tuple[datetime, str, str, list[float]]] = []
     for when, symbol, payload in db_rows:
         if not isinstance(payload, dict):
