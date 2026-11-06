@@ -23,12 +23,14 @@ export class WebSocketManager {
   connect(channel = 'default'): void {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
+    // The token never goes in the URL: proxies and servers log URLs, and a
+    // logged 24h bearer is an admin takeover. It is the first message instead;
+    // the server replies {type:'auth_ok'} or closes with 1008.
     const token = localStorage.getItem('auth_token');
-    const wsUrl = `${this.url}/${channel}${token ? `?token=${token}` : ''}`;
-
-    this.ws = new WebSocket(wsUrl);
+    this.ws = new WebSocket(`${this.url}/${channel}`);
 
     this.ws.onopen = () => {
+      this.ws?.send(JSON.stringify({ type: 'auth', token: token ?? '' }));
       this._connected = true;
       this.reconnectAttempts = 0;
       this.notifyChannel('_connection', { status: 'connected' });

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.models.audit import AuditLog
 from core.models.base import get_async_session_factory
@@ -17,8 +18,15 @@ class AuditLogger:
     """Writes structured audit records to the ``audit_logs`` table.
 
     Every trade decision is recorded with a full trace from prediction
-    through risk check, sizing, routing, and execution.
+    through risk check, sizing, routing, and execution. Privileged actions
+    (kill switch, manual orders) record WHO (``user_id``) and from WHERE
+    (``ip_address``); until 2026-11-02 neither column was ever written.
     """
+
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession] | None = None
+    ) -> None:
+        self._session_factory = session_factory
 
     # ------------------------------------------------------------------
     # Generic action logging
@@ -32,6 +40,8 @@ class AuditLogger:
         entity_id: str | None = None,
         details: dict[str, Any] | None = None,
         decision_trace: dict[str, Any] | None = None,
+        user_id: Any | None = None,
+        ip_address: str | None = None,
     ) -> None:
         """Persist a single audit log entry.
 
@@ -51,9 +61,11 @@ class AuditLogger:
             entity_id=entity_id,
             details=details or {},
             decision_trace=decision_trace,
+            user_id=user_id,
+            ip_address=ip_address,
         )
 
-        session_factory = get_async_session_factory()
+        session_factory = self._session_factory or get_async_session_factory()
         async with session_factory() as session:
             try:
                 session.add(entry)

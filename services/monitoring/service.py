@@ -10,7 +10,7 @@ import structlog
 
 from config.settings import Settings
 from core.events.base import Event, EventBus
-from core.events.streams import SYSTEM
+from core.events.streams import RISK_BREACHED, SYSTEM
 from services.monitoring.alerting import AlertManager, Severity
 from services.monitoring.audit import AuditLogger
 from services.monitoring.health import HealthChecker, HealthStatus
@@ -22,7 +22,9 @@ logger = structlog.get_logger(__name__)
 _MARKET_BARS_STREAM = "market.bars"
 _PREDICTIONS_STREAM = "predictions.ready"
 _ORDERS_STREAM = "orders"
-_RISK_STREAM = "risk"
+# Imported, not retyped: this read "risk" while the risk service publishes on
+# "risk.breached", so monitoring never saw a breach (2026-11-02 fleet review).
+_RISK_STREAM = RISK_BREACHED
 _SYSTEM_STREAM = SYSTEM
 
 _CONSUMER_GROUP = "monitoring-service"
@@ -188,6 +190,14 @@ class MonitoringService:
         if event_type == "CircuitBreakerEvent":
             state = getattr(event, "state", event.payload.get("state", ""))
             reason = getattr(event, "reason", event.payload.get("reason", ""))
+            # Every transition is a durable audit row; a trip is also an alert.
+            await self._audit_logger.log_action(
+                service="risk",
+                action=f"circuit_breaker.{state}",
+                entity_type="circuit_breaker",
+                entity_id=state,
+                details={"state": state, "reason": reason},
+            )
             if state == "open":
                 self._metrics.record_circuit_breaker_trip()
                 await self._alert_manager.send_alert(

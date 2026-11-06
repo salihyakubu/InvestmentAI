@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, get_db
+from api.dependencies import get_current_user, get_db, require_role
 from api.schemas.common import SuccessResponse
 from api.schemas.portfolio import AllocationSchema, PortfolioSummary
 from config.settings import Settings, get_settings
@@ -375,7 +375,7 @@ async def get_benchmark(
     summary="Trigger manual rebalance",
 )
 async def trigger_rebalance(
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(require_role("admin")),
 ) -> SuccessResponse:
     """Trigger a manual portfolio rebalance.
 

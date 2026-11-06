@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.dependencies import get_current_user
+from api.dependencies import get_current_user, require_role
 from api.schemas.risk import RiskRulesSchema
 from config.settings import get_settings as _get_settings
 
@@ -45,7 +45,7 @@ async def get_risk_rules(
 )
 async def update_risk_rules(
     rules: RiskRulesSchema,
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(require_role("admin")),
 ) -> RiskRulesSchema:
     """Update risk rule configuration.
 
@@ -77,7 +77,7 @@ async def get_trading_mode(
 )
 async def update_trading_mode(
     mode: dict[str, Any],
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     """Switch between backtest, paper, and live trading modes.
 

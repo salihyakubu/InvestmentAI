@@ -32,14 +32,23 @@ class ConnectionManager:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
 
     async def connect(self, websocket: WebSocket, channel: str) -> None:
-        """Accept a WebSocket connection and add it to *channel*."""
+        """Accept a WebSocket connection and add it to *channel* (unauthenticated;
+        the streaming routes authenticate first and call ``register``)."""
         await websocket.accept()
+        self.register(websocket, channel)
+
+    def register(self, websocket: WebSocket, channel: str) -> None:
+        """Add an already-accepted, authenticated connection to *channel*."""
         self._connections[channel].add(websocket)
         logger.info(
             "WebSocket connected to channel=%s (total=%d)",
             channel,
             len(self._connections[channel]),
         )
+
+    def count(self, channel: str) -> int:
+        """Number of live connections on *channel*."""
+        return len(self._connections[channel])
 
     def disconnect(self, websocket: WebSocket, channel: str) -> None:
         """Remove a WebSocket connection from *channel*."""

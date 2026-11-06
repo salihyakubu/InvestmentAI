@@ -49,6 +49,7 @@ class PortfolioSnapshotWriter:
         realized_pnl: Decimal | float = 0,
         position_count: int = 0,
         positions: list[dict[str, Any]] | None = None,
+        realized_by_symbol: dict[str, Decimal] | None = None,
     ) -> None:
         """Insert a snapshot row, and the open book alongside it.
 
@@ -68,7 +69,9 @@ class PortfolioSnapshotWriter:
         async with self._session_factory() as session:
             session.add(snapshot)
             if self._state_store is not None and positions is not None:
-                await self._state_store.checkpoint(positions, session)
+                await self._state_store.checkpoint(
+                    positions, session, realized_by_symbol=realized_by_symbol
+                )
             await session.commit()
         logger.debug(
             "portfolio_snapshot_written",
@@ -81,6 +84,7 @@ class PortfolioSnapshotWriter:
         account_provider: Callable[[], Awaitable[dict[str, Any] | None]],
         positions_provider: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         interval_seconds: float = 300.0,
+        realized_provider: Callable[[], dict[str, Decimal]] | None = None,
     ) -> None:
         """Background loop: periodically pull the broker account via
         *account_provider* and persist a snapshot, so the equity curve
@@ -122,6 +126,9 @@ class PortfolioSnapshotWriter:
                     realized_pnl=realized_pnl,
                     position_count=position_count,
                     positions=positions,
+                    realized_by_symbol=(
+                        realized_provider() if realized_provider is not None else None
+                    ),
                 )
             except asyncio.CancelledError:
                 break

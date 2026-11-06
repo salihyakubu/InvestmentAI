@@ -2078,3 +2078,236 @@ which matches both the magnitude and the sporadic timing. Not fixed here:
 the remedy is order-manager durability across restarts, which deserves its
 own change. Until then the metrics layer continues to WITHHOLD round-trip
 statistics rather than report ledger-derived numbers (PR #86).
+
+## AGENT FLEET REVIEW (2026-11-02) — sixteen roles, fifteen verdicts, one BLOCK
+Operator asked for the hiring plan's sixteen roles as agents, a review of the
+platform by them, and the gaps closed. Sixteen role agents now live in
+.claude/agents/ (roster and protocol in .claude/AGENT_FLEET.md). Fifteen ran a
+read-only review in parallel, each on a narrow file scope with a six-finding
+cap; the product lead ran afterwards on their reports. Full record:
+docs/reviews/2026-11-02-agent-fleet-review.md. Every finding acted on below
+was re-verified in code by the lead before being built.
+
+The risk manager's verdict is BLOCK on go-live readiness, liftable when four
+findings are fixed with regression tests AND a paper soak has shown the
+breaker trip and the book auto-exit at least once -- which has never happened
+(38,702 risk_metrics rows, all "closed").
+
+RANKED (money-at-risk, then trust-at-risk, then effort; de-duplicated):
+ 1. NO EXIT PATH. services/liquidation/service.py subscribed to
+    "risk.breaches"; risk publishes RISK_BREACHED = "risk.breached";
+    monitoring listened on "risk"; nothing consumed "liquidation.triggered";
+    the breaker trip published no event, so no alert and no audit row.
+    Confirmed by risk, trader and compliance independently. The 2026-08-01
+    line "the liquidation manager handles exits" was false.
+ 2. ORDER STATE IS PROCESS MEMORY. Beyond the registered restart gap
+    (2026-09-24): one failed publish in the fill monitor poisoned it for the
+    life of the process (record_fill on a FILLED order raises OrderError every
+    2 s and the for-loop aborts, starving every later order); autonomous fill
+    persistence swallowed DB errors and acked; no fill dedupe; venue ids,
+    venue time and fees never persisted; positions.realized_pnl never
+    written. The poisoning explains "a handful of closes per symbol that never
+    persisted" WITHOUT a restart.
+ 3. SAFETY STATE NOT DURABLE. Halt flag, breaker state, day-start and peak
+    equity reset on every restart; an operator halt is lifted by a deploy.
+ 4. AUTHORISATION. Any JWT (default role viewer) can POST/DELETE /orders --
+    in live mode that reaches the venue up to buying power; five 501 stubs
+    unguarded; WebSockets unauthenticated and uncapped; the frontend sent the
+    JWT in the WebSocket URL, which uvicorn and nginx write to logs (a 24 h
+    admin bearer in the log store); /admin/control writes no audit row.
+ 5. TRAINING LABEL IS 25 BARS; everything downstream scores 5 minutes
+    (dataset_builder strides HORIZON=5 replay steps of 5 bars). Registered,
+    not built: changing it silently re-bases every live measurement.
+ 6. PROMOTION GATE'S VALIDATION LEG CONTAMINATED FOUR WAYS on one split
+    (hyperopt, early stopping, calibration, conformal, gate metric); the edge
+    harness's OOS rows are the calibrator's fit set; catboost is outside the
+    retrain loop so a stale member vetoes every directional vote. Registered.
+ 7. READINESS PANEL PASSABLE BY A NULL FACTOR: no family-wise bar across 14
+    watches, the current quarter counted, no minimum n (~60% chance one of 14
+    nulls shows four positive quarters). Registered.
+ 8. TRAIN/SERVE BREAKS IN DATA: cold 200-bar feature buffer after every
+    deploy (NaN -> 0.0 features predicted on, persisted, learned from); daily
+    VIX/SPY backfill stamped ~16 h before publication (the 07-23 regime A/B
+    ran on it). Registered.
+ 9. LIVE BINANCE PATH broken three independent ways (quantity rounds to 0
+    under TICK_SIZE precision; status/cancel need the symbol; equity counts
+    USDT only). Live-only; registered.
+10. OPERATIONAL SILENCE: /healthz unconditional, no staleness watchdog, no
+    external dead-man, no backups, no commit stamp. Registered.
+11. UI TRUTH: ML page coerces absent metrics to 0 and shows base-rate
+    accuracy (the PR #56 item marked STILL OPEN on 07-29); Audit Log page
+    reads fields the API never sends; Trading page fabricates fill state; a
+    dead REST feed renders as live.
+12. EXITS SIZED FROM A STALE DOLLAR BOOK leave dust or an unintended short;
+    the paper broker accepts naked shorts (reproduced: a 1000-SOL sell on a
+    $100 account fills). The production drift signature. Registered.
+Also: the fleet's own least privilege was advisory (Bash/Edit/Write on the
+advisory roles); seven macOS "name 2.py" duplicate tests were collected
+locally; the local venv is Python 3.14 while CI and the image are 3.11, and
+ML imports stall on this Mac under load, so today's local test runs were
+unreliable -- CI remains the gate.
+
+## PRE-REGISTRATION (2026-11-02) — the fleet's first build set
+Registered BEFORE code. Seven changes, one at a time, failing test first.
+Nothing here changes a trading parameter, the trade gate, a limit value or
+TRADING_MODE. Success criteria fixed now:
+ (1) FLEET + HYGIENE: the three advisory roles hold Read/Grep/Glob only; the
+     duplicate test files are not collected (pytest --ignore-glob).
+ (2) FILL MONITOR: a publish failure on one order loses no fill and starves no
+     other order; after the retry exactly one OrderFilledEvent exists per
+     fill and the book is counted once. Test red without the fix.
+ (3) EXIT/BREAKER WIRING: a RiskBreachedEvent published on RISK_BREACHED is
+     received by the liquidation manager and by monitoring; a breaker
+     transition publishes exactly one CircuitBreakerEvent, one alert and one
+     audit row; a LiquidationTriggeredEvent with quantity 0 closes the
+     broker's full signed position through the TRACKED order path even while
+     halted (risk-reducing orders share the flatten exemption); a new setting
+     breaker_auto_flatten (default False) publishes the existing flatten
+     control on a breaker trip when True, and nothing when False. The
+     operator decides the default; it is OFF so today changes no behaviour.
+     Production criterion: the next breaker trip, if one ever happens,
+     produces a Slack alert and an audit_logs row. This may wait indefinitely
+     and that is recorded as such.
+ (4) DURABLE SAFETY STATE: a halt survives a restart (the restored engine
+     refuses orders); day-start equity, peak equity and an OPEN breaker
+     survive a same-UTC-day restart; a previous-day state re-bases the daily
+     baseline from the first account sync, not from INITIAL_CAPITAL (the
+     current code's $92-account-false-trip failure). Production criterion:
+     after the next deploy the worker logs a restored state and daily_pnl_pct
+     is continuous across the restart.
+ (5) DURABLE ORDERS + REALISED P&L: an Order row exists BEFORE the broker is
+     called; a restart between submit and poll yields exactly one
+     OrderFilledEvent and one fills row on reconciliation; a redelivered
+     RiskApprovedEvent after a restart produces one broker submit; a
+     duplicate OrderFilledEvent produces one fills row; a paper order that
+     the restarted broker no longer knows is marked expired with reason
+     lost_on_restart and alerted, never silently dropped; a closed position
+     row carries the broker's exact realised figure. Production criterion:
+     ledger_reconciles() true on every symbol for 7 consecutive days after
+     deploy so PR #86's withholding can lift. Prediction stated now: the
+     ~0.6% missing-close drift stops accruing. If closes keep going missing,
+     the restart/poisoning hypothesis was wrong and this is a MISS.
+ (6) AUTHZ / WEBSOCKETS / AUDIT: a viewer token receives 403 on POST/DELETE
+     /orders and on all five 501 stubs; a WebSocket whose first message is
+     not a valid JWT is closed with 1008 and never joins a channel; with one
+     it receives broadcasts; channels are capped; /admin/control and manual
+     order create/cancel write audit rows with user_id and ip_address; the
+     frontend sends the token as the first message, never in the URL.
+     Operator action after deploy: rotate JWT_SECRET (tokens are in logs).
+ (7) UI TRUTH: the ML page renders absent metrics as an em-dash and shows
+     balanced accuracy beside the base rate; the Audit Log page renders the
+     fields the API sends. Criterion: no num() coercion remains on optional
+     metrics in normalizeModelInfo; tsc clean once the environment permits.
+
+## SHIPPED (2026-11-02) — the fleet's first build set, judged against its registration
+All seven registered changes landed in one working tree (not yet committed;
+the operator decides the PR). Verdicts against the criteria fixed above:
+ (1) FLEET + HYGIENE: PASS. securities-crypto-lawyer, product-lead and
+     blockchain-data-analyst hold Read/Grep/Glob only; ai-agent-engineer may
+     load skills; pytest ignores "name 2.py" duplicates
+     (pyproject addopts). The sixteen agents are registered as Claude Code
+     subagent types.
+ (2) FILL MONITOR: PASS. tests/unit/test_fill_monitor_resilience.py: a bus
+     that fails the first OrderFilledEvent publish loses no fill, starves no
+     other order, publishes each fill exactly once and counts the book once.
+     The test is red on the previous monitor (FILLED -> FILLED OrderError
+     every tick).
+ (3) EXIT/BREAKER WIRING: PASS. tests/integration/test_exit_path_wiring.py:
+     constants imported not retyped (liquidation + monitoring now subscribe
+     to RISK_BREACHED); a breach reaches the liquidation manager; a breaker
+     transition publishes exactly one CircuitBreakerEvent, one alert and one
+     audit row; a LiquidationTriggeredEvent with quantity 0 closes the
+     broker's full signed position through the tracked path while halted and
+     an ordinary order is still refused; breaker_auto_flatten False publishes
+     nothing, True publishes one flatten control. Default OFF: no behaviour
+     change in production until the operator decides. The production
+     criterion (a real trip reaches Slack and audit_logs) waits for a trip.
+ (4) DURABLE SAFETY STATE: PASS. New table safety_state (migration 0011,
+     model core/models/safety.py, store services/persistence/safety_state.py).
+     tests/integration/test_safety_state_durability.py: an operator halt
+     survives a restart until resumed; emergency_flatten persists its halt;
+     a same-day restart keeps day-start equity, peak and an OPEN breaker
+     without re-publishing a trip; a previous-day row keeps the all-time
+     peak and re-bases the daily baseline from the first account sync. The
+     daily baseline is now seeded from the first account sync on a fresh
+     start too, so a $92 account no longer boots at -8%.
+ (5) DURABLE ORDERS + REALISED P&L: PASS. Order rows gain broker_name and
+     correlation_id; fills.external_fill_id is UNIQUE (migration 0011). The
+     engine writes the row BEFORE the venue is called and refuses to trade if
+     it cannot; manual orders reuse their DB row id as the engine order id;
+     fills carry a fill_id and order_sync dedupes on it and no longer
+     swallows write errors; reconcile_on_start() runs before any consumer
+     starts; simulated venues are polled immediately after submit. The paper
+     broker keeps realised P&L per position, the checkpoint writes it onto
+     open and closing rows, and restore feeds it back.
+     tests/integration/test_order_durability.py (8 tests): row present when
+     the broker is called; restart between fill and publish reconciles to
+     exactly one event and one fills row, idempotent on a second boot;
+     redelivered RiskApprovedEvent after a restart submits once; duplicate
+     fill event persists one row; an order the restarted venue cannot
+     account for is marked expired/lost_on_restart with no fabricated fill;
+     realised P&L 0 -> +40 -> -20 per position and -20 on the closed row.
+     Production criterion (ledger_reconciles true for 7 days so PR #86's
+     withholding can lift) starts at the next deploy; MISS if closes keep
+     going missing.
+ (6) AUTHZ / WEBSOCKETS / AUDIT: PASS. require_role() dependency; viewer gets
+     403 on POST/DELETE /orders and on all five 501 stubs (now admin-only);
+     trader may trade but not configure; manual orders are stamped with the
+     deployment's real trading mode; /admin/control and manual create/cancel
+     write audit rows with user_id and ip_address (AuditLogger gained both,
+     and an injectable session factory). WebSockets: first message must be
+     {"type":"auth","token":...}, else close 1008; a token in the URL is
+     ignored; channels capped at 50; server answers {"type":"auth_ok"}.
+     Frontend sends the token as the first frame and never in the URL.
+     tests/integration/test_api_authz.py (21 tests) + the existing auth
+     tests: 25 passed. Operator action after deploy: rotate JWT_SECRET.
+ (7) UI TRUTH: PASS by type-check. normalizeModelInfo coerces nothing: absent
+     precision/recall/F1/Sharpe/prediction count render as an em-dash; the
+     table shows Base rate and Balanced acc beside Accuracy with the gate's
+     1/3 chance floor coloured; nullable expected_return renders as a dash
+     not "+0.00%". The Audit Log page renders service/action/entity/actor,
+     filters on service/action, and shows an explicit error state.
+     `tsc -b` clean. No browser run (environment).
+VERIFICATION ENVIRONMENT: ruff clean; mypy --strict clean on every changed
+file (this venv's mypy 2.1.0 on Python 3.14 reports three pre-existing
+type-arg errors in services/research/funding_watch.py, untouched here; CI on
+3.11 is the gate). Local pytest was unreliable for most of the day: the host
+load average sat between 100 and 200 and ML extension imports stalled or
+died with SIGBUS inside dyld; the targeted batches above (113 tests) passed
+once the load fell. Linux CI remains the authoritative run.
+NOT CHANGED, by design: no trading parameter, no limit, no gate, no
+TRADING_MODE semantics. Manual orders still bypass pre_trade_check (next,
+with the risk manager). The research-process items (label horizon, gate
+decontamination, family-wise readiness bar, aux stamping) are registered in
+docs/reviews/2026-11-02-agent-fleet-review.md and wait for their own
+pre-registration.
+FULL-SUITE RESULT (same day, after the host load fell): 683 passed, 0 failed
+(2 h 00 m wall clock under residual load; the first full attempt died in a
+SIGBUS inside dyld while loading a scipy extension from an unrelated test
+module, reproduced as a transient host fault, not a code failure).
+
+CI DRIFT FIX (2026-11-06, PR #89 follow-up). The first CI run of the fleet
+change failed on two jobs the local runs could not see. Cause: SQLAlchemy was
+unpinned (">=2.0.25" in pyproject.toml and requirements.txt), so CI and every
+fresh Docker build resolved SQLAlchemy 2.1.6 while this venv has 2.0.50 and
+the platform has only ever been tested on 2.0. Two consequences in CI:
+ - mypy: nine new errors in api/routers/models.py and
+   services/continuous_learning/live_replay.py (2.1 types Row elements that
+   2.0 typed as Any), on top of the three pre-existing type-arg errors in
+   services/research/funding_watch.py that had kept main's mypy job red since
+   September.
+ - pytest: tests/integration/test_snapshot_writer.py::test_run_loop_writes_
+   snapshots_and_cancels_cleanly hit its 10 s deadline with zero rows. The
+   harness shares one aiosqlite connection (StaticPool) between the writer
+   and the polling reader; under 2.1 the writer's insert lands only by timing.
+   Measured here in a scratch venv, same test, same machine: 1.39 s on 2.1.6,
+   3.00 s on 2.1.8, versus sub-second in every 2.0.50 run (683-test pass on
+   2026-11-02; main's CI history). On the loaded CI runner it crossed 10 s.
+Fix: pin "sqlalchemy[asyncio]>=2.0.25,<2.1" in both files, so CI and Railway
+builds stay on the line the platform was tested against; add the three missing
+type arguments in funding_watch.py (ruff and mypy clean). No behaviour change.
+Registered follow-up, its own pre-registration: the SQLAlchemy 2.1 upgrade.
+It needs the Row typing fixes, a test harness that does not share one
+connection between concurrent sessions, and a replacement for the noload()
+option in api/routers/auth.py, which 2.1 deprecates with the warning that it
+"produces incorrect results by returning None for related items".

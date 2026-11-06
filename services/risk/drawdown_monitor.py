@@ -132,6 +132,29 @@ class DrawdownMonitor:
             is_total_limit_hit=is_total_hit,
         )
 
+    @property
+    def daily_start_equity(self) -> float:
+        return self._daily_start_equity
+
+    def restore(
+        self, peak_equity: float, daily_start_equity: float | None = None
+    ) -> None:
+        """Adopt persisted peak (and optionally daily start) equity at startup.
+
+        Without this the all-time peak re-based to the first equity seen after
+        every restart, so the total-drawdown rule forgot every prior high.
+        """
+        self._peak_equity = max(peak_equity, 0.0)
+        if daily_start_equity is not None:
+            self._daily_start_equity = daily_start_equity
+            self._daily_peak_equity = max(daily_start_equity, 0.0)
+        self._initialised = True
+        logger.info(
+            "Drawdown state restored: peak=%.2f daily_start=%.2f",
+            self._peak_equity,
+            self._daily_start_equity,
+        )
+
     def reset_daily(self, current_equity: float | None = None) -> None:
         """Reset daily drawdown tracking at the start of a new trading day.
 

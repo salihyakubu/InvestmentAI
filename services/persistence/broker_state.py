@@ -41,6 +41,7 @@ class RestorableBroker(Protocol):
         avg_entry: dict[str, Decimal] | None = ...,
         last_prices: dict[str, Decimal] | None = ...,
         realized_pnl: Decimal | None = ...,
+        realized_by_symbol: dict[str, Decimal] | None = ...,
     ) -> None: ...
 
     def apply_external_fill(
@@ -112,6 +113,7 @@ class BrokerStateStore:
             positions: dict[str, Decimal] = {}
             avg_entry: dict[str, Decimal] = {}
             last_prices: dict[str, Decimal] = {}
+            realized_by_symbol: dict[str, Decimal] = {}
             for row in rows:
                 signed = row.quantity if row.side == "long" else -row.quantity
                 positions[row.symbol] = signed
@@ -120,6 +122,7 @@ class BrokerStateStore:
                 price = row.current_price or row.avg_entry_price
                 if price:
                     last_prices[row.symbol] = Decimal(str(price))
+                realized_by_symbol[row.symbol] = Decimal(str(row.realized_pnl or 0))
 
             broker.restore_state(
                 cash=Decimal(str(snapshot.cash)),
@@ -127,6 +130,7 @@ class BrokerStateStore:
                 avg_entry=avg_entry,
                 last_prices=last_prices,
                 realized_pnl=Decimal(str(snapshot.realized_pnl)),
+                realized_by_symbol=realized_by_symbol,
             )
             replayed = await self._replay_fills_after(session, broker, snapshot.time)
 
@@ -177,14 +181,22 @@ class BrokerStateStore:
     # ------------------------------------------------------------------
 
     async def checkpoint(
-        self, positions: list[dict[str, Any]], session: AsyncSession
+        self,
+        positions: list[dict[str, Any]],
+        session: AsyncSession,
+        realized_by_symbol: dict[str, Decimal] | None = None,
     ) -> None:
         """Write the open book into ``positions`` within the caller's session.
 
         Takes the caller's session so the position rows commit in the same
-        transaction as the equity snapshot they pair with.
+        transaction as the equity snapshot they pair with. *realized_by_symbol*
+        is the broker's per-position realised figure: open rows take the value
+        carried on their position dict, and a row being closed takes the
+        broker's figure for that symbol -- the exact number the paper broker
+        used to compute and discard into a single scalar.
         """
         now = datetime.now(UTC)
+        realized_by_symbol = realized_by_symbol or {}
         held = {
             p["symbol"]: p for p in positions if Decimal(str(p["quantity"])) != 0
         }
@@ -204,6 +216,8 @@ class BrokerStateStore:
             if live is None:
                 row.closed_at = now
                 row.updated_at = now
+                if row.symbol in realized_by_symbol:
+                    row.realized_pnl = realized_by_symbol[row.symbol]
                 continue
             seen.add(row.symbol)
             quantity = Decimal(str(live["quantity"]))
@@ -212,6 +226,7 @@ class BrokerStateStore:
             row.avg_entry_price = Decimal(str(live.get("avg_entry_price", 0) or 0))
             row.current_price = Decimal(str(live.get("current_price", 0) or 0)) or None
             row.unrealized_pnl = Decimal(str(live.get("unrealized_pnl", 0) or 0))
+            row.realized_pnl = Decimal(str(live.get("realized_pnl", 0) or 0))
             row.updated_at = now
 
         for symbol, live in held.items():
@@ -228,6 +243,7 @@ class BrokerStateStore:
                     avg_entry_price=Decimal(str(live.get("avg_entry_price", 0) or 0)),
                     current_price=Decimal(str(live.get("current_price", 0) or 0)) or None,
                     unrealized_pnl=Decimal(str(live.get("unrealized_pnl", 0) or 0)),
+                    realized_pnl=Decimal(str(live.get("realized_pnl", 0) or 0)),
                     opened_at=now,
                     updated_at=now,
                 )

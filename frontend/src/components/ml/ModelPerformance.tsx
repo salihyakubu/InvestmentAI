@@ -9,6 +9,20 @@ interface ModelPerformanceProps {
   retraining?: boolean;
 }
 
+// A metric the backend does not compute is shown as "not measured", never as 0.
+const NOT_MEASURED = '\u2014';
+const pct = (v: number | undefined) =>
+  v === undefined ? NOT_MEASURED : `${(v * 100).toFixed(1)}%`;
+const fixed = (v: number | undefined, digits: number) =>
+  v === undefined ? NOT_MEASURED : v.toFixed(digits);
+// Three-class chance level is 1/3; the gate requires strictly more.
+const skillColor = (balanced: number | undefined) =>
+  balanced === undefined
+    ? 'text-gray-500'
+    : balanced > 1 / 3
+      ? 'text-green-500'
+      : 'text-red-400';
+
 export default function ModelPerformance({
   models,
   onRetrain,
@@ -48,6 +62,8 @@ export default function ModelPerformance({
                 'Type',
                 'Status',
                 'Accuracy',
+                'Base rate',
+                'Balanced acc',
                 'Precision',
                 'Recall',
                 'F1',
@@ -94,28 +110,52 @@ export default function ModelPerformance({
                     {model.status}
                   </span>
                 </td>
-                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
-                  {(model.accuracy * 100).toFixed(1)}%
+                <td
+                  className="py-2.5 px-3 font-mono text-sm text-gray-300"
+                  title="Raw validation accuracy. Equal to the base rate for a model that always predicts the majority class."
+                >
+                  {pct(model.accuracy)}
                 </td>
-                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
-                  {(model.precision * 100).toFixed(1)}%
-                </td>
-                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
-                  {(model.recall * 100).toFixed(1)}%
-                </td>
-                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
-                  {model.f1_score.toFixed(3)}
+                <td
+                  className="py-2.5 px-3 font-mono text-sm text-gray-500"
+                  title="Majority-class rate of the validation labels: the accuracy a constant predictor scores."
+                >
+                  {pct(model.majority_class_rate)}
                 </td>
                 <td
                   className={clsx(
                     'py-2.5 px-3 font-mono text-sm font-semibold',
-                    model.sharpe_ratio >= 1 ? 'text-green-500' : 'text-yellow-500',
+                    skillColor(model.balanced_accuracy),
                   )}
+                  title="Balanced accuracy on the served pipeline (chance = 33.3% for three classes). The promotion gate's metric."
                 >
-                  {model.sharpe_ratio.toFixed(2)}
+                  {pct(model.balanced_accuracy)}
                 </td>
                 <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
-                  {model.prediction_count.toLocaleString()}
+                  {pct(model.precision)}
+                </td>
+                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
+                  {pct(model.recall)}
+                </td>
+                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
+                  {fixed(model.f1_score, 3)}
+                </td>
+                <td
+                  className={clsx(
+                    'py-2.5 px-3 font-mono text-sm font-semibold',
+                    model.sharpe_ratio === undefined
+                      ? 'text-gray-500'
+                      : model.sharpe_ratio >= 1
+                        ? 'text-green-500'
+                        : 'text-yellow-500',
+                  )}
+                >
+                  {fixed(model.sharpe_ratio, 2)}
+                </td>
+                <td className="py-2.5 px-3 font-mono text-sm text-gray-300">
+                  {model.prediction_count === undefined
+                    ? NOT_MEASURED
+                    : model.prediction_count.toLocaleString()}
                 </td>
                 <td className="py-2.5 px-3 text-xs text-gray-500">
                   {format(new Date(model.last_trained), 'MMM dd, HH:mm')}
