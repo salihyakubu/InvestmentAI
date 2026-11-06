@@ -38,13 +38,14 @@ training run, not after it. Nothing here trades.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
-from sqlalchemy import select
+from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.models.predictions import Prediction as PredictionRow
@@ -124,7 +125,10 @@ async def fetch_replay_rows(
     dropped (it cannot be the same generation, whatever its hash claims).
     """
     async with session_factory() as session:
-        db_rows = (
+        # features_used is JSONB, typed dict[str, Any]; that Any makes select()'s
+        # typed overloads ambiguous and the statement falls back to untyped rows,
+        # so the column types are stated here explicitly instead.
+        db_rows: Sequence[Row[datetime, dict[str, Any] | None, float | None]] = (
             await session.execute(
                 select(
                     PredictionRow.predicted_at,
@@ -145,7 +149,9 @@ async def fetch_replay_rows(
     stamps: list[datetime] = []
     width: int | None = None
     for when, payload, actual in db_rows:
-        if not isinstance(payload, dict):
+        # The WHERE already excludes NULL outcomes; the type system cannot see
+        # that, so narrow here rather than cast.
+        if actual is None or not isinstance(payload, dict):
             continue
         vector, digest = payload.get("v"), payload.get("h")
         if not vector or digest != expected_hash:

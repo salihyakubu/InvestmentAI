@@ -11,6 +11,7 @@ from core.models.positions import Position
 from core.models.predictions import Prediction
 from core.models.research import FactorWatchObservation
 from core.models.risk import RiskMetric
+from core.models.safety import SafetyState
 from core.models.users import APIKey, User
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "FactorWatchObservation",
     "PortfolioSnapshot",
     "RiskMetric",
+    "SafetyState",
     "ModelMetadata",
     "AuditLog",
     "User",

@@ -22,6 +22,7 @@ from core.models.portfolio import PortfolioSnapshot  # noqa: F401
 from core.models.positions import Position  # noqa: F401
 from core.models.predictions import Prediction  # noqa: F401
 from core.models.risk import RiskMetric  # noqa: F401
+from core.models.safety import SafetyState  # noqa: F401
 from core.models.users import APIKey, User  # noqa: F401
 
 # This is the Alembic Config object.

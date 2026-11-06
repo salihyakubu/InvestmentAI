@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import time as _time
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import extract, func, select
+from sqlalchemy import Row, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, get_db
+from api.dependencies import get_current_user, get_db, require_role
 from api.schemas.common import SuccessResponse
 from core.models.ml_models import ModelMetadata
 from core.models.predictions import Prediction
@@ -70,18 +71,24 @@ async def get_learning_metrics(
             .order_by(Prediction.predicted_at)
         )
     ).all()
-    resolved = [
-        ResolvedPrediction(
-            predicted_at=r[0],
-            symbol=r[1],
-            expected_return=float(r[2]),
-            confidence=float(r[3] or 0.0),
-            direction=str(r[4]),
-            actual_return=float(r[5]),
-            actual_direction=str(r[6] or ""),
+    # The WHERE above already excludes NULL returns; the type system cannot see
+    # that (SQLAlchemy 2.1 types each Row element where 2.0 typed them as Any),
+    # so narrow in Python rather than cast.
+    resolved: list[ResolvedPrediction] = []
+    for predicted_at, symbol, expected, confidence, direction, actual, actual_dir in rows:
+        if expected is None or actual is None:
+            continue
+        resolved.append(
+            ResolvedPrediction(
+                predicted_at=predicted_at,
+                symbol=symbol,
+                expected_return=float(expected),
+                confidence=float(confidence or 0.0),
+                direction=str(direction),
+                actual_return=float(actual),
+                actual_direction=str(actual_dir or ""),
+            )
         )
-        for r in rows
-    ]
 
     promo_rows = (
         await db.execute(select(ModelMetadata.created_at))
@@ -175,7 +182,10 @@ async def get_feature_drift(
     # Bounded scan: the report only ever needs the current generation's
     # first reference days plus the recent window, both inside this horizon.
     scan_since = datetime.now(UTC) - timedelta(days=_DRIFT_SCAN_DAYS)
-    db_rows = (
+    # features_used is JSONB, typed dict[str, Any]; that Any makes select()'s
+    # typed overloads ambiguous and the statement falls back to untyped rows, so
+    # the column types are stated here explicitly instead.
+    db_rows: Sequence[Row[datetime, str, dict[str, Any] | None]] = (
         await db.execute(
             select(
                 Prediction.predicted_at, Prediction.symbol, Prediction.features_used
@@ -384,7 +394,7 @@ async def get_model_performance(
 )
 async def trigger_retrain(
     model_id: uuid.UUID,
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(require_role("admin")),
 ) -> SuccessResponse:
     """Trigger retraining for a specific model.
 

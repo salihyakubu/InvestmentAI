@@ -49,6 +49,13 @@ class PaperBroker(BaseBroker):
         self._avg_entry: dict[str, Decimal] = {}
         # Cumulative realised P&L from closed quantity, net of commission.
         self._realized_pnl = Decimal("0")
+        # Realised P&L of each symbol's CURRENT position: reset to zero when a
+        # position opens from flat, accumulated on every closing fill, kept
+        # after the position goes flat so the checkpoint that closes the
+        # positions row can record it. The single scalar above was all the
+        # platform had, which is why positions.realized_pnl read 0.00 on every
+        # closed row (GO_LIVE.md 2026-09-12).
+        self._realized_by_symbol: dict[str, Decimal] = {}
         # external_id -> BrokerOrder
         self._orders: dict[str, BrokerOrder] = {}
         # external_id -> status string
@@ -151,6 +158,17 @@ class PaperBroker(BaseBroker):
             "quantity": str(order.quantity) if order else None,
             "filled_qty": str(filled_qty),
             "filled_avg_price": str(filled_avg_price),
+            # Individual fills with their ids, so the engine can publish a
+            # dedupe key the persistence layer honours.
+            "fills": [
+                {
+                    "id": f.external_id,
+                    "price": str(f.price),
+                    "quantity": str(f.quantity),
+                    "filled_at": f.filled_at.isoformat(),
+                }
+                for f in order_fills
+            ],
         }
 
     async def get_positions(self) -> list[dict[str, Any]]:
@@ -167,6 +185,7 @@ class PaperBroker(BaseBroker):
                     "avg_entry_price": str(avg_entry),
                     "current_price": str(last_price),
                     "unrealized_pnl": str(qty * (last_price - avg_entry)),
+                    "realized_pnl": str(self._realized_by_symbol.get(symbol, Decimal("0"))),
                 })
         return positions
 
@@ -210,6 +229,7 @@ class PaperBroker(BaseBroker):
         avg_entry: dict[str, Decimal] | None = None,
         last_prices: dict[str, Decimal] | None = None,
         realized_pnl: Decimal | None = None,
+        realized_by_symbol: dict[str, Decimal] | None = None,
     ) -> None:
         """Rebuild account state from a durable checkpoint.
 
@@ -237,11 +257,19 @@ class PaperBroker(BaseBroker):
             self._last_prices.setdefault(symbol, price)
         if realized_pnl is not None:
             self._realized_pnl = realized_pnl
+        if realized_by_symbol is not None:
+            self._realized_by_symbol = {
+                symbol: value for symbol, value in realized_by_symbol.items()
+            }
         logger.info(
             "paper_state_restored",
             cash=str(cash),
             positions=len(self._positions),
         )
+
+    def realized_by_symbol(self) -> dict[str, Decimal]:
+        """Realised P&L of each symbol's current (or just-closed) position."""
+        return dict(self._realized_by_symbol)
 
     def apply_external_fill(
         self, symbol: str, side: str, price: Decimal, quantity: Decimal
@@ -268,6 +296,10 @@ class PaperBroker(BaseBroker):
         old_avg = self._avg_entry.get(symbol, Decimal("0"))
         new_qty = old_qty + signed_qty
 
+        if old_qty == Decimal("0"):
+            # A position opening from flat starts its own realised ledger.
+            self._realized_by_symbol[symbol] = Decimal("0")
+
         if old_qty == Decimal("0") or (old_qty > 0) == (signed_qty > 0):
             total = abs(old_qty) + abs(signed_qty)
             new_avg = (
@@ -278,7 +310,11 @@ class PaperBroker(BaseBroker):
         else:
             closed = min(abs(old_qty), abs(signed_qty))
             direction = Decimal("1") if old_qty > 0 else Decimal("-1")
-            self._realized_pnl += direction * closed * (price - old_avg)
+            realised = direction * closed * (price - old_avg)
+            self._realized_pnl += realised
+            self._realized_by_symbol[symbol] = (
+                self._realized_by_symbol.get(symbol, Decimal("0")) + realised
+            )
             # A flip leaves a fresh position opened at this fill's price.
             new_avg = price if new_qty != 0 and (old_qty > 0) != (new_qty > 0) else old_avg
 
@@ -291,6 +327,10 @@ class PaperBroker(BaseBroker):
         self._cash -= signed_qty * price
         self._cash -= commission
         self._realized_pnl -= commission
+        if commission:
+            self._realized_by_symbol[symbol] = (
+                self._realized_by_symbol.get(symbol, Decimal("0")) - commission
+            )
 
     # ------------------------------------------------------------------
     # Memory retention

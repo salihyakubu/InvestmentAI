@@ -19,7 +19,7 @@ dependencies = [
     "pydantic-settings>=2.1.0",
 
     # Database
-    "sqlalchemy[asyncio]>=2.0.25",
+    "sqlalchemy[asyncio]>=2.1,<2.2",
     "asyncpg>=0.29.0",
     "alembic>=1.13.0",
     "redis>=5.0.0",
@@ -87,6 +87,14 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# macOS Finder/iCloud duplicates ("test_x 2.py") are gitignored but still match
+# python_files locally, so an edited original left a stale copy asserting the old
+# behaviour and every such test ran twice. Invisible to CI, which is why it lasted.
+addopts = "--ignore-glob='* 2.py'"
+# SQLAlchemy deprecations are errors: the 2.1 upgrade's first draft swapped the
+# deprecated noload() for the equally deprecated Result.tuples(), and only the
+# full suite's warning summary caught it. Now the suite itself refuses.
+filterwarnings = ["error::sqlalchemy.exc.SADeprecationWarning"]
 
 [tool.mypy]
 python_version = "3.11"

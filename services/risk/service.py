@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -17,12 +17,16 @@ from core.enums import OrderSide
 from core.events.base import Event, EventBus
 from core.events.order_events import OrderFilledEvent
 from core.events.risk_events import (
+    CircuitBreakerEvent,
     RebalanceRequestEvent,
     RiskApprovedEvent,
     RiskBreachedEvent,
 )
 from core.events.streams import ORDERS, REBALANCE, RISK_APPROVED, RISK_BREACHED
 from services.risk.circuit_breaker import CircuitBreaker
+
+if TYPE_CHECKING:
+    from services.persistence.safety_state import SafetyStateStore
 from services.risk.correlation_monitor import CorrelationMonitor
 from services.risk.drawdown_monitor import DrawdownMonitor, DrawdownState
 from services.risk.position_sizer import (
@@ -106,9 +110,12 @@ class RiskManagerService:
         self,
         event_bus: EventBus,
         settings: Settings | None = None,
+        state_store: SafetyStateStore | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.settings = settings or get_settings()
+        # Durable daily baseline / peak / breaker state (None = memory only).
+        self._state_store = state_store
 
         # Components
         self.circuit_breaker = CircuitBreaker(
@@ -141,7 +148,14 @@ class RiskManagerService:
         self._daily_pnl_pct: float = 0.0
         self._returns_history: dict[str, list[float]] = {}  # symbol -> returns
         # Equity at the start of the trading day, for daily-PnL computation.
+        # Seeded from the FIRST account sync (or restored), not from
+        # initial_capital: a $92 account booting against a $100 baseline read
+        # -8% on the day and tripped the breaker on every restart.
         self._day_start_equity: float = float(self.settings.initial_capital)
+        self._day_start_pending: bool = True
+        self._session_date: date = _utc_today()
+        # Last breaker state published; a transition publishes exactly once.
+        self._published_breaker_state: str = self.circuit_breaker.state.value
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -242,6 +256,7 @@ class RiskManagerService:
                     source_service="risk_manager",
                 ),
             )
+        await self.publish_breaker_transition()
 
     async def _on_order_filled(self, event: Event) -> None:
         """Handle an order fill by updating portfolio risk state.
@@ -503,6 +518,11 @@ class RiskManagerService:
         """
         self._equity = Decimal(str(equity))
         eq = float(self._equity)
+        if self._day_start_pending:
+            self._day_start_equity = eq
+            self._day_start_pending = False
+            self.drawdown_monitor.reset_daily(eq)
+            logger.info("risk.day_start_seeded_from_account equity=%.2f", eq)
         if self._day_start_equity > 0:
             self._daily_pnl_pct = (eq - self._day_start_equity) / self._day_start_equity
         self.drawdown_monitor.update(eq)
@@ -524,6 +544,7 @@ class RiskManagerService:
                 today = _utc_today()
                 if today > last_seen_date:
                     self.reset_daily()
+                    await self.persist_safety_state()
                     logger.info(
                         "risk.daily_reset: UTC session rolled over from %s to %s",
                         last_seen_date,
@@ -533,10 +554,36 @@ class RiskManagerService:
                 equity = await account_provider()
                 if equity is not None:
                     self.sync_account(equity)
+                    # Evaluate the breaker on the live feed, not only when a
+                    # rebalance happens to run, and publish any transition.
+                    self.circuit_breaker.check(self._daily_pnl_pct)
+                await self.publish_breaker_transition()
+                await self.persist_safety_state()
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("Account sync iteration failed")
+
+    async def publish_breaker_transition(self) -> bool:
+        """Publish a CircuitBreakerEvent if the breaker changed state.
+
+        Until 2026-11-02 the breaker only logged; the event type existed, the
+        monitoring handler for it existed, and nothing ever published it, so a
+        trip reached neither Slack nor audit_logs. Returns True when an event
+        was published.
+        """
+        state = self.circuit_breaker.state.value
+        if state == self._published_breaker_state:
+            return False
+        previous = self._published_breaker_state
+        self._published_breaker_state = state
+        reason = self.circuit_breaker.trip_reason or f"{previous} -> {state}"
+        await self.event_bus.publish(
+            RISK_BREACHED,
+            CircuitBreakerEvent(state=state, reason=reason, source_service="risk_manager"),
+        )
+        logger.warning("Circuit breaker %s -> %s published (%s)", previous, state, reason)
+        return True
 
     @property
     def positions(self) -> dict[str, float]:
@@ -558,9 +605,83 @@ class RiskManagerService:
         """Reset daily counters at the start of a new trading day."""
         self._daily_pnl_pct = 0.0
         self._day_start_equity = float(self._equity)
+        self._day_start_pending = False
+        self._session_date = _utc_today()
         self.drawdown_monitor.reset_daily(float(self._equity))
         self.circuit_breaker.reset()
         logger.info("Risk manager daily reset complete.")
+
+    # ------------------------------------------------------------------
+    # Durable safety state
+    # ------------------------------------------------------------------
+
+    async def restore_safety_state(self) -> None:
+        """Re-apply the persisted daily baseline, peak and breaker state.
+
+        Same UTC day: baseline, peak and breaker come back exactly (an OPEN
+        breaker stays OPEN). An older row: the all-time peak is kept, the
+        daily baseline is re-seeded from the first account sync, and the
+        breaker starts the new day CLOSED as reset_daily would have left it.
+        """
+        if self._state_store is None:
+            return
+        try:
+            state = await self._state_store.load()
+        except Exception:
+            logger.exception("risk.safety_state_load_failed")
+            return
+        if state is None:
+            return
+        today = _utc_today()
+        peak = float(state.peak_equity) if state.peak_equity is not None else None
+        if state.session_date == today and state.day_start_equity is not None:
+            day_start = float(state.day_start_equity)
+            self._day_start_equity = day_start
+            self._day_start_pending = False
+            self.drawdown_monitor.restore(
+                peak_equity=peak if peak is not None else day_start,
+                daily_start_equity=day_start,
+            )
+            if state.breaker_state != "closed":
+                tripped_at = state.breaker_tripped_at
+                if tripped_at is not None and tripped_at.tzinfo is None:
+                    tripped_at = tripped_at.replace(tzinfo=UTC)
+                self.circuit_breaker.restore(
+                    state.breaker_state,
+                    tripped_at,
+                    state.breaker_reason or "restored from safety_state",
+                )
+                self._published_breaker_state = state.breaker_state
+            logger.warning(
+                "risk.safety_state_restored",
+                extra={
+                    "day_start_equity": day_start,
+                    "peak_equity": peak,
+                    "breaker_state": state.breaker_state,
+                },
+            )
+        else:
+            if peak is not None:
+                self.drawdown_monitor.restore(peak_equity=peak)
+            self._day_start_pending = True
+            logger.info("risk.safety_state_stale_new_session", extra={"peak_equity": peak})
+        self._session_date = today
+
+    async def persist_safety_state(self) -> None:
+        """Write the daily baseline, peak and breaker state (best effort)."""
+        if self._state_store is None or self._day_start_pending:
+            return
+        try:
+            await self._state_store.save_risk(
+                breaker_state=self.circuit_breaker.state.value,
+                breaker_tripped_at=self.circuit_breaker.tripped_at,
+                breaker_reason=self.circuit_breaker.trip_reason or None,
+                day_start_equity=self._day_start_equity,
+                peak_equity=self.drawdown_monitor.peak_equity,
+                session_date=self._session_date,
+            )
+        except Exception:
+            logger.exception("risk.safety_state_save_failed")
 
     # ------------------------------------------------------------------
     # Internal helpers

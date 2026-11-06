@@ -54,7 +54,8 @@ export interface Prediction {
   model_name: string;
   signal: 'buy' | 'sell' | 'hold';
   confidence: number;
-  predicted_return: number;
+  // Nullable on the API; undefined must not render as "+0.00%".
+  predicted_return?: number;
   horizon?: string;
   features: Record<string, number>;
   timestamp: string;
@@ -121,26 +122,35 @@ export interface ModelInfo {
   type: string;
   version: string;
   status: 'active' | 'inactive' | 'training' | 'failed';
+  // Raw validation accuracy. On flat-heavy triple-barrier labels this is the
+  // base rate (0.594 for the shipped champion), so it is shown beside
+  // majority_class_rate and balanced_accuracy, never alone.
   accuracy: number;
-  precision: number;
-  recall: number;
-  f1_score: number;
-  sharpe_ratio: number;
+  majority_class_rate?: number;
+  balanced_accuracy?: number;
+  // The registry does not compute these; undefined renders as an em-dash.
+  // They used to be coerced to 0 (the PR #56 defect, open since 2026-07-29).
+  precision?: number;
+  recall?: number;
+  f1_score?: number;
+  sharpe_ratio?: number;
   last_trained: string;
   feature_importance: Record<string, number>;
-  prediction_count: number;
+  prediction_count?: number;
   calibration?: ModelCalibration;
 }
 
+// Mirrors GET /audit/logs exactly. The page used to render component /
+// event_type / risk_level / user, none of which the API sends.
 export interface AuditLogEntry {
   id: string;
   timestamp: string;
-  event_type: string;
-  component: string;
+  service: string;
   action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  user_id: string | null;
   details: Record<string, unknown>;
-  user?: string;
-  risk_level: 'low' | 'medium' | 'high' | 'critical';
 }
 
 export interface Alert {

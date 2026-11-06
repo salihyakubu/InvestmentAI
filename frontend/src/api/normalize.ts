@@ -178,11 +178,17 @@ export function normalizeRiskMetrics(raw: Raw): RiskMetrics {
 }
 
 export function normalizeModelInfo(raw: Raw): ModelInfo {
-  // The API exposes registry metadata (model_name, validation_metrics{...});
-  // the UI's richer fields (precision/recall/f1/sharpe) default to 0 until the
-  // backend computes them from live prediction outcomes.
+  // The API exposes registry metadata (model_name, validation_metrics{...}).
+  // Metrics the registry does not compute stay undefined so the table can say
+  // so; coercing them to 0 made every model read "0.0% precision, Sharpe 0.00"
+  // and hid that val_accuracy was the base rate (2026-09-12 diagnosis).
   const metrics = (raw.validation_metrics ?? {}) as Raw;
   const calibration = normalizeCalibration(metrics);
+  const opt = (key: string) => {
+    const v = numOpt(metrics[key]);
+    return v === undefined ? {} : { [key]: v };
+  };
+  const predictionCount = numOpt(raw.prediction_count);
   return {
     id: str(raw.id, str(raw.model_name)),
     name: str(raw.model_name, 'model'),
@@ -190,14 +196,16 @@ export function normalizeModelInfo(raw: Raw): ModelInfo {
     version: String(raw.version ?? ''),
     status: raw.is_active ? 'active' : 'inactive',
     accuracy: num(metrics.val_accuracy ?? metrics.accuracy),
-    precision: num(metrics.precision),
-    recall: num(metrics.recall),
-    f1_score: num(metrics.f1_score),
-    sharpe_ratio: num(metrics.sharpe_ratio),
+    ...opt('majority_class_rate'),
+    ...opt('balanced_accuracy'),
+    ...opt('precision'),
+    ...opt('recall'),
+    ...opt('f1_score'),
+    ...opt('sharpe_ratio'),
     last_trained: str(raw.trained_at),
     feature_importance:
       (raw.feature_importance as ModelInfo['feature_importance']) ?? {},
-    prediction_count: num(raw.prediction_count),
+    ...(predictionCount === undefined ? {} : { prediction_count: predictionCount }),
     ...(calibration ? { calibration } : {}),
   };
 }
@@ -222,7 +230,9 @@ export function normalizePrediction(raw: Raw): Prediction {
     model_name: str(raw.model_id, 'model'),
     signal: DIRECTION_TO_SIGNAL[str(raw.direction)] ?? 'hold',
     confidence: num(raw.confidence),
-    predicted_return: num(raw.expected_return),
+    ...(numOpt(raw.expected_return) === undefined
+      ? {}
+      : { predicted_return: numOpt(raw.expected_return) as number }),
     horizon:
       raw.horizon_minutes == null ? undefined : `${num(raw.horizon_minutes)}m`,
     features: (raw.features as Record<string, number>) ?? {},

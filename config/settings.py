@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     max_portfolio_var_95: float = 0.03
     circuit_breaker_loss_pct: float = 0.07
     circuit_breaker_cooldown_minutes: int = 30
+    # When the breaker trips, also publish the kill switch's "flatten" control
+    # (cancel open orders, close every position, halt). OFF by default: whether
+    # a 7% day should liquidate the book is the operator's policy decision
+    # (GO_LIVE.md 2026-11-02); the wiring exists and is tested either way.
+    breaker_auto_flatten: bool = False
 
     # Research telemetry: live walk-forward adjudication of the registered
     # funding-regime hypothesis (GO_LIVE.md 2026-07-31). Read-only research;

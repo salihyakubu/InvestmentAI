@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, cast
 from uuid import UUID
 
@@ -16,6 +16,7 @@ from api.middleware.auth import JWTAuth
 from config.settings import Settings
 from config.settings import get_settings as _get_settings
 from core.events.base import EventBus
+from services.monitoring.audit import AuditLogger
 
 logger = logging.getLogger(__name__)
 
@@ -86,3 +87,39 @@ async def get_current_user(
         "user_id": UUID(payload["sub"]),
         "role": payload.get("role", "viewer"),
     }
+
+
+def require_role(*roles: str) -> Callable[..., Awaitable[dict[str, Any]]]:
+    """Dependency factory: the authenticated user must hold one of *roles*.
+
+    Until 2026-11-02 only ``/admin/control`` checked a role; any valid token
+    (default role ``viewer``) could place and cancel orders, which in live mode
+    reach the venue. Money-moving and configuration routes now require
+    ``trader`` or ``admin``; the 501 stubs require ``admin`` so that finishing
+    one can never widen access by accident.
+    """
+
+    async def _dependency(
+        user: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        if user.get("role") not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires role: {', '.join(roles)}",
+            )
+        return user
+
+    return _dependency
+
+
+def client_ip(request: Request) -> str | None:
+    """Best-effort caller address for audit rows (direct peer unless proxied)."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or None
+    return request.client.host if request.client else None
+
+
+async def get_audit_logger(request: Request) -> AuditLogger:
+    """Audit logger bound to the app's session factory (overridable in tests)."""
+    return AuditLogger(session_factory=request.app.state.db_session_factory)

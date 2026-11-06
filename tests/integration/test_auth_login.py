@@ -99,3 +99,68 @@ def test_login_unknown_user_rejected(client_with_user) -> None:
         "/api/v1/auth/token", json={"email": "nobody@example.com", "password": _PASSWORD}
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.filterwarnings("error::sqlalchemy.exc.SADeprecationWarning")
+async def test_login_lookup_is_one_users_select_with_api_keys_unloaded(tmp_path) -> None:
+    """Pin the login query's behaviour across the SQLAlchemy 2.0 -> 2.1 move.
+
+    One SELECT, from users only: api_keys is never queried (the table does not
+    even exist in this harness, so any attempt would fail loudly). Every User
+    column arrives with the seeded values, and the api_keys relationship is
+    left UNLOADED and refuses access. 2.0's noload() faked an empty collection
+    there, which is exactly why 2.1 deprecates it; the replacement must refuse
+    rather than lie. The deprecation warning is promoted to an error so the
+    noload() path cannot come back silently.
+    """
+    from sqlalchemy import event, inspect
+    from sqlalchemy.exc import InvalidRequestError
+
+    from api.middleware.auth import verify_password
+    from api.routers.auth import login_user_query
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'auth.db'}", poolclass=NullPool
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    statements: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    async with engine.begin() as conn:
+        await conn.run_sync(AsyncBase.metadata.create_all, tables=[User.__table__])
+    seeded_at = datetime.now(UTC)
+    async with factory() as s:
+        s.add(
+            User(
+                email=_EMAIL,
+                hashed_password=hash_password(_PASSWORD),
+                role="admin",
+                is_active=True,
+                created_at=seeded_at,
+            )
+        )
+        await s.commit()
+
+    async with factory() as s:
+        statements.clear()
+        user = (await s.execute(login_user_query(_EMAIL))).scalar_one()
+
+        assert len(statements) == 1, statements
+        assert "FROM users" in statements[0]
+        assert "api_keys" not in statements[0]
+
+        assert isinstance(user.id, uuid.UUID)
+        assert (user.email, user.role, user.is_active) == (_EMAIL, "admin", True)
+        assert verify_password(_PASSWORD, user.hashed_password)
+        assert user.created_at.replace(tzinfo=UTC) == seeded_at
+        assert not inspect(user).unloaded - {"api_keys"}, "a column was left unloaded"
+
+        assert "api_keys" in inspect(user).unloaded
+        with pytest.raises(InvalidRequestError):
+            _ = user.api_keys
+        assert len(statements) == 1, "touching api_keys must not issue a query"
+
+    await engine.dispose()
