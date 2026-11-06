@@ -2285,3 +2285,29 @@ FULL-SUITE RESULT (same day, after the host load fell): 683 passed, 0 failed
 (2 h 00 m wall clock under residual load; the first full attempt died in a
 SIGBUS inside dyld while loading a scipy extension from an unrelated test
 module, reproduced as a transient host fault, not a code failure).
+
+CI DRIFT FIX (2026-11-06, PR #89 follow-up). The first CI run of the fleet
+change failed on two jobs the local runs could not see. Cause: SQLAlchemy was
+unpinned (">=2.0.25" in pyproject.toml and requirements.txt), so CI and every
+fresh Docker build resolved SQLAlchemy 2.1.6 while this venv has 2.0.50 and
+the platform has only ever been tested on 2.0. Two consequences in CI:
+ - mypy: nine new errors in api/routers/models.py and
+   services/continuous_learning/live_replay.py (2.1 types Row elements that
+   2.0 typed as Any), on top of the three pre-existing type-arg errors in
+   services/research/funding_watch.py that had kept main's mypy job red since
+   September.
+ - pytest: tests/integration/test_snapshot_writer.py::test_run_loop_writes_
+   snapshots_and_cancels_cleanly hit its 10 s deadline with zero rows. The
+   harness shares one aiosqlite connection (StaticPool) between the writer
+   and the polling reader; under 2.1 the writer's insert lands only by timing.
+   Measured here in a scratch venv, same test, same machine: 1.39 s on 2.1.6,
+   3.00 s on 2.1.8, versus sub-second in every 2.0.50 run (683-test pass on
+   2026-11-02; main's CI history). On the loaded CI runner it crossed 10 s.
+Fix: pin "sqlalchemy[asyncio]>=2.0.25,<2.1" in both files, so CI and Railway
+builds stay on the line the platform was tested against; add the three missing
+type arguments in funding_watch.py (ruff and mypy clean). No behaviour change.
+Registered follow-up, its own pre-registration: the SQLAlchemy 2.1 upgrade.
+It needs the Row typing fixes, a test harness that does not share one
+connection between concurrent sessions, and a replacement for the noload()
+option in api/routers/auth.py, which 2.1 deprecates with the warning that it
+"produces incorrect results by returning None for related items".
