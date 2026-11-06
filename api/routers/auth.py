@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import noload
+from sqlalchemy.orm import raiseload
 
 from api.dependencies import get_db, get_settings
 from api.middleware.auth import JWTAuth, hash_password, verify_password
@@ -26,6 +26,18 @@ _login_limiter = RateLimiter(max_requests=10, window_seconds=60, key_prefix="rl:
 # Precomputed hash used to keep timing uniform for unknown users (mitigates
 # user-enumeration via response timing).
 _DUMMY_HASH = hash_password("invalid-placeholder-password")
+
+
+def login_user_query(email: str) -> Select[User]:
+    """The login lookup: the user's own columns and nothing else.
+
+    raiseload(api_keys) keeps the query to a single table (the relationship is
+    lazy="selectin", which would otherwise issue a second SELECT) and makes any
+    accidental read of the relationship fail loudly instead of handing back a
+    collection that was never loaded. Its predecessor, noload(), faked an empty
+    collection there; SQLAlchemy 2.1 deprecates it for exactly that reason.
+    """
+    return select(User).where(User.email == email).options(raiseload(User.api_keys))
 
 
 class LoginRequest(BaseModel):
@@ -54,11 +66,7 @@ async def login(
     _rate: None = Depends(_login_limiter),
 ) -> TokenResponse:
     """Verify credentials and return a signed JWT access token."""
-    # noload(api_keys): login only needs the user's own columns, and skipping the
-    # eager relationship keeps the query to a single table.
-    result = await db.execute(
-        select(User).where(User.email == payload.email).options(noload(User.api_keys))
-    )
+    result = await db.execute(login_user_query(payload.email))
     user = result.scalar_one_or_none()
 
     # Always run a hash verification (against a dummy when the user is unknown)

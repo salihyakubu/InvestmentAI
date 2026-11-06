@@ -138,14 +138,16 @@ async def fetch_replay_rows(
                 )
                 .order_by(PredictionRow.predicted_at)
             )
-        ).all()
+        ).tuples().all()
 
     vectors: list[list[float]] = []
     outcomes: list[float] = []
     stamps: list[datetime] = []
     width: int | None = None
     for when, payload, actual in db_rows:
-        if not isinstance(payload, dict):
+        # The WHERE already excludes NULL outcomes; the type system cannot see
+        # that, so narrow here rather than cast.
+        if actual is None or not isinstance(payload, dict):
             continue
         vector, digest = payload.get("v"), payload.get("h")
         if not vector or digest != expected_hash:

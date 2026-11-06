@@ -2311,3 +2311,97 @@ It needs the Row typing fixes, a test harness that does not share one
 connection between concurrent sessions, and a replacement for the noload()
 option in api/routers/auth.py, which 2.1 deprecates with the warning that it
 "produces incorrect results by returning None for related items".
+
+## PRE-REGISTRATION (2026-11-06) — SQLAlchemy 2.1 upgrade, so the pin can go
+WHY: the CI DRIFT FIX above pinned SQLAlchemy to the 2.0 line because CI and
+every fresh Docker build were resolving 2.1.x that the platform had never run
+under. A pin is a debt, not a fix: bug and security fixes land on 2.1, and the
+platform should be built on the line it is tested on. This change upgrades
+deliberately, as ONE pre-registered change, stacked on PR #89. No trading
+parameter, limit, or TRADING_MODE is touched; no deploy happens here (deploys
+remain an operator CLI action).
+
+KNOWN BREAKAGES (from the drift fix). Each gets a red check before its fix:
+ 1. ROW TYPING. 2.1 types Row elements that 2.0 typed as Any, so
+    api/routers/models.py (learning-metrics and feature-drift queries) and
+    services/continuous_learning/live_replay.py (the replay row loader) now
+    fail mypy --strict: float() on a `float | None` column, `.tzinfo` on an
+    element typed object. Fix: iterate the typed tuples (Result.tuples())
+    and narrow None explicitly in Python, keeping the SQL `IS NOT NULL`
+    filters that already exclude NULLs at runtime. No `# type: ignore`.
+ 2. SHARED-CONNECTION HARNESS. tests/integration/test_snapshot_writer.py
+    builds its engine on an in-memory aiosqlite URL with StaticPool, so the
+    writer's background session and the test's polling session are handed
+    the SAME DBAPI connection. The poller's session close rolls back whatever
+    the writer has not yet committed on that connection; the insert lands
+    only when the writer's commit happens to beat the poller's rollback.
+    2.0 won that race sub-second; 2.1 lost it (1.39 s / 3.00 s locally,
+    past the 10 s deadline on CI). Fix: file-backed SQLite in a temp dir
+    with NullPool, so every session owns its connection; plus a test that
+    asserts two concurrent sessions from the harness do NOT share a DBAPI
+    connection (red on StaticPool, green after). Every other StaticPool
+    harness under tests/ is checked for sessions that can overlap a
+    background task; the ones that can are converted, the sequential ones
+    are left alone and listed in the SHIPPED paragraph.
+ 3. DEPRECATED noload(). api/routers/auth.py's login used
+    noload(User.api_keys) to keep the lookup to one table; 2.1 deprecates it
+    with the warning that it "produces incorrect results by returning None
+    for related items". Fix: raiseload(User.api_keys): same single-table
+    SELECT, same loaded columns, and the unloaded relationship now REFUSES
+    (raises) instead of faking an empty collection, which is the honest form
+    of what login wanted. The login path never reads api_keys.
+
+SUCCESS CRITERIA, all required:
+ (i)   mypy --strict over config core services api: 0 errors with SQLAlchemy
+       2.1 installed, and no new ignore of any kind.
+ (ii)  full suite green on CI (Python 3.11, Linux) with SQLAlchemy 2.1
+       resolved from the lifted pin ">=2.1,<2.2" in BOTH pyproject.toml and
+       requirements.txt; the run-loop snapshot-writer test back under one
+       second locally on 2.1, measured with pytest --durations.
+ (iii) no behaviour change in the login query, proven by a test that pins:
+       exactly one SELECT, from users only, never touching api_keys; every
+       User column loaded with the seeded values; api_keys left unloaded and
+       refusing access. The test runs with SADeprecationWarning promoted to
+       an error, so the noload() path cannot come back silently.
+NOT CLAIMED: nothing about edge, risk, or the money path moves. 2.1
+deprecations that do not fire in the suite are not chased here; any that do
+are listed, fixed or not, in the SHIPPED paragraph.
+
+## SHIPPED (2026-11-06) — SQLAlchemy 2.1 upgrade, judged against its registration
+Stacked on PR #89. Pin lifted to "sqlalchemy[asyncio]>=2.1,<2.2" in BOTH
+pyproject.toml and requirements.txt. Measured in a scratch venv on this Mac
+(Python 3.14, SQLAlchemy 2.1.8; numpy held at 2.4.6 because the fresh venv's
+newer numpy ships stubs with PEP 695 `type` statements that mypy refuses at
+python_version=3.11, a local artefact: CI's 3.11 resolves the 2.4 line on
+its own).
+ (i)   MYPY: red first, 14 errors in 3 files under 2.1.8: the 9 registered
+       Row errors, plus 5 from this change's own first draft, which annotated
+       the factored login query as Select[tuple[User]] in 2.0's spelling (2.1
+       types select(User) as Select[User]). After typed-tuple iteration
+       (Result.tuples()) and explicit None narrowing: "Success: no issues
+       found in 178 source files". No ignore of any kind added.
+ (ii)  HARNESS: red first. On the StaticPool in-memory engine, two live
+       sessions held the SAME aiosqlite connection object (3/3 runs), and
+       SQLAlchemy itself warned "Double checkin attempted on
+       _ConnectionRecord" during the run-loop test, whose duration was
+       0.19 s, 1.08 s and 0.08 s across three runs: a race, not a duration.
+       File-backed SQLite in pytest's tmp_path with NullPool: 0.10 s, 0.14 s,
+       0.12 s, four tests green three times, warning gone. The other 13
+       StaticPool harnesses under tests/ were checked: only
+       test_risk_metrics_writer.py also runs a background loop, and its test
+       opens no session of its own while the loop runs, so it is left as is;
+       the remaining twelve are strictly sequential, one session at a time.
+ (iii) LOGIN QUERY: red first. With noload() under 2.1.8 the new test fails
+       on the deprecation warning promoted to an error (the three existing
+       login tests pass, with the warning). With raiseload(): exactly one
+       statement, FROM users, "api_keys" nowhere in it, every User column
+       loaded with the seeded values, api_keys unloaded and raising
+       InvalidRequestError without issuing a query. 8/8 green across
+       test_auth_login.py and test_snapshot_writer.py.
+RUFF: clean over the repository.
+DEPRECATIONS SEEN, NOT SQLALCHEMY'S: pytest-asyncio's unset
+asyncio_default_fixture_loop_scope and starlette's httpx TestClient notice,
+both from the scratch venv's newer packages; out of scope, not chased.
+FULL SUITE: the local run on this Mac and the CI run (Python 3.11, Linux,
+the gate) are recorded in the VERDICT line below, appended when they
+complete. Nothing above this line claims them.

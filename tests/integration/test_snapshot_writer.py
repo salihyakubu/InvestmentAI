@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 
 from core.models.base import AsyncBase
 from core.models.portfolio import PortfolioSnapshot
@@ -28,8 +29,16 @@ def _jsonb_as_json(type_: JSONB, compiler: Any, **kw: Any) -> str:
     return "JSON"
 
 
-def _make_factory():
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+def _make_factory(tmp_path: Path):
+    # File-backed SQLite + NullPool: every session owns its own connection. The
+    # previous in-memory StaticPool engine handed the writer's background
+    # session and the test's polling session the SAME aiosqlite connection, so
+    # the poller's close rolled back whatever the writer had not yet committed
+    # and the row landed only by timing (sub-second on SQLAlchemy 2.0, past the
+    # 10 s deadline on CI under 2.1). See GO_LIVE.md, SQLAlchemy 2.1 upgrade.
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'snapshots.db'}", poolclass=NullPool
+    )
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -49,8 +58,8 @@ async def _all_snapshots(factory) -> list[PortfolioSnapshot]:
 
 
 @pytest.mark.asyncio
-async def test_write_once_inserts_snapshot_row() -> None:
-    engine, factory = _make_factory()
+async def test_write_once_inserts_snapshot_row(tmp_path: Path) -> None:
+    engine, factory = _make_factory(tmp_path)
     await _create_tables(engine)
 
     writer = PortfolioSnapshotWriter(session_factory=factory, trading_mode="paper")
@@ -77,8 +86,8 @@ async def test_write_once_inserts_snapshot_row() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_loop_writes_snapshots_and_cancels_cleanly() -> None:
-    engine, factory = _make_factory()
+async def test_run_loop_writes_snapshots_and_cancels_cleanly(tmp_path: Path) -> None:
+    engine, factory = _make_factory(tmp_path)
     await _create_tables(engine)
 
     async def account_provider() -> dict[str, Any]:
@@ -121,8 +130,8 @@ async def test_run_loop_writes_snapshots_and_cancels_cleanly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_skips_iteration_when_account_is_none() -> None:
-    engine, factory = _make_factory()
+async def test_run_skips_iteration_when_account_is_none(tmp_path: Path) -> None:
+    engine, factory = _make_factory(tmp_path)
     await _create_tables(engine)
     calls = {"n": 0}
 
@@ -144,4 +153,20 @@ async def test_run_skips_iteration_when_account_is_none() -> None:
     # The loop kept polling (no crash) but never wrote a row.
     assert calls["n"] >= 2
     assert await _all_snapshots(factory) == []
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_harness_gives_concurrent_sessions_their_own_connection(tmp_path: Path) -> None:
+    """The run-loop test above polls from one session while the writer commits
+    from another. A StaticPool in-memory engine handed both sessions the SAME
+    aiosqlite connection, so the poller's close rolled back whatever the
+    writer had not yet committed and the row landed only by timing: sub-second
+    on SQLAlchemy 2.0, 1.4-3.0 s on 2.1, past the 10 s deadline on CI. Pin the
+    harness property the loop test silently depends on."""
+    engine, factory = _make_factory(tmp_path)
+    async with factory() as a, factory() as b:
+        raw_a = (await (await a.connection()).get_raw_connection()).dbapi_connection
+        raw_b = (await (await b.connection()).get_raw_connection()).dbapi_connection
+        assert raw_a is not raw_b, "two live sessions share one DBAPI connection"
     await engine.dispose()

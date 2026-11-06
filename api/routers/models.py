@@ -69,19 +69,25 @@ async def get_learning_metrics(
             )
             .order_by(Prediction.predicted_at)
         )
-    ).all()
-    resolved = [
-        ResolvedPrediction(
-            predicted_at=r[0],
-            symbol=r[1],
-            expected_return=float(r[2]),
-            confidence=float(r[3] or 0.0),
-            direction=str(r[4]),
-            actual_return=float(r[5]),
-            actual_direction=str(r[6] or ""),
+    ).tuples().all()
+    # The WHERE above already excludes NULL returns; the type system cannot see
+    # that (SQLAlchemy 2.1 types each tuple element where 2.0 typed Row elements
+    # as Any), so narrow in Python rather than cast.
+    resolved: list[ResolvedPrediction] = []
+    for predicted_at, symbol, expected, confidence, direction, actual, actual_dir in rows:
+        if expected is None or actual is None:
+            continue
+        resolved.append(
+            ResolvedPrediction(
+                predicted_at=predicted_at,
+                symbol=symbol,
+                expected_return=float(expected),
+                confidence=float(confidence or 0.0),
+                direction=str(direction),
+                actual_return=float(actual),
+                actual_direction=str(actual_dir or ""),
+            )
         )
-        for r in rows
-    ]
 
     promo_rows = (
         await db.execute(select(ModelMetadata.created_at))
@@ -186,7 +192,7 @@ async def get_feature_drift(
             )
             .order_by(Prediction.predicted_at)
         )
-    ).all()
+    ).tuples().all()
     rows: list[tuple[datetime, str, str, list[float]]] = []
     for when, symbol, payload in db_rows:
         if not isinstance(payload, dict):
