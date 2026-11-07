@@ -2311,3 +2311,97 @@ It needs the Row typing fixes, a test harness that does not share one
 connection between concurrent sessions, and a replacement for the noload()
 option in api/routers/auth.py, which 2.1 deprecates with the warning that it
 "produces incorrect results by returning None for related items".
+
+LIVE PLATFORM REVIEW (2026-11-07). Fifteen role agents reviewed the
+deployment as it ran between 07:20 and 07:30 UTC (signed-in UI, public
+surface, Railway dashboard, worker logs); the product lead synthesised.
+Full record: docs/reviews/2026-11-07-live-platform-review.md. Facts found:
+ - Production is main at e72cbae. Every service had NO active deployment
+   for about a month (all deployments REMOVED; the API domain served
+   Railway's 404) until a manual `railway up` at 00:31 UTC. Nothing paged:
+   all alerting lives inside the worker. The worker traded (a $1 SOL
+   exploration buy) four minutes after boot, on feature vectors from an
+   empty 200-bar buffer padded with zeros. The api's pre-deploy migration
+   step idled 8.5 min with nothing to apply.
+ - Worker runs in EU West; api, Postgres in US West. Postgres is the plain
+   postgres-ssl:18 template, so the Timescale retention migration is a
+   guarded no-op: no retention anywhere.
+ - Public surface: /docs, /redoc, /openapi.json open; WebSocket upgrade
+   accepted with no token (main); 20 wrong passwords -> 20x401, no 429
+   (limiter keyed on Railway's proxy address); no security headers; CORS
+   correct; all protected routes 401 without a token.
+ - The book: $98.70, one $1 SOL lot plus about $0.006 of residue across
+   five dust positions, two of them shorts no spot venue can hold. The
+   correlation rule rejects every entry and would reject every exit; the
+   held book is process memory, so five positions have no owner since the
+   restart.
+VERDICTS: BLOCK from risk manager, portfolio manager, SRE, data engineer,
+crypto specialist, compliance lead; STOP BEFORE LIVE from the lawyer;
+CONCERN (BLOCK for live) from trading-systems, security, agent engineer;
+CONCERN from ML, quant, evaluation, designer; not applicable from the
+blockchain analyst. Every BLOCK shares one root: deployed main has no
+working exit, and PR #89 (undeployed) closes only part of it.
+RANKED (S1 first; GLn = 2026-11-02 item n, Rn = that review's roadmap n):
+ 1 S1 held positions have no owner: no stop, in-memory held book
+   (portfolio/service.py:104-108), breaker_auto_flatten OFF. GL1/R1.
+ 2 S1 exit deadlock: rules run on weight-0 exits; correlation rule ignores
+   the proposed symbol (rules.py:123-134); the six violations are dust
+   pairs. GL12/R12; the deadlock itself is new.
+ 3 S1 cold-boot trading: no arm step; zero-padded vectors
+   (feature_store.py:183-186). GL8/R7; arm step new.
+ 4 S1 no external dead-man; /healthz unconditional. GL10/R2.
+ 5 S1 breaker force-CLOSED at UTC midnight by reset_daily
+   (circuit_breaker.py:181-188); daily-drawdown, max-positions and sector
+   limits have no rule; VaR is on 1-minute returns. R12; midnight new.
+ 6 S1 (live only) Binance path rejects its first order: TICK_SIZE
+   precision rounds quantities to whole coins (ccxt_broker.py:225-229);
+   minNotional unchecked; key scope unverifiable (health = public ping).
+   GL9; key scope new.
+ 7 S1 (live only) manual orders skip pre_trade_check and the buying-power
+   gate (execution/service.py:266-306); naked shorts accepted.
+ 8 S2 login throttle never fires (Dockerfile:25, no --forwarded-allow-ips);
+   synchronous bcrypt can stall /admin/control; no security headers. R13.
+ 9 S2 "why did it trade" unreconstructible: audit details={}
+   (monitoring/service.py:157-172); rejections, start, login write no row;
+   decision_trace and prediction_id never written. R5; rest new.
+10 S2 edge-manufacturing surfaces: "n/4" counts the open quarter
+   (research.py:114-120); benchmark anchored to the window's first
+   snapshot not inception (portfolio.py:348-351; 113.77 vs about 115);
+   backtest page prints "EDGE STABLE" with no buy-and-hold leg. GL7/R4,
+   R24; anchor new.
+11 S2 ML page: "5m" is a 25-bar label (prediction_sync.py:103-105);
+   CatBoost absent from the retrainer (retrainer.py:49) so the Jul-21
+   artifact vetoes every directional vote; era-4 t=-2.97 unflagged (read
+   as no skill). GL5/6, R20-22, R25.
+12 S2 paper costs: 0 commission, $0.01 tick, no lot step; exploration
+   dead below $100 (risk/service.py:47,219-220). R6; floor new.
+13 S2 UI truth: avg fill "-" (api/schemas/orders.py:38-57 omits fill
+   fields); chart 422 (timeframe "1D" vs enum "1d") and equities-only list;
+   heatmap keyed on a field never sent; "Connected" has no heartbeat; no
+   legend; no build SHA in the UI. R19 partial; rest new.
+CLOSED BY DEPLOYING PR #89: restart-lost fills and double-submit; fill
+monitor self-poisoning; JWT in access logs and anonymous /ws/orders;
+viewer tokens trading; the risk/risk.breached mismatch and breaker
+alert/audit rows; durable safety state and the $92-restore false trip;
+audit page columns; attributed control and manual-order rows; order rows
+keyed by engine id; models-table zeros to em-dash; realised P&L.
+OPERATOR-ONLY THIS WEEK: deploy api before worker (both run migrations
+unserialised, 0011 pending); rotate JWT_SECRET after that deploy; confirm
+Postgres backups newer than 00:31 today and run one off-platform restore;
+add the GitHub secret for the dead-man cron and route Railway webhooks to
+Slack; open the 100 Railway notifications; move the worker to US West;
+take the counsel fact sheet (residence, entity, Binance entity, regions).
+SEQUENCE AFTER #89 AND #90 MERGE, one change at a time, risk manager
+vetoes each: (1) exit ownership and exit-exempt rules; (2) dead-man and
+warm-up gate with armed=false after a long gap; (3) readiness and
+benchmark honesty (closed quarters, minimum n, Holm family bar, inception
+anchor). On-chain items W1-W3 are dropped until a four-quarter verdict.
+CLAIMS TODAY: paper mode on a $100 notional account, instrumented to
+withhold unsupported numbers. No live edge: the served ensemble is a
+constant flat predictor with live IC about 0; the 14 watches have at most
+one closed, partial quarter each. No money made and not ready for capital:
+98.70 against a 113.77 benchmark whose own computation is biased about 1%
+the account's way; no autonomous exit; breaker never tripped. Not safe
+for anyone but the operator nor transferable to a live venue.
+NOT CHANGED: no code. This entry records a review; each fix above gets its
+own pre-registration.
