@@ -14,8 +14,15 @@ REBALANCE = "rebalance"
 # Risk -> Execution: a sized order that passed all pre-trade checks.
 RISK_APPROVED = "risk.approved"
 
-# Risk -> (monitoring): a breached risk limit.
+# Risk -> (liquidation, monitoring): a breached risk limit, and every circuit-
+# breaker state transition (CircuitBreakerEvent). Until 2026-11-02 the
+# liquidation manager subscribed to "risk.breaches" and monitoring to "risk",
+# so no breach ever reached either consumer; import the constant.
 RISK_BREACHED = "risk.breached"
+
+# Liquidation -> Execution: a position that must be closed now (stop hit,
+# emergency). Consumed by the execution engine through the tracked order path.
+LIQUIDATION = "liquidation.triggered"
 
 # Execution -> (risk, monitoring): order lifecycle events
 # (created / filled / rejected / cancelled) all flow on this stream.

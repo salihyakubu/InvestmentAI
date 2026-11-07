@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
+from sqlalchemy import select
 
 from config.settings import Settings
 from core.enums import OrderStatus
@@ -18,13 +21,25 @@ from core.events import (
     OrderRejectedEvent,
 )
 from core.events.base import Event
-from core.events.streams import CONTROL, ORDER_INTENTS, ORDERS, RISK_APPROVED
+from core.events.streams import CONTROL, LIQUIDATION, ORDER_INTENTS, ORDERS, RISK_APPROVED
 from services.execution.brokers.base import BaseBroker, BrokerOrder
 from services.execution.fill_tracker import FillTracker
 from services.execution.order_manager import Order, OrderError, OrderManager
 from services.execution.smart_router import SmartOrderRouter
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from services.persistence.safety_state import SafetyStateStore
+
 logger = structlog.get_logger(__name__)
+
+# Durable-row statuses that mean "the venue may still act on this order".
+_NON_TERMINAL_ROW_STATUSES = (
+    OrderStatus.PENDING.value,
+    OrderStatus.SUBMITTED.value,
+    OrderStatus.PARTIAL_FILL.value,
+)
 
 # Stream / group names for the event bus (see core.events.streams).
 _RISK_STREAM = RISK_APPROVED
@@ -55,10 +70,17 @@ class ExecutionEngineService:
         event_bus: EventBus,
         settings: Settings,
         brokers: dict[str, BaseBroker],
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        state_store: SafetyStateStore | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._settings = settings
         self._brokers = brokers
+        # Durable order rows (written BEFORE the broker is called) and the
+        # safety-state row (halt flag). None = in-memory only, for tests.
+        self._session_factory = session_factory
+        self._state_store = state_store
+        self._halt_reason: str = ""
         self._order_manager = OrderManager()
         self._router = SmartOrderRouter(brokers, settings)
         self._fill_tracker = FillTracker()
@@ -95,6 +117,15 @@ class ExecutionEngineService:
             group=_CONSUMER_GROUP,
             consumer="exec-control-1",
             handler=self._handle_control,
+        )
+        # Forced exits (stops, emergency liquidation). Until 2026-11-02 this
+        # stream had no consumer at all: the liquidation manager published and
+        # nothing closed a position.
+        await self._event_bus.subscribe(
+            stream=LIQUIDATION,
+            group=_CONSUMER_GROUP,
+            consumer="exec-liquidation-1",
+            handler=self._handle_liquidation,
         )
         # Feed live prices into simulated brokers so paper fills happen at real
         # market prices and pending limit/stop orders can actually trigger.
@@ -141,6 +172,14 @@ class ExecutionEngineService:
 
         if correlation_id and correlation_id in self._processed_correlation_ids:
             logger.info("risk_approved_duplicate_skipped", correlation_id=correlation_id)
+            return
+        # Restart-safe dedupe: the in-memory set is empty after a restart, but
+        # the Order row written before submit carries the correlation id.
+        if correlation_id and await self._correlation_already_ordered(correlation_id):
+            self._processed_correlation_ids.add(correlation_id)
+            logger.warning(
+                "risk_approved_duplicate_skipped_durable", correlation_id=correlation_id
+            )
             return
 
         if not symbol or not side:
@@ -229,9 +268,11 @@ class ExecutionEngineService:
         )
         control_log("control_command_received", action=action, reason=reason)
         if action == "halt":
-            self.halt()
+            self.halt(reason or "operator halt")
+            await self._persist_halt(reason or "operator halt")
         elif action == "resume":
             self.resume()
+            await self._persist_halt(reason or "operator resume")
         elif action == "flatten":
             result = await self.emergency_flatten()
             logger.warning("control_flatten_result", **result)
@@ -239,6 +280,66 @@ class ExecutionEngineService:
             logger.debug("control_foreign_action", action=action)
         else:
             logger.warning("control_unknown_action", action=action)
+
+    async def _handle_liquidation(self, event: Event) -> None:
+        """Close a position the liquidation manager says must go.
+
+        ``quantity <= 0`` means "the whole position": it is resolved against
+        the broker's actual signed book, never against a stale local figure.
+        Liquidation orders are risk-reducing, so like the kill switch's own
+        flatten legs they bypass a halt; they never bypass the live-venue
+        gate or the tracked path, and they carry a ``liq-`` correlation id.
+        """
+        if event.event_type != "LiquidationTriggeredEvent":
+            return
+        if event.event_id in self._processed_correlation_ids:
+            return
+        self._processed_correlation_ids.add(event.event_id)
+        symbol = str(getattr(event, "symbol", "") or event.payload.get("symbol", ""))
+        reason = str(getattr(event, "reason", "") or event.payload.get("reason", ""))
+        requested = self._coerce_decimal(getattr(event, "quantity", None)) or Decimal("0")
+        if not symbol:
+            logger.warning("liquidation_missing_symbol", event_id=event.event_id)
+            return
+
+        signed = await self._broker_signed_quantity(symbol)
+        if signed == 0:
+            logger.warning("liquidation_nothing_held", symbol=symbol, reason=reason)
+            return
+        quantity = min(abs(signed), requested) if requested > 0 else abs(signed)
+        side = "sell" if signed > 0 else "buy"
+        try:
+            placed = await self.submit_order(
+                symbol=symbol,
+                side=side,
+                order_type="market",
+                quantity=quantity,
+                client_order_id=f"liq-{event.event_id}",
+                bypass_halt=True,
+            )
+        except Exception as exc:
+            logger.error("liquidation_submit_failed", symbol=symbol, error=str(exc))
+            return
+        logger.warning(
+            "liquidation_order_submitted",
+            symbol=symbol,
+            side=side,
+            quantity=str(quantity),
+            reason=reason,
+            order_id=placed.order_id if placed else None,
+        )
+
+    async def _broker_signed_quantity(self, symbol: str) -> Decimal:
+        """Net signed quantity of *symbol* across the configured brokers."""
+        total = Decimal("0")
+        for broker in self._brokers.values():
+            try:
+                for pos in await broker.get_positions():
+                    if pos.get("symbol") == symbol:
+                        total += Decimal(str(pos.get("quantity", "0")))
+            except Exception as exc:
+                logger.error("liquidation_positions_failed", error=str(exc))
+        return total
 
     async def _handle_price_update(self, event: Event) -> None:
         """Feed PriceUpdateEvents into simulated brokers.
@@ -287,9 +388,16 @@ class ExecutionEngineService:
             return
         if quantity <= 0:
             return
-        # The intent's order_id is the originating DB order id; carry it as the
-        # client order id so fills can be persisted back to that row.
-        db_order_id = getattr(event, "order_id", "") or event.payload.get("order_id", "")
+        # The intent's order_id is the originating DB order id. It becomes the
+        # engine's order id too (one durable row == one engine order), and it
+        # rides in client_order_id so fills carry the linkage.
+        db_order_id = str(
+            getattr(event, "order_id", "") or event.payload.get("order_id", "")
+        )
+        preferred = db_order_id if self._is_uuid(db_order_id) else None
+        if preferred is not None and self._order_manager.get_order(preferred) is not None:
+            logger.info("order_intent_duplicate_skipped", order_id=preferred)
+            return
         try:
             await self.submit_order(
                 order_id=None,
@@ -301,6 +409,7 @@ class ExecutionEngineService:
                 stop_price=self._coerce_decimal(getattr(event, "stop_price", None)),
                 reference_price=self._coerce_decimal(getattr(event, "reference_price", None)),
                 client_order_id=db_order_id or None,
+                preferred_order_id=preferred,
             )
         except Exception as exc:
             logger.error("order_intent_submit_failed", error=str(exc))
@@ -321,8 +430,16 @@ class ExecutionEngineService:
         reference_price: Decimal | None = None,
         client_order_id: str | None = None,
         bypass_halt: bool = False,
+        preferred_order_id: str | None = None,
     ) -> Order | None:
         """Create (or reuse) an order, route it, and submit to the broker.
+
+        When a session factory is configured the Order row is written BEFORE
+        the broker is called and the submit is refused if that write fails:
+        an order the venue knows about but the ledger does not is the exact
+        failure the 2026-09-12 drift investigation found. *preferred_order_id*
+        makes the engine's order id equal to an existing row id (manual API
+        orders) so the row and the engine object are one.
 
         *bypass_halt* is for the kill switch's OWN remediation orders only.
         emergency_flatten sets ``_halted`` before flattening, so its closing
@@ -346,6 +463,7 @@ class ExecutionEngineService:
                 limit_price=limit_price,
                 stop_price=stop_price,
                 client_order_id=client_order_id,
+                order_id=preferred_order_id,
             )
             order_id = order.order_id
         else:
@@ -416,6 +534,11 @@ class ExecutionEngineService:
                 )
                 return order
 
+        # Durable row BEFORE the venue is touched. Fail closed: no row, no order.
+        if not await self._persist_order_row(order, broker_name):
+            await self._publish_rejected(order_id, "order_persistence_failed")
+            return order
+
         # Build broker order. external_id doubles as the client order id, so a
         # broker-side retry after a lost response is deduped rather than
         # placing a second live order.
@@ -435,6 +558,12 @@ class ExecutionEngineService:
             order.external_id = external_id
             order.broker_name = broker_name
             self._in_flight[order_id] = (broker_name, external_id)
+            await self._mark_row(
+                order_id,
+                status=OrderStatus.SUBMITTED,
+                external_id=external_id,
+                submitted_at=datetime.now(UTC),
+            )
 
             logger.info(
                 "order_submitted_to_broker",
@@ -442,6 +571,14 @@ class ExecutionEngineService:
                 broker=broker_name,
                 external_id=external_id,
             )
+            # Simulated venues fill market orders inside submit_order; polling
+            # now instead of in 2 s closes the restart window between the
+            # broker's book changing and the fill reaching the durable record.
+            if not broker.supports_live:
+                try:
+                    await self._poll_order(order_id, broker_name, external_id)
+                except Exception:
+                    logger.exception("post_submit_poll_failed", order_id=order_id)
         except Exception as exc:
             logger.error(
                 "broker_submit_failed",
@@ -472,6 +609,9 @@ class ExecutionEngineService:
             except OrderError:
                 pass
             del self._in_flight[order_id]
+            await self._mark_row(
+                order_id, status=OrderStatus.CANCELLED, cancelled_at=datetime.now(UTC)
+            )
             await self._event_bus.publish(
                 _ORDER_STREAM,
                 OrderCancelledEvent(
@@ -497,20 +637,50 @@ class ExecutionEngineService:
         """Configured brokers (name -> adapter)."""
         return self._brokers
 
-    def halt(self) -> None:
-        """Stop accepting new orders."""
+    def halt(self, reason: str = "") -> None:
+        """Stop accepting new orders (in memory; callers persist via _persist_halt)."""
         self._halted = True
-        logger.warning("trading_halted")
+        self._halt_reason = reason
+        logger.warning("trading_halted", reason=reason)
 
     def resume(self) -> None:
         """Resume accepting new orders."""
         self._halted = False
+        self._halt_reason = ""
         logger.info("trading_resumed")
+
+    async def restore_safety_state(self) -> None:
+        """Re-apply a persisted halt before any order can be accepted.
+
+        Until 2026-11-02 ``_halted`` was process memory, so an operator halt
+        was silently lifted by the next deploy or crash-restart.
+        """
+        if self._state_store is None:
+            return
+        try:
+            state = await self._state_store.load()
+        except Exception:
+            logger.exception("safety_state_load_failed")
+            return
+        if state is not None and state.halted:
+            self._halted = True
+            self._halt_reason = state.halt_reason or "restored from safety_state"
+            logger.warning("trading_halt_restored", reason=self._halt_reason)
+
+    async def _persist_halt(self, reason: str) -> None:
+        if self._state_store is None:
+            return
+        try:
+            await self._state_store.save_halt(self._halted, reason)
+        except Exception:
+            logger.exception("safety_state_save_failed")
 
     async def emergency_flatten(self) -> dict[str, Any]:
         """Kill switch: halt new orders, cancel open orders, and flatten every
         broker position with market orders. Returns a summary."""
         self._halted = True
+        self._halt_reason = "emergency_flatten"
+        await self._persist_halt("emergency_flatten")
         cancelled = 0
         for order_id in list(self._in_flight):
             try:
@@ -541,6 +711,7 @@ class ExecutionEngineService:
                         side=side,
                         order_type="market",
                         quantity=abs(qty),
+                        client_order_id=f"flatten-{uuid.uuid4()}",
                         bypass_halt=True,
                     )
                     if placed is not None:
@@ -586,93 +757,344 @@ class ExecutionEngineService:
         return discrepancies
 
     # ------------------------------------------------------------------
+    # Durable order rows + startup reconciliation
+    # ------------------------------------------------------------------
+
+    async def reconcile_on_start(self) -> dict[str, int]:
+        """Pick up every non-terminal Order row and ask the venue what happened.
+
+        Call before ``start()``. A fill the venue reports is recorded and
+        published exactly as the monitor would have; an order the venue still
+        holds is re-seeded into ``_in_flight``; an order the venue has no
+        memory of (the paper broker after a restart) is marked ``expired`` with
+        reason ``lost_on_restart`` and logged at error level -- never silently
+        dropped, which is what happened to every in-flight order before
+        2026-11-02.
+        """
+        summary = {"rows": 0, "filled": 0, "open": 0, "closed": 0, "lost": 0}
+        if self._session_factory is None:
+            return summary
+        from core.models.orders import Order as OrderRow
+
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(OrderRow).where(
+                        OrderRow.trading_mode == self._settings.trading_mode,
+                        OrderRow.status.in_(_NON_TERMINAL_ROW_STATUSES),
+                    )
+                )
+            ).scalars().all()
+
+        for row in rows:
+            if row.broker_name is None:
+                # Written by the API but never claimed by an engine: its
+                # OrderIntentEvent is still in the stream (or never came) and
+                # will create the order normally. Not ours to expire.
+                continue
+            summary["rows"] += 1
+            order_id = str(row.id)
+            order = Order(
+                order_id=order_id,
+                symbol=row.symbol,
+                side=row.side,
+                order_type=row.order_type,
+                quantity=Decimal(str(row.quantity)),
+                status=(
+                    OrderStatus.PENDING
+                    if row.status == OrderStatus.PENDING.value
+                    else OrderStatus.SUBMITTED
+                ),
+                limit_price=Decimal(str(row.limit_price)) if row.limit_price is not None else None,
+                stop_price=Decimal(str(row.stop_price)) if row.stop_price is not None else None,
+                external_id=row.external_id,
+                broker_name=row.broker_name,
+                client_order_id=row.correlation_id,
+            )
+            if self._order_manager.get_order(order_id) is None:
+                self._order_manager.restore_order(order)
+            if order.client_order_id:
+                self._processed_correlation_ids.add(order.client_order_id)
+
+            broker = self._brokers.get(row.broker_name or "")
+            external_id = row.external_id or order_id
+            status_info: dict[str, Any] = {}
+            if broker is not None and row.status != OrderStatus.PENDING.value:
+                try:
+                    status_info = await broker.get_order_status(external_id)
+                except Exception as exc:
+                    logger.warning("reconcile_status_failed", order_id=order_id, error=str(exc))
+            raw = str(status_info.get("status", "unknown") or "unknown")
+
+            if raw in (OrderStatus.FILLED, "filled"):
+                filled_qty = Decimal(str(status_info.get("filled_qty", 0)))
+                filled_price = Decimal(str(status_info.get("filled_avg_price", 0)))
+                if filled_qty > 0 and filled_price > 0:
+                    await self._record_and_publish_fill(
+                        order_id, status_info, filled_qty, filled_price
+                    )
+                    summary["filled"] += 1
+                else:
+                    summary["lost"] += 1
+                    await self._expire_lost(order_id, "filled_without_quantity")
+            elif raw in ("submitted", "new", "accepted", "open", "pending", "partially_filled",
+                         OrderStatus.SUBMITTED, OrderStatus.PARTIAL_FILL):
+                self._in_flight[order_id] = (row.broker_name or "", external_id)
+                summary["open"] += 1
+            elif raw in (OrderStatus.REJECTED, "rejected"):
+                await self._publish_rejected(order_id, "broker_rejected_while_down")
+                summary["closed"] += 1
+            elif raw in (OrderStatus.CANCELLED, "cancelled", "canceled", "expired",
+                         OrderStatus.EXPIRED):
+                try:
+                    self._order_manager.update_status(order_id, OrderStatus.CANCELLED)
+                except OrderError:
+                    pass
+                await self._mark_row(
+                    order_id, status=OrderStatus.CANCELLED, cancelled_at=datetime.now(UTC)
+                )
+                await self._event_bus.publish(
+                    _ORDER_STREAM,
+                    OrderCancelledEvent(
+                        order_id=order_id,
+                        reason="broker_cancelled_while_down",
+                        source_service="execution-engine",
+                    ),
+                )
+                summary["closed"] += 1
+            else:
+                summary["lost"] += 1
+                await self._expire_lost(order_id, "lost_on_restart")
+
+        logger.warning("order_reconciliation_complete", **summary)
+        return summary
+
+    async def _expire_lost(self, order_id: str, reason: str) -> None:
+        """Mark an order nobody can account for: the one outcome never allowed
+        to be silent. The broker's book may or may not include it; the ledger
+        now says so explicitly and the metrics layer keeps withholding until
+        it reconciles."""
+        try:
+            self._order_manager.update_status(order_id, OrderStatus.EXPIRED)
+        except OrderError:
+            pass
+        await self._mark_row(order_id, status=OrderStatus.EXPIRED)
+        await self._event_bus.publish(
+            _ORDER_STREAM,
+            OrderCancelledEvent(order_id=order_id, reason=reason, source_service="execution-engine"),
+        )
+        logger.error("order_lost_on_restart", order_id=order_id, reason=reason)
+
+    @staticmethod
+    def _is_uuid(value: str | None) -> bool:
+        if not value:
+            return False
+        try:
+            uuid.UUID(str(value))
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    async def _correlation_already_ordered(self, correlation_id: str) -> bool:
+        if self._session_factory is None:
+            return False
+        from core.models.orders import Order as OrderRow
+
+        try:
+            async with self._session_factory() as session:
+                found = await session.execute(
+                    select(OrderRow.id).where(OrderRow.correlation_id == correlation_id).limit(1)
+                )
+                return found.first() is not None
+        except Exception:
+            logger.exception("correlation_lookup_failed", correlation_id=correlation_id)
+            return False
+
+    async def _persist_order_row(self, order: Order, broker_name: str) -> bool:
+        """Write (or claim) the Order row for *order* before the venue is called.
+
+        Returns True when the row exists afterwards. Without a session factory
+        the engine runs in-memory only and this is a no-op that returns True.
+        """
+        if self._session_factory is None:
+            return True
+        from core.models.orders import Order as OrderRow
+
+        now = datetime.now(UTC)
+        row_id = uuid.UUID(order.order_id)
+        correlation = order.client_order_id or None
+        try:
+            async with self._session_factory() as session:
+                row = await session.get(OrderRow, row_id)
+                if row is None:
+                    row = OrderRow(
+                        id=row_id,
+                        symbol=order.symbol,
+                        asset_class="crypto" if "/" in order.symbol else "stock",
+                        side=order.side,
+                        order_type=order.order_type,
+                        quantity=order.quantity,
+                        limit_price=order.limit_price,
+                        stop_price=order.stop_price,
+                        status=OrderStatus.PENDING.value,
+                        trading_mode=self._settings.trading_mode,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(row)
+                row.broker_name = broker_name
+                if correlation and not self._is_uuid(correlation):
+                    row.correlation_id = correlation[:100]
+                row.updated_at = now
+                await session.commit()
+            return True
+        except Exception:
+            logger.exception("order_row_persist_failed", order_id=order.order_id)
+            return False
+
+    async def _mark_row(self, order_id: str, *, status: OrderStatus, **fields: Any) -> None:
+        """Best-effort status update on the durable row (the event is the record of truth)."""
+        if self._session_factory is None or not self._is_uuid(order_id):
+            return
+        from core.models.orders import Order as OrderRow
+
+        try:
+            async with self._session_factory() as session:
+                row = await session.get(OrderRow, uuid.UUID(order_id))
+                if row is None:
+                    return
+                row.status = status.value
+                for key, value in fields.items():
+                    setattr(row, key, value)
+                row.updated_at = datetime.now(UTC)
+                await session.commit()
+        except Exception:
+            logger.exception("order_row_update_failed", order_id=order_id)
+
+    # ------------------------------------------------------------------
     # Background monitoring
     # ------------------------------------------------------------------
 
     async def _monitor_pending_orders(self) -> None:
-        """Periodically poll brokers for fill updates on in-flight orders."""
+        """Periodically poll brokers for fill updates on in-flight orders.
+
+        Each in-flight order is polled under its own exception guard. Before
+        this, one order whose fill had been recorded but whose event failed to
+        publish (a Redis blip) raised OrderError on every later poll
+        (FILLED -> FILLED is not a legal transition) and aborted the whole
+        loop body, so every order behind it in ``_in_flight`` never had its
+        fill published for the life of the process -- the "closes missing
+        from the ledger" signature (GO_LIVE.md 2026-09-12) with no restart
+        required. Recording is now idempotent and the in-flight entry is
+        released only after the fill event has been published.
+        """
         while True:
             try:
                 await asyncio.sleep(_POLL_INTERVAL)
-
                 for order_id, (broker_name, external_id) in list(self._in_flight.items()):
-                    broker = self._brokers.get(broker_name)
-                    if broker is None:
-                        continue
-
                     try:
-                        status_info = await broker.get_order_status(external_id)
-                    except Exception as exc:
-                        logger.warning(
-                            "poll_status_failed",
-                            order_id=order_id,
-                            error=str(exc),
-                        )
-                        continue
-
-                    raw_status = status_info.get("status", "")
-
-                    if raw_status in (OrderStatus.FILLED, "filled"):
-                        filled_qty = Decimal(str(status_info.get("filled_qty", 0)))
-                        filled_price = Decimal(str(status_info.get("filled_avg_price", 0)))
-
-                        if filled_qty > 0 and filled_price > 0:
-                            order = self._order_manager.get_order(order_id)
-                            symbol = order.symbol if order else status_info.get("symbol", "")
-                            side = order.side if order else status_info.get("side", "")
-
-                            self._order_manager.record_fill(
-                                order_id=order_id,
-                                price=filled_price,
-                                quantity=filled_qty,
-                            )
-                            self._fill_tracker.record_fill(
-                                order_id=order_id,
-                                symbol=symbol,
-                                side=side,
-                                price=filled_price,
-                                quantity=filled_qty,
-                            )
-
-                            await self._event_bus.publish(
-                                _ORDER_STREAM,
-                                OrderFilledEvent(
-                                    order_id=order_id,
-                                    symbol=symbol,
-                                    side=side,
-                                    fill_price=float(filled_price),
-                                    fill_quantity=float(filled_qty),
-                                    client_order_id=(order.client_order_id or "") if order else "",
-                                    source_service="execution-engine",
-                                ),
-                            )
-                        del self._in_flight[order_id]
-
-                    elif raw_status in (OrderStatus.REJECTED, "rejected"):
-                        reason = status_info.get("reason", "broker_rejected")
-                        await self._publish_rejected(order_id, reason)
-                        del self._in_flight[order_id]
-
-                    elif raw_status in (OrderStatus.CANCELLED, "cancelled", "canceled"):
-                        try:
-                            self._order_manager.update_status(order_id, OrderStatus.CANCELLED)
-                        except OrderError:
-                            pass
-                        await self._event_bus.publish(
-                            _ORDER_STREAM,
-                            OrderCancelledEvent(
-                                order_id=order_id,
-                                reason="broker_cancelled",
-                                source_service="execution-engine",
-                            ),
-                        )
-                        del self._in_flight[order_id]
-
+                        await self._poll_order(order_id, broker_name, external_id)
+                    except Exception:
+                        logger.exception("monitor_order_poll_error", order_id=order_id)
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("monitor_pending_orders_error")
                 await asyncio.sleep(_POLL_INTERVAL)
+
+    async def _poll_order(self, order_id: str, broker_name: str, external_id: str) -> None:
+        """Poll one in-flight order and publish whatever terminal state it reached."""
+        broker = self._brokers.get(broker_name)
+        if broker is None:
+            return
+        try:
+            status_info = await broker.get_order_status(external_id)
+        except Exception as exc:
+            logger.warning("poll_status_failed", order_id=order_id, error=str(exc))
+            return
+
+        raw_status = status_info.get("status", "")
+
+        if raw_status in (OrderStatus.FILLED, "filled"):
+            filled_qty = Decimal(str(status_info.get("filled_qty", 0)))
+            filled_price = Decimal(str(status_info.get("filled_avg_price", 0)))
+            if filled_qty > 0 and filled_price > 0:
+                await self._record_and_publish_fill(
+                    order_id, status_info, filled_qty, filled_price
+                )
+            # Released only once the event is out: a publish failure raises
+            # past this line and the order is polled again next tick.
+            self._in_flight.pop(order_id, None)
+
+        elif raw_status in (OrderStatus.REJECTED, "rejected"):
+            reason = status_info.get("reason", "broker_rejected")
+            await self._publish_rejected(order_id, reason)
+            self._in_flight.pop(order_id, None)
+
+        elif raw_status in (OrderStatus.CANCELLED, "cancelled", "canceled"):
+            try:
+                self._order_manager.update_status(order_id, OrderStatus.CANCELLED)
+            except OrderError:
+                pass
+            await self._event_bus.publish(
+                _ORDER_STREAM,
+                OrderCancelledEvent(
+                    order_id=order_id,
+                    reason="broker_cancelled",
+                    source_service="execution-engine",
+                ),
+            )
+            self._in_flight.pop(order_id, None)
+
+    async def _record_and_publish_fill(
+        self,
+        order_id: str,
+        status_info: dict[str, Any],
+        filled_qty: Decimal,
+        filled_price: Decimal,
+    ) -> None:
+        """Record a fill exactly once and publish it.
+
+        Safe to call again after a failed publish: only the quantity not yet
+        recorded on the order is recorded, so a retry neither double-counts
+        the book nor attempts an illegal FILLED -> FILLED transition.
+        """
+        order = self._order_manager.get_order(order_id)
+        symbol = order.symbol if order else str(status_info.get("symbol") or "")
+        side = order.side if order else str(status_info.get("side") or "")
+        already = order.filled_quantity if order else Decimal("0")
+        delta = filled_qty - already
+        if delta > 0:
+            self._order_manager.record_fill(
+                order_id=order_id, price=filled_price, quantity=delta
+            )
+            self._fill_tracker.record_fill(
+                order_id=order_id,
+                symbol=symbol,
+                side=side,
+                price=filled_price,
+                quantity=delta,
+            )
+        # Dedupe key for the persistence layer: the venue's own fill id when
+        # the adapter reports one, else a stand-in that is stable across
+        # retries of the same cumulative fill.
+        fills = status_info.get("fills") or []
+        fill_id = str(fills[-1].get("id")) if fills and fills[-1].get("id") else (
+            f"{status_info.get('external_id') or order_id}:{filled_qty}"
+        )
+        await self._event_bus.publish(
+            _ORDER_STREAM,
+            OrderFilledEvent(
+                order_id=order_id,
+                symbol=symbol,
+                side=side,
+                fill_price=float(filled_price),
+                fill_quantity=float(filled_qty),
+                client_order_id=(order.client_order_id or "") if order else "",
+                fill_id=fill_id,
+                source_service="execution-engine",
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -685,6 +1107,7 @@ class ExecutionEngineService:
             self._order_manager.update_status(order_id, OrderStatus.REJECTED)
         except OrderError:
             pass
+        await self._mark_row(order_id, status=OrderStatus.REJECTED)
         await self._event_bus.publish(
             _ORDER_STREAM,
             OrderRejectedEvent(

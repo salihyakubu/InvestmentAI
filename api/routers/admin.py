@@ -11,13 +11,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 
-from api.dependencies import get_current_user, get_event_bus
+from api.dependencies import client_ip, get_audit_logger, get_event_bus, require_role
 from core.events.base import EventBus
 from core.events.order_events import TradingControlEvent
 from core.events.streams import CONTROL
+from services.monitoring.audit import AuditLogger
 
 router = APIRouter()
 
@@ -34,8 +35,10 @@ class ControlRequest(BaseModel):
 )
 async def trading_control(
     body: ControlRequest,
-    user: dict[str, Any] = Depends(get_current_user),
+    request: Request,
+    user: dict[str, Any] = Depends(require_role("admin")),
     event_bus: EventBus = Depends(get_event_bus),
+    audit: AuditLogger = Depends(get_audit_logger),
 ) -> dict[str, str]:
     """Publish an operator control command to the execution engine.
 
@@ -45,11 +48,16 @@ async def trading_control(
     service. Asynchronous: 202 means the command was published -- confirm the
     effect via worker logs / positions.
     """
-    if user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required for trading control",
-        )
+    # The durable, attributable record comes first: who, from where, why.
+    await audit.log_action(
+        service="api",
+        action=f"control.{body.action}",
+        entity_type="trading_control",
+        entity_id=body.action,
+        details={"reason": body.reason},
+        user_id=user.get("user_id"),
+        ip_address=client_ip(request),
+    )
     await event_bus.publish(
         CONTROL,
         TradingControlEvent(

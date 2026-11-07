@@ -128,6 +128,60 @@ class PortfolioOptimizerService:
         logger.info("PortfolioOptimizerService started (optimizer=%s).", type(self.optimizer).__name__)
 
     # ------------------------------------------------------------------
+    # Held book
+    # ------------------------------------------------------------------
+
+    @property
+    def held_symbols(self) -> set[str]:
+        """Symbols this service believes it holds (copy, not live)."""
+        return set(self._last_target_symbols)
+
+    @property
+    def exploration_positions(self) -> dict[str, float]:
+        """Open exploration positions, symbol -> entry time (copy, not live)."""
+        return dict(self._exploration_positions)
+
+    def seed_held_book(self, symbols: Iterable[str], *, now: float | None = None) -> None:
+        """Give every position found at boot an owner.
+
+        Until 2026-11-07 the held book was process memory: a restart forgot
+        every open position, no exit was ever published for it, and five
+        positions sat ownerless for a month. A seeded symbol joins the held
+        book and, where exploration is allowed, the exploration register
+        with *now* as its entry time, so it exits on the registered hold
+        timer through the normal path; a conviction cycle supersedes that
+        exactly as it does for any exploration position. *now* is the
+        monotonic clock; a caller restoring after a long outage may pass an
+        older time so the exit is not deferred a further hold period.
+        """
+        entered = time.monotonic() if now is None else now
+        universe = {
+            *self.settings.active_symbols_crypto,
+            *self.settings.active_symbols_stocks,
+        }
+        seeded: list[str] = []
+        outside: list[str] = []
+        for symbol in symbols:
+            if not symbol:
+                continue
+            self._last_target_symbols.add(symbol)
+            # Only the active universe joins the exploration register; a
+            # symbol the platform no longer trades stays in the held book
+            # (exited by the next conviction cycle or by the operator).
+            if self._exploration_allowed() and symbol in universe:
+                self._exploration_positions.setdefault(symbol, entered)
+            elif symbol not in universe:
+                outside.append(symbol)
+            seeded.append(symbol)
+        if seeded:
+            logger.warning("Held book seeded from the broker at boot: %s", sorted(seeded))
+        if outside:
+            logger.warning(
+                "Held symbols outside the active universe have no exploration exit: %s",
+                sorted(outside),
+            )
+
+    # ------------------------------------------------------------------
     # Event handling
     # ------------------------------------------------------------------
 
@@ -426,8 +480,17 @@ class PortfolioOptimizerService:
         exits = self._expired_exploration_exits(now)
         priced_exits = {s for s in exits if self._last_prices.get(s, 0.0) > 0.0}
 
+        # The cap counts positions this service can actually manage: a seeded
+        # symbol with no price feed (equity dust restored into a crypto-only
+        # paper session) can be neither exited nor sized, and must not freeze
+        # exploration for the life of the process (risk sign-off 2026-11-07).
+        open_priced = sum(
+            1
+            for symbol in self._exploration_positions
+            if self._last_prices.get(symbol, 0.0) > 0.0
+        )
         entry: str | None = None
-        if len(self._exploration_positions) - len(priced_exits) < _MAX_EXPLORATION_POSITIONS:
+        if open_priced - len(priced_exits) < _MAX_EXPLORATION_POSITIONS:
             entry = self._exploration_pick(now)
 
         if entry is None and not priced_exits:

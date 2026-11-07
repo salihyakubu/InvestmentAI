@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     max_portfolio_var_95: float = 0.03
     circuit_breaker_loss_pct: float = 0.07
     circuit_breaker_cooldown_minutes: int = 30
+    # When the breaker trips, also publish the kill switch's "flatten" control
+    # (cancel open orders, close every position, halt). OFF by default: whether
+    # a 7% day should liquidate the book is the operator's policy decision
+    # (GO_LIVE.md 2026-11-02); the wiring exists and is tested either way.
+    breaker_auto_flatten: bool = False
+    # Fixed stop below the entry of every long, registered on each buy fill
+    # and for every position found at boot (GO_LIVE.md 2026-11-07). A breach
+    # publishes a liquidation that the execution engine closes through the
+    # tracked order path. Operator policy, not a tuned value: 5% sits inside
+    # the 5% daily and 7% breaker limits. Zero disables stop registration.
+    stop_loss_pct: float = 0.05
 
     # Research telemetry: live walk-forward adjudication of the registered
     # funding-regime hypothesis (GO_LIVE.md 2026-07-31). Read-only research;
@@ -119,6 +130,16 @@ class Settings(BaseSettings):
     # bursts far higher) which trips Railway's 500 logs/sec limit and DROPS
     # messages -- exactly the lines needed during an incident. INFO in prod.
     log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _validate_stop_loss(self) -> "Settings":
+        """A stop distance outside [0, 1) is a stop that can never fire."""
+        if not 0.0 <= self.stop_loss_pct < 1.0:
+            raise ValueError(
+                f"STOP_LOSS_PCT must be in [0, 1), got {self.stop_loss_pct}. "
+                "Refusing to start with a stop that cannot trigger."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_security(self) -> "Settings":

@@ -39,9 +39,18 @@ class PaperBroker(BaseBroker):
     asset_class = "all"
     supports_live = False
 
-    def __init__(self, initial_cash: Decimal = Decimal("100000")) -> None:
+    def __init__(
+        self, initial_cash: Decimal = Decimal("100000"), *, allow_short: bool = False
+    ) -> None:
         self._cash = initial_cash
         self._initial_cash = initial_cash
+        # Spot semantics by default: a sell larger than the held long is
+        # rejected, as Binance spot rejects it (-2010). Until 2026-11-07 an
+        # over-sized exit flipped the position to a short that no venue could
+        # hold, which is how the live book came to carry two paper shorts.
+        self._allow_short = allow_short
+        # external_id -> why a rejected order was rejected
+        self._reject_reasons: dict[str, str] = {}
         # symbol -> signed quantity (positive = long)
         self._positions: dict[str, Decimal] = defaultdict(Decimal)
         # symbol -> volume-weighted cost basis of the open position; without it
@@ -49,6 +58,13 @@ class PaperBroker(BaseBroker):
         self._avg_entry: dict[str, Decimal] = {}
         # Cumulative realised P&L from closed quantity, net of commission.
         self._realized_pnl = Decimal("0")
+        # Realised P&L of each symbol's CURRENT position: reset to zero when a
+        # position opens from flat, accumulated on every closing fill, kept
+        # after the position goes flat so the checkpoint that closes the
+        # positions row can record it. The single scalar above was all the
+        # platform had, which is why positions.realized_pnl read 0.00 on every
+        # closed row (GO_LIVE.md 2026-09-12).
+        self._realized_by_symbol: dict[str, Decimal] = {}
         # external_id -> BrokerOrder
         self._orders: dict[str, BrokerOrder] = {}
         # external_id -> status string
@@ -108,7 +124,7 @@ class PaperBroker(BaseBroker):
                 stop_price=str(order.stop_price),
             )
         else:
-            self._mark_terminal(external_id, "rejected")
+            self._reject(external_id, "unsupported_order_type")
             logger.warning(
                 "paper_unsupported_order_type",
                 order_type=order.order_type,
@@ -146,11 +162,23 @@ class PaperBroker(BaseBroker):
         return {
             "external_id": external_id,
             "status": status,
+            "reason": self._reject_reasons.get(external_id),
             "symbol": order.symbol if order else None,
             "side": order.side if order else None,
             "quantity": str(order.quantity) if order else None,
             "filled_qty": str(filled_qty),
             "filled_avg_price": str(filled_avg_price),
+            # Individual fills with their ids, so the engine can publish a
+            # dedupe key the persistence layer honours.
+            "fills": [
+                {
+                    "id": f.external_id,
+                    "price": str(f.price),
+                    "quantity": str(f.quantity),
+                    "filled_at": f.filled_at.isoformat(),
+                }
+                for f in order_fills
+            ],
         }
 
     async def get_positions(self) -> list[dict[str, Any]]:
@@ -167,6 +195,7 @@ class PaperBroker(BaseBroker):
                     "avg_entry_price": str(avg_entry),
                     "current_price": str(last_price),
                     "unrealized_pnl": str(qty * (last_price - avg_entry)),
+                    "realized_pnl": str(self._realized_by_symbol.get(symbol, Decimal("0"))),
                 })
         return positions
 
@@ -210,6 +239,7 @@ class PaperBroker(BaseBroker):
         avg_entry: dict[str, Decimal] | None = None,
         last_prices: dict[str, Decimal] | None = None,
         realized_pnl: Decimal | None = None,
+        realized_by_symbol: dict[str, Decimal] | None = None,
     ) -> None:
         """Rebuild account state from a durable checkpoint.
 
@@ -237,11 +267,19 @@ class PaperBroker(BaseBroker):
             self._last_prices.setdefault(symbol, price)
         if realized_pnl is not None:
             self._realized_pnl = realized_pnl
+        if realized_by_symbol is not None:
+            self._realized_by_symbol = {
+                symbol: value for symbol, value in realized_by_symbol.items()
+            }
         logger.info(
             "paper_state_restored",
             cash=str(cash),
             positions=len(self._positions),
         )
+
+    def realized_by_symbol(self) -> dict[str, Decimal]:
+        """Realised P&L of each symbol's current (or just-closed) position."""
+        return dict(self._realized_by_symbol)
 
     def apply_external_fill(
         self, symbol: str, side: str, price: Decimal, quantity: Decimal
@@ -268,6 +306,10 @@ class PaperBroker(BaseBroker):
         old_avg = self._avg_entry.get(symbol, Decimal("0"))
         new_qty = old_qty + signed_qty
 
+        if old_qty == Decimal("0"):
+            # A position opening from flat starts its own realised ledger.
+            self._realized_by_symbol[symbol] = Decimal("0")
+
         if old_qty == Decimal("0") or (old_qty > 0) == (signed_qty > 0):
             total = abs(old_qty) + abs(signed_qty)
             new_avg = (
@@ -278,7 +320,11 @@ class PaperBroker(BaseBroker):
         else:
             closed = min(abs(old_qty), abs(signed_qty))
             direction = Decimal("1") if old_qty > 0 else Decimal("-1")
-            self._realized_pnl += direction * closed * (price - old_avg)
+            realised = direction * closed * (price - old_avg)
+            self._realized_pnl += realised
+            self._realized_by_symbol[symbol] = (
+                self._realized_by_symbol.get(symbol, Decimal("0")) + realised
+            )
             # A flip leaves a fresh position opened at this fill's price.
             new_avg = price if new_qty != 0 and (old_qty > 0) != (new_qty > 0) else old_avg
 
@@ -291,6 +337,10 @@ class PaperBroker(BaseBroker):
         self._cash -= signed_qty * price
         self._cash -= commission
         self._realized_pnl -= commission
+        if commission:
+            self._realized_by_symbol[symbol] = (
+                self._realized_by_symbol.get(symbol, Decimal("0")) - commission
+            )
 
     # ------------------------------------------------------------------
     # Memory retention
@@ -300,6 +350,18 @@ class PaperBroker(BaseBroker):
         """Set a terminal status and stamp it for later pruning."""
         self._order_statuses[external_id] = status
         self._terminal_at[external_id] = datetime.now(UTC)
+
+    def _reject(self, external_id: str, reason: str) -> None:
+        """Reject an order with a reason the execution engine can record."""
+        self._mark_terminal(external_id, "rejected")
+        self._reject_reasons[external_id] = reason
+
+    def _sell_exceeds_position(self, order: BrokerOrder) -> bool:
+        """True when a sell would take the symbol below flat on a spot venue."""
+        if order.side != "sell" or self._allow_short:
+            return False
+        held = self._positions.get(order.symbol, Decimal("0"))
+        return order.quantity > max(held, Decimal("0"))
 
     def _prune(self) -> None:
         """Drop terminal orders (and their fills) past the retention window.
@@ -317,6 +379,7 @@ class PaperBroker(BaseBroker):
             self._orders.pop(ext_id, None)
             self._order_statuses.pop(ext_id, None)
             self._fills_by_order.pop(ext_id, None)
+            self._reject_reasons.pop(ext_id, None)
         if expired:
             logger.info("paper_terminal_orders_pruned", count=len(expired))
 
@@ -326,13 +389,23 @@ class PaperBroker(BaseBroker):
 
     async def _fill_market_order(self, order: BrokerOrder) -> None:
         """Fill a market order immediately with random slippage."""
+        if self._sell_exceeds_position(order):
+            self._reject(order.external_id, "insufficient_position")
+            logger.warning(
+                "paper_insufficient_position",
+                symbol=order.symbol,
+                requested=str(order.quantity),
+                held=str(self._positions.get(order.symbol, Decimal("0"))),
+            )
+            return
+
         base_price = self._last_prices.get(order.symbol)
         if base_price is None:
             # No price available; use limit_price as fallback or reject.
             if order.limit_price is not None:
                 base_price = order.limit_price
             else:
-                self._mark_terminal(order.external_id, "rejected")
+                self._reject(order.external_id, "no_price")
                 logger.warning(
                     "paper_no_price_for_market_order",
                     symbol=order.symbol,
@@ -354,7 +427,7 @@ class PaperBroker(BaseBroker):
         if order.side == "buy":
             cost = order.quantity * fill_price
             if cost > self._cash:
-                self._mark_terminal(order.external_id, "rejected")
+                self._reject(order.external_id, "insufficient_cash")
                 logger.warning(
                     "paper_insufficient_cash",
                     symbol=order.symbol,
@@ -414,6 +487,15 @@ class PaperBroker(BaseBroker):
 
         for ext_id in to_fill:
             order = self._pending_orders.pop(ext_id)
+            if self._sell_exceeds_position(order):
+                self._reject(ext_id, "insufficient_position")
+                logger.warning(
+                    "paper_insufficient_position",
+                    symbol=order.symbol,
+                    requested=str(order.quantity),
+                    held=str(self._positions.get(order.symbol, Decimal("0"))),
+                )
+                continue
             fill_price = price.quantize(Decimal("0.01"))
             fill = BrokerFill(
                 external_id=str(uuid.uuid4()),

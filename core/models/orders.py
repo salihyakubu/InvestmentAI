@@ -18,7 +18,20 @@ class Order(UUIDMixin, AsyncBase):
 
     __tablename__ = "orders"
 
+    # The venue's own order id once the broker has acknowledged the order.
+    # (Rows written before 2026-11-02 by the fill-time insert path carry the
+    # risk correlation id here instead; see ``correlation_id``.)
     external_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Which broker adapter the order was routed to -- what a restarted worker
+    # needs in order to ask the venue what became of an in-flight order.
+    broker_name: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Risk correlation id ("rebal-..", "explore-..", "liq-..") or, for manual
+    # API orders, the DB row id. Also the restart-safe idempotency key: a
+    # redelivered RiskApprovedEvent whose correlation already has a row is
+    # skipped instead of re-submitted.
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     asset_class: Mapped[str] = mapped_column(String(10), nullable=False)
     side: Mapped[str] = mapped_column(String(10), nullable=False)
@@ -87,8 +100,10 @@ class Fill(UUIDMixin, AsyncBase):
     order_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orders.id"), nullable=False
     )
+    # Venue fill id (or a deterministic stand-in). UNIQUE so that a redelivered
+    # OrderFilledEvent cannot write the same fill twice; NULLs stay allowed.
     external_fill_id: Mapped[str | None] = mapped_column(
-        String(100), nullable=True
+        String(100), nullable=True, unique=True
     )
     price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)

@@ -120,7 +120,7 @@ class ExtendedSignalBuilder(Protocol):
     ) -> np.ndarray: ...
 
 
-def _parse_boundary_snapshots(rows: list[dict], field: str) -> dict[int, float]:
+def _parse_boundary_snapshots(rows: list[dict[str, Any]], field: str) -> dict[int, float]:
     """Snapshot series: keep points whose timestamp is exactly ON the 8h
     grid -- the value AT the stamp, nothing floored or filled forward
     (flooring would pull intra-bucket future data backward)."""
@@ -135,7 +135,7 @@ def _parse_boundary_snapshots(rows: list[dict], field: str) -> dict[int, float]:
     return out
 
 
-def _parse_taker_8h(rows: list[dict]) -> dict[int, float]:
+def _parse_taker_8h(rows: list[dict[str, Any]]) -> dict[int, float]:
     """Taker flow: compose each full 8h-period buy/sell ratio from its two
     4h halves (period-START stamping, verified empirically 2026-08-09: the
     1d aggregate equals the sum of the 4h points stamped from the same
@@ -177,7 +177,7 @@ _EXTRA_SERIES: dict[str, tuple[str, Any]] = {
 }
 
 
-def _closed_bars(bars: list, now_ms: int) -> dict[int, tuple[float, float]]:
+def _closed_bars(bars: list[list[Any]], now_ms: int) -> dict[int, tuple[float, float]]:
     """Kline rows -> {8h open-time stamp: (close, volume)}, EXCLUDING any bar
     still open at *now_ms*.
 

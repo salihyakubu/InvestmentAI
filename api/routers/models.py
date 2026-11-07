@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import get_current_user, get_db
+from api.dependencies import get_current_user, get_db, require_role
 from api.schemas.common import SuccessResponse
 from core.models.ml_models import ModelMetadata
 from core.models.predictions import Prediction
@@ -384,7 +384,7 @@ async def get_model_performance(
 )
 async def trigger_retrain(
     model_id: uuid.UUID,
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(require_role("admin")),
 ) -> SuccessResponse:
     """Trigger retraining for a specific model.
 

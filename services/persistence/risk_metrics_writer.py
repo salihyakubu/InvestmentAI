@@ -25,7 +25,7 @@ regardless of whether its state gets persisted.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -56,10 +56,15 @@ class RiskMetricsWriter:
         session_factory: async_sessionmaker[AsyncSession],
         risk_service: RiskManagerService,
         positions_provider: Callable[[], Awaitable[list[dict[str, Any]]]],
+        universe: Iterable[str] = (),
     ) -> None:
         self._session_factory = session_factory
         self._risk = risk_service
         self._positions_provider = positions_provider
+        # Return series are fed for held symbols AND the active universe: the
+        # symbol-aware correlation rule (GO_LIVE.md 2026-11-07) judges a NEW
+        # entry against the book, which needs that symbol's own returns.
+        self._universe: tuple[str, ...] = tuple(universe)
 
     async def run(self, interval_seconds: float = _INTERVAL_SECONDS) -> None:
         """Write immediately, then on the interval, until cancelled."""
@@ -78,7 +83,7 @@ class RiskMetricsWriter:
     async def write_once(self) -> None:
         """One full cycle: feed inputs, compute, persist."""
         held = await self._feed_positions()
-        await self._feed_returns(held)
+        await self._feed_returns(sorted(set(held) | set(self._universe)))
 
         # check_portfolio_risk is synchronous, cheap numpy -- called directly.
         report = self._risk.check_portfolio_risk()

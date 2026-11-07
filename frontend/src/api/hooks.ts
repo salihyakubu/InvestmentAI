@@ -212,10 +212,9 @@ export function useMarketData(symbol: string, timeframe = '1D', limit = 100) {
 
 // Audit Logs
 export function useAuditLogs(params?: {
-  component?: string;
-  risk_level?: string;
+  service?: string;
+  action?: string;
   limit?: number;
-  offset?: number;
 }) {
   return useQuery<AuditLogEntry[]>({
     queryKey: ['audit-logs', params],
