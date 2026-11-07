@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -104,6 +104,12 @@ class RiskManagerService:
         Shared event bus for publishing/subscribing.
     settings:
         Application settings containing risk thresholds.
+    position_provider:
+        Async callable returning the broker's open positions (the shape of
+        ``BaseBroker.get_positions``). Exits are sized from its signed
+        quantities; without it the engine falls back to the dollar book
+        divided by the reference price, which leaves dust when the price has
+        moved (GO_LIVE.md 2026-11-07).
     """
 
     def __init__(
@@ -111,11 +117,13 @@ class RiskManagerService:
         event_bus: EventBus,
         settings: Settings | None = None,
         state_store: SafetyStateStore | None = None,
+        position_provider: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.settings = settings or get_settings()
         # Durable daily baseline / peak / breaker state (None = memory only).
         self._state_store = state_store
+        self._position_provider = position_provider
 
         # Components
         self.circuit_breaker = CircuitBreaker(
@@ -198,10 +206,32 @@ class RiskManagerService:
             return
 
         prices = rebalance.reference_prices or {}
+        # The venue's signed book, when a provider is wired: exits are sized
+        # from it. None means "no provider" (or a failed call, logged): sizing
+        # falls back to the dollar book, which is how dust used to arise.
+        held = await self._held_quantities()
 
         for symbol, target_weight in rebalance.target_allocations.items():
+            price = float(prices.get(symbol, 0.0))
+            target_dollar = target_weight * total_equity
+            current_dollar = self._positions.get(symbol, 0.0)
+            held_qty = held.get(symbol, Decimal("0")) if held is not None else None
+
+            # A risk-REDUCING order: a full exit, a reduction of a long, or the
+            # buy that closes a short. It is exempt from the entry rules (not
+            # from the execution halt) and sized from what is actually held.
+            if held_qty is not None:
+                reducing = held_qty != 0 and (
+                    target_weight <= 0.0
+                    or held_qty < 0
+                    or (price > 0.0 and target_dollar / price < float(held_qty))
+                )
+            else:
+                reducing = current_dollar > 0.0 and target_dollar < current_dollar
+
             decision = self.pre_trade_check(
-                {"symbol": symbol, "target_weight": target_weight}
+                {"symbol": symbol, "target_weight": target_weight},
+                risk_reducing=reducing,
             )
 
             if not decision.approved:
@@ -218,25 +248,32 @@ class RiskManagerService:
                     )
                 continue
 
-            # Size the weight delta into a share quantity. The risk manager has
-            # no price feed, so it relies on the reference price supplied by the
-            # producer (which has market data).
-            price = float(prices.get(symbol, 0.0))
-            if price <= 0.0:
-                logger.warning("No reference price for %s; skipping sizing.", symbol)
-                continue
-
-            target_dollar = target_weight * total_equity
-            current_dollar = self._positions.get(symbol, 0.0)
-            delta_dollar = target_dollar - current_dollar
-            notional = abs(delta_dollar)
-            if notional < _MIN_TRADE_NOTIONAL:
-                continue
-
-            side = OrderSide.BUY if delta_dollar > 0 else OrderSide.SELL
-            quantity = notional / price
-            if quantity <= 0.0:
-                continue
+            if reducing and held_qty is not None:
+                # Exact held quantity for a full exit or a short close; the
+                # surplus above the target for a reduction. Never the dollar
+                # book divided by a moved price, and never more than is held.
+                if held_qty < 0 or target_weight <= 0.0 or price <= 0.0:
+                    quantity = float(abs(held_qty))
+                else:
+                    quantity = float(held_qty) - target_dollar / price
+                side = OrderSide.SELL if held_qty > 0 else OrderSide.BUY
+                if quantity <= 0.0:
+                    continue
+            else:
+                # Size the weight delta into a share quantity. The risk manager
+                # has no price feed, so it relies on the reference price
+                # supplied by the producer (which has market data).
+                if price <= 0.0:
+                    logger.warning("No reference price for %s; skipping sizing.", symbol)
+                    continue
+                delta_dollar = target_dollar - current_dollar
+                notional = abs(delta_dollar)
+                if notional < _MIN_TRADE_NOTIONAL:
+                    continue
+                side = OrderSide.BUY if delta_dollar > 0 else OrderSide.SELL
+                quantity = notional / price
+                if quantity <= 0.0:
+                    continue
 
             # Exploration trades are tagged in the correlation id so fills,
             # audit rows, and P&L reporting can separate learning trades from
@@ -273,13 +310,21 @@ class RiskManagerService:
     # Pre-trade checks
     # ------------------------------------------------------------------
 
-    def pre_trade_check(self, order_request: dict[str, Any]) -> RiskDecision:
+    def pre_trade_check(
+        self, order_request: dict[str, Any], *, risk_reducing: bool = False
+    ) -> RiskDecision:
         """Run all risk rules against a proposed order.
 
         Parameters
         ----------
         order_request:
             Dictionary with at least ``symbol`` and ``target_weight``.
+        risk_reducing:
+            The order lowers exposure (an exit, a reduction, a short close).
+            Every pre-trade rule exists to limit exposure, so none may be
+            the reason exposure cannot fall: such an order is approved
+            without evaluation. The execution halt still applies to it
+            downstream (GO_LIVE.md 2026-11-07).
 
         Returns
         -------
@@ -288,6 +333,13 @@ class RiskManagerService:
         symbol = order_request.get("symbol", "")
         target_weight = float(order_request.get("target_weight", 0.0))
 
+        if risk_reducing:
+            logger.info(
+                "Pre-trade check for %s: risk-reducing order, entry rules not applied.",
+                symbol,
+            )
+            return RiskDecision(approved=True, rejections=[], sized_quantity=Decimal("0"))
+
         # Build rule evaluation context
         total_equity = float(self._equity) if self._equity > 0 else 1.0
         proposed_position_pct = target_weight
@@ -295,23 +347,8 @@ class RiskManagerService:
         # Drawdown state
         dd_state = self.drawdown_monitor.update(total_equity)
 
-        # Correlation
-        returns_dict = {
-            s: np.array(r)
-            for s, r in self._returns_history.items()
-            if len(r) >= 2
-        }
-        if returns_dict:
-            symbols_sorted = sorted(returns_dict.keys())
-            corr_matrix = self.correlation_monitor.compute_correlation_matrix(returns_dict)
-            violations = self.correlation_monitor.check_pairwise_limits(
-                corr_matrix,
-                symbols_sorted,
-                max_correlation=self.settings.max_pairwise_correlation,
-            )
-            n_violations = len(violations)
-        else:
-            n_violations = 0
+        # Correlation: the proposed symbol against real holdings only.
+        n_violations = self._entry_correlation_violations(symbol)
 
         # Concentration
         weights = {}
@@ -686,6 +723,60 @@ class RiskManagerService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _held_quantities(self) -> dict[str, Decimal] | None:
+        """Signed quantity per symbol from the position provider, or None."""
+        if self._position_provider is None:
+            return None
+        try:
+            positions = await self._position_provider()
+        except Exception:
+            logger.exception("risk.position_provider_failed; sizing from the dollar book")
+            return None
+        held: dict[str, Decimal] = {}
+        for position in positions:
+            symbol = str(position.get("symbol", ""))
+            try:
+                quantity = Decimal(str(position.get("quantity", "0")))
+            except InvalidOperation:
+                continue
+            if symbol and quantity != 0:
+                held[symbol] = held.get(symbol, Decimal("0")) + quantity
+        return held
+
+    def _entry_correlation_violations(self, symbol: str) -> int:
+        """Pairs (proposed symbol, held symbol) above the correlation limit.
+
+        Only holdings at or above the minimum trade notional count: dust
+        cannot block an entry, and the book's own internal correlations are
+        the risk report's business, not this order's. Until 2026-11-07 the
+        rule counted every pair in the book and ignored the symbol proposed,
+        so four dust residues blocked every entry and every exit.
+        """
+        proposed = self._returns_history.get(symbol)
+        if proposed is None or len(proposed) < 2:
+            return 0
+        candidates = {
+            s: r
+            for s, r in self._returns_history.items()
+            if s != symbol
+            and len(r) >= 2
+            and self._positions.get(s, 0.0) >= _MIN_TRADE_NOTIONAL
+        }
+        if not candidates:
+            return 0
+        length = min(len(proposed), *(len(r) for r in candidates.values()))
+        returns_dict = {symbol: np.array(proposed[-length:])}
+        for s, r in candidates.items():
+            returns_dict[s] = np.array(r[-length:])
+        symbols_sorted = sorted(returns_dict)
+        corr_matrix = self.correlation_monitor.compute_correlation_matrix(returns_dict)
+        violations = self.correlation_monitor.check_pairwise_limits(
+            corr_matrix,
+            symbols_sorted,
+            max_correlation=self.settings.max_pairwise_correlation,
+        )
+        return sum(1 for v in violations if symbol in (v.symbol_a, v.symbol_b))
 
     def _compute_portfolio_var_pct(self) -> float:
         """Compute portfolio VaR as a percentage of equity."""

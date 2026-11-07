@@ -195,17 +195,24 @@ async def _build_services(
         session_factory=session_factory, trading_mode=settings.trading_mode
     )
 
+    # -- Brokers, built first: the risk engine sizes exits against the account
+    # broker's signed book and the liquidation manager protects what it
+    # actually holds (GO_LIVE.md 2026-11-07).
+    brokers = _build_brokers(settings)
+    account_positions = _all_positions_provider(brokers)
+
     # -- Risk Manager --
     from services.risk.service import RiskManagerService
 
     risk_manager = RiskManagerService(
-        event_bus=event_bus, settings=settings, state_store=safety_store
+        event_bus=event_bus,
+        settings=settings,
+        state_store=safety_store,
+        position_provider=account_positions,
     )
 
     # -- Execution Engine --
     from services.execution.service import ExecutionEngineService
-
-    brokers = _build_brokers(settings)
 
     execution = ExecutionEngineService(
         event_bus=event_bus,
@@ -221,7 +228,10 @@ async def _build_services(
     from services.liquidation.service import LiquidationManagerService
 
     liquidation = LiquidationManagerService(
-        event_bus=event_bus, settings=settings, execution_service_ref=execution,
+        event_bus=event_bus,
+        settings=settings,
+        execution_service_ref=execution,
+        position_provider=account_positions,
     )
 
     # -- Walk-forward research watch (registered funding-regime hypothesis) --
@@ -378,6 +388,71 @@ async def _restore_broker_state(services: list[Any], settings: Settings) -> None
         logger.exception("worker.broker_state_restore_failed")
 
 
+def _all_positions_provider(brokers: dict[str, Any]) -> Any:
+    """Positions across EVERY wired broker, the way execution sums them.
+
+    Risk and liquidation must see the same book execution acts on: with
+    two live venues, a symbol held on the second one would otherwise read
+    as unheld, send its exit through the entry rules and dollar sizing, and
+    never get a stop (risk sign-off 2026-11-07, finding 4).
+    """
+
+    async def provider() -> list[dict[str, Any]]:
+        positions: list[dict[str, Any]] = []
+        for name, broker in brokers.items():
+            try:
+                positions.extend(await broker.get_positions())
+            except Exception:
+                logger.exception("worker.positions_provider_failed", broker=name)
+                raise
+        return positions
+
+    return provider
+
+
+async def _seed_held_book(services: list[Any]) -> None:
+    """Give every position found at boot an owner (GO_LIVE.md 2026-11-07).
+
+    The portfolio service's held book was process memory, so a restart
+    forgot every open position and no exit was ever published for it; and
+    nothing registered a stop for a position that arrived by restore rather
+    than by fill. Both are seeded here from the account broker's book, after
+    the broker and safety state are restored and before any service starts.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from services.execution.service import ExecutionEngineService
+    from services.liquidation.service import LiquidationManagerService
+    from services.portfolio.service import PortfolioOptimizerService
+
+    execution = next((s for s in services if isinstance(s, ExecutionEngineService)), None)
+    if execution is None or not execution.brokers:
+        return
+    try:
+        positions = await _all_positions_provider(execution.brokers)()
+    except Exception:
+        logger.exception("worker.held_book_seed_failed")
+        return
+    held: list[str] = []
+    for position in positions:
+        try:
+            quantity = Decimal(str(position.get("quantity", "0") or "0"))
+        except InvalidOperation:
+            continue
+        if quantity != 0 and position.get("symbol"):
+            held.append(str(position["symbol"]))
+    portfolio = next((s for s in services if isinstance(s, PortfolioOptimizerService)), None)
+    if portfolio is not None and held:
+        portfolio.seed_held_book(held)
+    liquidation = next((s for s in services if isinstance(s, LiquidationManagerService)), None)
+    if liquidation is not None:
+        try:
+            await liquidation.seed_stops(positions)
+        except Exception:
+            logger.exception("worker.stop_seed_failed")
+    logger.info("worker.held_book_seeded", symbols=sorted(held))
+
+
 async def _restore_safety_state_and_orders(services: list[Any]) -> None:
     """Restore halt/breaker/baseline state and reconcile in-flight orders."""
     from services.execution.service import ExecutionEngineService
@@ -420,6 +495,8 @@ async def _run() -> None:
     # flight when the last process died must be accounted for before any
     # new intent is consumed (GO_LIVE.md 2026-11-02).
     await _restore_safety_state_and_orders(services)
+    # Then give every restored position an owner: the held book and a stop.
+    await _seed_held_book(services)
 
     # Graceful shutdown handling
     shutdown_event = asyncio.Event()
@@ -499,6 +576,9 @@ async def _run() -> None:
             session_factory=get_async_session_factory(),
             risk_service=risk,
             positions_provider=_account_broker(execution.brokers).get_positions,
+            # Returns for the whole active universe, so a NEW entry can be
+            # judged against the book by the symbol-aware correlation rule.
+            universe=[*settings.active_symbols_crypto, *settings.active_symbols_stocks],
         )
         risk_metrics_task = asyncio.create_task(risk_metrics_writer.run())
         logger.info("worker.risk_metrics_writer_started")

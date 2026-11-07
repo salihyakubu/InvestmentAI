@@ -2405,3 +2405,97 @@ the account's way; no autonomous exit; breaker never tripped. Not safe
 for anyone but the operator nor transferable to a live venue.
 NOT CHANGED: no code. This entry records a review; each fix above gets its
 own pre-registration.
+
+## PRE-REGISTRATION (2026-11-07) — exit ownership and exit-exempt rules
+Registered BEFORE code; item 1 of the live review's sequencing, the risk
+manager's lift condition. Stacked on PR #89 (durable orders, LIQUIDATION
+stream, tracked flatten path). Failing test first for every item.
+DECISIONS, stated now so they can be vetoed now:
+ - One new parameter: STOP_LOSS_PCT = 0.05 (fixed stop below the entry of a
+   long, registered per fill and at boot). It is the operator's policy
+   number; 5% was chosen as a conventional per-position stop that sits
+   inside the 5% daily / 7% breaker limits. Not tuned to any data.
+ - A risk-REDUCING order (an exit, or a reduction of a held position) is
+   exempt from every pre-trade rule, the circuit breaker included: with the
+   book under water the rules that exist to limit exposure must not be the
+   reason exposure cannot fall. The execution halt is NOT lifted for them:
+   a halted engine still refuses rebalance exits; only liquidation-manager
+   and kill-switch exits bypass the halt, as today.
+ - Exits are sized from the broker's SIGNED QUANTITY, never from the
+   dollar book divided by a price. A full exit sends exactly the held
+   quantity; a restored short is closed with a buy of |quantity|.
+ - The paper broker models a spot venue: a sell larger than the held long
+   is REJECTED (no flip to short), as Binance spot rejects it (-2010).
+   Shorts can still be restored from a checkpoint and closed.
+ - A restored position is given an owner at boot: it enters the portfolio
+   service's held book and, in paper mode, the exploration register with
+   entry time = boot, so it exits on the registered hold timer through the
+   normal path. The alternative (hold until the next conviction cycle) is
+   what left five positions ownerless for a month.
+ - The correlation rule becomes symbol-aware: for an ENTRY it counts only
+   pairs between the proposed symbol and held symbols above the minimum
+   trade notional (dust excluded); the portfolio-wide count stays in the
+   risk report for the dashboard. The metrics writer feeds return series
+   for held symbols AND the active universe so a new entry can be judged.
+SUCCESS CRITERIA, fixed now:
+ (1) HELD BOOK: after a restart with three open positions, all three are in
+     the portfolio service's held book and count toward the exploration
+     cap; none is picked as a new entry; each is exited on the hold timer.
+ (2) STOP PER FILL: a buy fill registers a stop at entry x (1 - 0.05); a
+     tick at or below it publishes a LiquidationTriggeredEvent that the
+     execution engine turns into a whole-position exit through the tracked
+     path, tagged liq-; the broker holds nothing afterwards. Boot seeds the
+     same stop for every restored long.
+ (3) EXIT-EXEMPT RULES: with six correlation violations and an OPEN
+     breaker, an exit is approved and an entry is rejected; a halted engine
+     refuses the rebalance exit and still executes a liquidation exit.
+ (4) SIGNED-QUANTITY EXITS: a held 0.0111 SOL exits with exactly 0.0111; a
+     paper sell of 0.02 against 0.0111 held is rejected, the book unchanged.
+ (5) SYMBOL-AWARE CORRELATION: four dust positions above 0.85 correlation
+     do not block an entry in an uncorrelated symbol; an entry identical to
+     a real held position is still rejected.
+PRODUCTION CRITERION: within 24 h of the deploy that carries this change,
+every position held at boot has either exited through the tracked path
+(fills tagged explore-/rebal-/liq-) or carries a registered stop; no new
+position goes 24 h without a stop; the book holds no dust older than one
+hold period. Judged from orders/fills rows and the worker log, recorded
+here as PASS or MISS.
+NOT CHANGED: every limit value, the trade gate, exploration weight and
+hold, TRADING_MODE. The ccxt venue filters (GL9) are a separate change: a
+sub-minimum exit sent to Binance would still be rejected there.
+AMENDMENTS AT SIGN-OFF (risk manager, 2026-11-07: APPROVE WITH CONDITIONS;
+policy on exit exemption, the $1 dust bar, paper spot semantics and scope
+signed off). Conditions taken before merge, each with a test:
+ - The exploration cap counts only PRICED open positions, and boot seeding
+   joins the exploration register only for symbols in the active universe;
+   a held symbol outside it (or one that never receives a price, such as
+   equity dust in a crypto-only paper session) stays in the held book, is
+   logged, and is the operator's to sell. Without this the restored SPY and
+   AMZN dust would have frozen exploration for the life of the process.
+ - A buy fill the position provider has not yet seen (a venue balance can
+   lag) registers the stop from the fill itself; a stale stop on a flat
+   symbol is harmless, a new long without one is not.
+ - A boot stop skipped for want of any positive entry price logs a WARNING
+   (the ccxt adapter reports no cost basis or mark today; before live it
+   must, GL9).
+ - The position provider aggregates every wired broker, the way execution
+   sums them, so a symbol held on a second venue is never judged unheld.
+ - STOP_LOSS_PCT is validated to [0, 1); a value that cannot fire refuses
+   to start.
+Accepted as recorded gaps: a partial reduction below the trade notional is
+still published (floor it with GL9); a stop consumed by a trigger whose exit
+order the venue rejects is not re-armed (GL9). Production criterion sources
+made explicit: exit tags are orders.correlation_id (explore-/rebal-/liq-);
+"registered stop" is the worker's INFO line "Stop loss set for <symbol>";
+dust is a positions row with |market_value| < $1 older than one hold period.
+SHIPPED (2026-11-07) — exit ownership: PASS by test on all five criteria
+and the three conditions above. tests/integration/test_exit_ownership.py,
+13 tests: red confirmed with the implementation stashed (4 failed, 6 errors),
+green with it; 106 passed across the related exploration, risk, portfolio,
+execution, liquidation, durability and kill-switch suites. ruff clean. mypy
+clean on every changed module (the scratch venv's only errors are torch
+stubs absent and SQLAlchemy 2.1 typed rows, neither present in CI). Local
+runs were made in a scratch venv under /private/tmp because the project venv
+stalls on this host; tests/unit/test_exploration_learning.py needs the ML
+stack and ran only in CI. Production criterion: judged after the deploy
+that carries this change, recorded here as PASS or MISS.

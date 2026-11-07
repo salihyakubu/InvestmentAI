@@ -39,9 +39,18 @@ class PaperBroker(BaseBroker):
     asset_class = "all"
     supports_live = False
 
-    def __init__(self, initial_cash: Decimal = Decimal("100000")) -> None:
+    def __init__(
+        self, initial_cash: Decimal = Decimal("100000"), *, allow_short: bool = False
+    ) -> None:
         self._cash = initial_cash
         self._initial_cash = initial_cash
+        # Spot semantics by default: a sell larger than the held long is
+        # rejected, as Binance spot rejects it (-2010). Until 2026-11-07 an
+        # over-sized exit flipped the position to a short that no venue could
+        # hold, which is how the live book came to carry two paper shorts.
+        self._allow_short = allow_short
+        # external_id -> why a rejected order was rejected
+        self._reject_reasons: dict[str, str] = {}
         # symbol -> signed quantity (positive = long)
         self._positions: dict[str, Decimal] = defaultdict(Decimal)
         # symbol -> volume-weighted cost basis of the open position; without it
@@ -115,7 +124,7 @@ class PaperBroker(BaseBroker):
                 stop_price=str(order.stop_price),
             )
         else:
-            self._mark_terminal(external_id, "rejected")
+            self._reject(external_id, "unsupported_order_type")
             logger.warning(
                 "paper_unsupported_order_type",
                 order_type=order.order_type,
@@ -153,6 +162,7 @@ class PaperBroker(BaseBroker):
         return {
             "external_id": external_id,
             "status": status,
+            "reason": self._reject_reasons.get(external_id),
             "symbol": order.symbol if order else None,
             "side": order.side if order else None,
             "quantity": str(order.quantity) if order else None,
@@ -341,6 +351,18 @@ class PaperBroker(BaseBroker):
         self._order_statuses[external_id] = status
         self._terminal_at[external_id] = datetime.now(UTC)
 
+    def _reject(self, external_id: str, reason: str) -> None:
+        """Reject an order with a reason the execution engine can record."""
+        self._mark_terminal(external_id, "rejected")
+        self._reject_reasons[external_id] = reason
+
+    def _sell_exceeds_position(self, order: BrokerOrder) -> bool:
+        """True when a sell would take the symbol below flat on a spot venue."""
+        if order.side != "sell" or self._allow_short:
+            return False
+        held = self._positions.get(order.symbol, Decimal("0"))
+        return order.quantity > max(held, Decimal("0"))
+
     def _prune(self) -> None:
         """Drop terminal orders (and their fills) past the retention window.
 
@@ -357,6 +379,7 @@ class PaperBroker(BaseBroker):
             self._orders.pop(ext_id, None)
             self._order_statuses.pop(ext_id, None)
             self._fills_by_order.pop(ext_id, None)
+            self._reject_reasons.pop(ext_id, None)
         if expired:
             logger.info("paper_terminal_orders_pruned", count=len(expired))
 
@@ -366,13 +389,23 @@ class PaperBroker(BaseBroker):
 
     async def _fill_market_order(self, order: BrokerOrder) -> None:
         """Fill a market order immediately with random slippage."""
+        if self._sell_exceeds_position(order):
+            self._reject(order.external_id, "insufficient_position")
+            logger.warning(
+                "paper_insufficient_position",
+                symbol=order.symbol,
+                requested=str(order.quantity),
+                held=str(self._positions.get(order.symbol, Decimal("0"))),
+            )
+            return
+
         base_price = self._last_prices.get(order.symbol)
         if base_price is None:
             # No price available; use limit_price as fallback or reject.
             if order.limit_price is not None:
                 base_price = order.limit_price
             else:
-                self._mark_terminal(order.external_id, "rejected")
+                self._reject(order.external_id, "no_price")
                 logger.warning(
                     "paper_no_price_for_market_order",
                     symbol=order.symbol,
@@ -394,7 +427,7 @@ class PaperBroker(BaseBroker):
         if order.side == "buy":
             cost = order.quantity * fill_price
             if cost > self._cash:
-                self._mark_terminal(order.external_id, "rejected")
+                self._reject(order.external_id, "insufficient_cash")
                 logger.warning(
                     "paper_insufficient_cash",
                     symbol=order.symbol,
@@ -454,6 +487,15 @@ class PaperBroker(BaseBroker):
 
         for ext_id in to_fill:
             order = self._pending_orders.pop(ext_id)
+            if self._sell_exceeds_position(order):
+                self._reject(ext_id, "insufficient_position")
+                logger.warning(
+                    "paper_insufficient_position",
+                    symbol=order.symbol,
+                    requested=str(order.quantity),
+                    held=str(self._positions.get(order.symbol, Decimal("0"))),
+                )
+                continue
             fill_price = price.quantize(Decimal("0.01"))
             fill = BrokerFill(
                 external_id=str(uuid.uuid4()),
